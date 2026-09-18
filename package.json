@@ -10,7 +10,7 @@
     "registrant"
   ],
   "scripts": {
-    "build": "npm run build -w @vector-sigma/shared && npm run build -w @vector-sigma/registrar && npm run build -w @vector-sigma/registrant",
+    "build": "npm run build -w @vector-sigma/shared && npm run build -w @vector-sigma/registrar && npm run build -w @vector-sigma/registrant && tsc -p deploy/tsconfig.json",
     "test": "npm run test -w @vector-sigma/registrar && npm run test -w @vector-sigma/registrant",
     "db:generate": "npm run db:generate -w @vector-sigma/registrar"
   },

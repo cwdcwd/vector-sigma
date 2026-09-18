@@ -45,7 +45,7 @@ export function readMigrationStatements(): string[] {
  * sees it: pg-mem replaces $N placeholders itself and returns plain
  * JS values, so pg's type parsers are irrelevant on this path.
  */
-function patchMemPgQuery(pgModule: { Pool: unknown; Client: unknown }): void {
+export function patchMemPgQuery(pgModule: { Pool: unknown; Client: unknown }): void {
   // MemPg is a class minted per createPg() call: methods live on .prototype.
   const proto = (pgModule.Client as { prototype: Record<string, unknown> }).prototype;
   const original = proto.query as (q: unknown, ...rest: unknown[]) => Promise<unknown>;

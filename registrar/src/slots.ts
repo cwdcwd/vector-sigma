@@ -32,7 +32,13 @@ export async function readSlot(db: Executor, deviceId: string): Promise<SlotSnap
       state: deliverySlots.state,
       deliveryCount: deliverySlots.deliveryCount,
       deliveredAt: deliverySlots.deliveredAt,
-      rearmsAt: sql<Date | null>`${deliverySlots.deliveredAt} + ${deliverySlots.autoRearmAfter}`,
+      // RAW expression: bypasses drizzle column type mapping. On real pg the
+      // node-postgres driver hands this back as the WIRE STRING pg emits for
+      // timestamptz+interval (drizzle's session disables pg's temporal type
+      // parsers; typed columns re-Date via mapFromDriverValue, raw fragments
+      // do NOT — run-4 E2E: .getTime() on the string 500s every replay).
+      // Declared string|null so the mapping below is the only path to a Date.
+      rearmsAt: sql<string | null>`${deliverySlots.deliveredAt} + ${deliverySlots.autoRearmAfter}`,
     })
     .from(deliverySlots)
     .where(eq(deliverySlots.deviceId, deviceId));
@@ -42,7 +48,7 @@ export async function readSlot(db: Executor, deviceId: string): Promise<SlotSnap
     state: r.state as SlotStateValue,
     deliveryCount: r.deliveryCount,
     deliveredAt: r.deliveredAt,
-    rearmsAt: r.rearmsAt,
+    rearmsAt: r.rearmsAt ? new Date(r.rearmsAt) : null,
   };
 }
 

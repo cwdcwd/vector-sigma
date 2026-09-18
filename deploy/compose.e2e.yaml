@@ -1,0 +1,68 @@
+# E2E overlay — compose-simulated device against the local registrar.
+#
+# Run (from the repo root, on a compose-capable host):
+#   docker compose --env-file deploy/.env.e2e \
+#     -f deploy/compose.yaml -f deploy/compose.e2e.yaml -p vector-sigma-e2e up -d --build
+#   deploy/e2e.sh
+#   deploy/e2e.sh --down   # teardown when done
+#
+# OR simply: deploy/e2e.sh --up   (this script drives the full cycle)
+#
+# Adds three services to the self-host example:
+#   seed  — provisions the deterministic device + bundle + short-rearm slot,
+#           exits 0 (gate: device waits for service_completed_successfully)
+#   device— runs the REAL registrant (registrant/dist/index.js) as a
+#           simulated device: bootstrap, atomic bundle apply, ready marker,
+#           resident rotation watcher — exactly the balenaOS device shape,
+#           minus the platform env injection (compose provides it).
+# All values interpolate from deploy/.env.e2e (committed, deterministic,
+# simulation-only — no production secrets anywhere in it).
+
+services:
+  seed:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command: ["node", "--import", "tsx", "deploy/seed/seed.ts"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      E2E_DEVICE_UUID: ${E2E_DEVICE_UUID:?set in deploy/.env.e2e}
+      E2E_DEVICE_KEY: ${E2E_DEVICE_KEY:?set in deploy/.env.e2e}
+      E2E_AGENT_NAME: ${E2E_AGENT_NAME:-sim-deploy-e2e}
+      # Short auto-rearm window so the re-delivery path is observable in
+      # seconds (production default is 1 hour).
+      SEED_REARM_SECONDS: ${SEED_REARM_SECONDS:-45}
+    depends_on:
+      registrar:
+        condition: service_healthy
+    restart: "no"
+
+  device:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command: ["node", "registrant/dist/index.js"]
+    environment:
+      BALENA_DEVICE_UUID: ${E2E_DEVICE_UUID:?set in deploy/.env.e2e}
+      REGISTRAR_URL: http://registrar:3000
+      REGISTRAR_KEY: ${E2E_DEVICE_KEY:?set in deploy/.env.e2e}
+      DATA_DIR: /data/agent
+      # Containers have no timesyncd socket: gate expires fast and the
+      # boot path proceeds best-effort (this is the no-RTC device behavior
+      # the gate exists for; TLS is the natural guard per the spec).
+      CLOCK_GATE_TIMEOUT_MS: "2000"
+      # Long watch interval: the E2E asserts rotation separately via
+      # /v1/rotate + rearm; resident polls must not race the assertions.
+      WATCH_INTERVAL_MS: "600000"
+      LOG_LEVEL: info
+    volumes:
+      - device-data:/data/agent
+    depends_on:
+      registrar:
+        condition: service_healthy
+      seed:
+        condition: service_completed_successfully
+    restart: "no"
+
+volumes:
+  device-data:

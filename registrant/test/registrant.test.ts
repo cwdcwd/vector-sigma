@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
+import { statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { IdentityStore } from '../src/identity-store.js';
@@ -41,6 +42,20 @@ export async function fileMode(p: string): Promise<number> {
 
 export async function dirIsEmpty(dir: string): Promise<boolean> {
   return (await readdir(dir)).length === 0;
+}
+
+/**
+ * True when /dev/shm sits on a different filesystem than os.tmpdir() — the
+ * fleet-Pi topology (root-fs /tmp vs tmpfs /dev/shm) that reproduces the
+ * volume-vs-container EXDEV locally, without docker. The test below is
+ * skipped on hosts whose mount topology cannot reproduce it.
+ */
+function shmOnSeparateDevice(): boolean {
+  try {
+    return statSync('/dev/shm').dev !== statSync(tmpdir()).dev;
+  } catch {
+    return false;
+  }
 }
 
 describe('clock gate', () => {
@@ -137,6 +152,30 @@ describe('identity store', () => {
     await expect(store.applyBundle(evil)).rejects.toThrow(/bundle rejected|unsafe path/);
     expect(await dirIsEmpty(dir)).toBe(true);
   });
+
+  // Regression for the run-3 E2E blocker (devpi05, d9b2b28): staging via
+  // mkdtemp(os.tmpdir()) renames onto a volume-backed dataDir — rename(2)
+  // cannot cross filesystems, so the FIRST applied file dies EXDEV and the
+  // device can never bootstrap. Reproduced here by putting the data dir on
+  // tmpfs (/dev/shm) while staging goes to the root-fs tmpdir.
+  it.skipIf(!shmOnSeparateDevice())(
+    'applyBundle works when dataDir is on a different device than os.tmpdir() (EXDEV regression)',
+    async () => {
+      const dir = await mkdtemp(path.join('/dev/shm', 'vs-xdevice-'));
+      dirs.push(dir);
+      const store = new IdentityStore(dir);
+      const b = makeBundle(1, [{ path: '.env', content: 'A=b\n' }]);
+      await store.applyBundle(b);
+      expect(await readFile(path.join(dir, '.env'), 'utf8')).toBe('A=b\n');
+      expect(await fileMode(path.join(dir, '.env'))).toBe(0o600);
+      expect(await store.isReady()).toBe(true);
+      expect((await readdir(dir)).sort()).toEqual([
+        '.env',
+        'identity-bundle.json',
+        'ready.marker',
+      ]);
+    },
+  );
 
   it('readBundle: absent → null; invalid JSON → null; valid → bundle', async () => {
     const dir = await tempDataDir();
