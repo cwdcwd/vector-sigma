@@ -1,0 +1,19 @@
+{
+  "name": "vector-sigma",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Device identity registrar for autonomous agent fleets",
+  "workspaces": [
+    "shared",
+    "registrar"
+  ],
+  "scripts": {
+    "build": "npm run build -w @vector-sigma/shared && npm run build -w @vector-sigma/registrar",
+    "test": "npm run test -w @vector-sigma/registrar",
+    "db:generate": "npm run db:generate -w @vector-sigma/registrar"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
