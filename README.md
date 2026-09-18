@@ -1,2 +1,60 @@
 # vector-sigma
-Device identity registrar — imparts identity to new devices at first boot (balena fleet bootstrap)
+
+> *"Before Cybertron's fall, every new robot passed through Vector Sigma."*
+
+Device identity registrar for autonomous agent fleets. Named for the G1
+Transformers supercomputer that imparted personality to every new robot —
+this is that, for devices: a fleet device boots empty, calls home, and
+receives the complete identity bundle that makes it *itself*.
+
+## What it does
+
+- **Registrar** — REST service (TypeScript · Fastify · Node.js · Postgres)
+  that stores per-device identity bundles and delivers them exactly once
+  at first boot. Two-factor device auth, one-shot delivery slots, hashed
+  keys, append-only audit log. Ships with a lightweight admin console for
+  editing bundles without touching the database.
+- **Registrant** — the device-side caller (TypeScript, own container).
+  Clock gate → identity check → registrar call → 0600 bundle write →
+  config assembly → ready marker → stays resident as the rotation watcher.
+- **Balena device app** — docker-compose multi-container app for
+  balenaOS devices: agent runtime container + registrant, sharing a
+  persistent data volume. No identity = no agent start.
+- **Self-host deploy example** — registrar + Postgres compose for any
+  single host.
+
+## Design principles
+
+- **Identity lives in the data partition.** A device is its state volume;
+  the container is disposable wrapping. Reflash → re-fetch → the device
+  is itself again, unattended.
+- **Secrets are delivered, never baked.** No secrets in image layers, in
+  build args, or in platform variables beyond each device's own bootstrap
+  key.
+- **Delivery-only API.** The registrar hands out identity bundles; it
+  never mints upstream credentials. Those stay with the operator at their
+  sources.
+- **Everything is config-driven.** No hostnames, agent names, or
+  deployment specifics in code. Point a device at any registrar with
+  `REGISTRAR_URL`.
+
+## Repository layout
+
+```
+registrar/    # Fastify service: bootstrap API + admin console + DB
+registrant/   # device-side caller + rotation watcher
+shared/       # bundle-contract types shared by both ends
+balena/       # device app: compose file + Dockerfile templates
+deploy/       # generic self-host example (registrar + postgres)
+docs/         # engineering spec
+```
+
+## Status
+
+Design phase — engineering spec in [docs/engineering-spec.md](docs/engineering-spec.md).
+Build order: registrar skeleton → balena device app → canary device →
+fleet.
+
+## License
+
+MIT (code); docs CC-BY-4.0.
