@@ -44,16 +44,19 @@ receives the complete identity bundle that makes it *itself*.
 registrar/    # Fastify service: bootstrap API + admin console + DB
 registrant/   # device-side caller + rotation watcher
 shared/       # bundle-contract types shared by both ends
-balena/       # device app: compose file + Dockerfile templates
+balena/       # two fleet apps: balena/registrar/ + balena/devices/
 deploy/       # generic self-host example (registrar + postgres)
-docs/         # engineering spec
+docs/         # engineering spec + balena architecture
 ```
 
 ## Status
 
-Design phase — engineering spec in [docs/engineering-spec.md](docs/engineering-spec.md).
-Build order: registrar skeleton → balena device app → canary device →
-fleet.
+Registrar skeleton, registrant, admin console, and the self-host deploy
+example + simulated-device E2E are merged. Next: the two-fleet balena
+deployment ([docs/balena-architecture.md](docs/balena-architecture.md))
+and its GitHub Actions pipelines.
+
+Engineering spec: [docs/engineering-spec.md](docs/engineering-spec.md).
 
 ## License
 

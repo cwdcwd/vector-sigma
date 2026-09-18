@@ -137,6 +137,14 @@ agent's persistent data volume (balenaOS: `/data/<agent>/`).
 Platform env consumed: device UUID (auto-injected), `REGISTRAR_URL`,
 `REGISTRAR_KEY`, plus non-secret config variables.
 
+## Deployment: two balena fleets
+
+Vector Sigma ships as two balena fleets in one balenaCloud account — a
+1-device **registrar fleet** (registrar + own Postgres) and a
+**devices fleet** (3–4 agent devices), with tags-only releases via
+GitHub Actions. Layout, release policy, and owner prerequisites:
+[balena-architecture.md](balena-architecture.md).
+
 ## Device app (balenaOS multi-container)
 
 ```yaml
@@ -200,5 +208,6 @@ deliberately undecided.
    login + dashboard + bundle editor.
 3. Self-host deploy example; end-to-end test with a compose-simulated
    device.
-4. Balena device app; canary device; kill-test and SIGTERM/WAL
-   evidence; then fleet.
+4. Two-fleet balena deployment (see [balena-architecture.md](balena-architecture.md)):
+   registrar fleet app; devices fleet app; canary device; kill-test and
+   SIGTERM/WAL evidence; then fleet.
