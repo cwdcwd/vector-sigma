@@ -17,6 +17,10 @@ import { systemClock, type Clock } from './clock.js';
 import { consumeSlot, ensureSlot, readSlot, retryAfterSeconds, effectiveState } from './slots.js';
 import { audit } from './audit.js';
 import type { RegistrarConfig } from './config.js';
+import { registerAdminRoutes } from './admin.js';
+import { verifyAdminKey } from './admin-auth.js';
+import { rotateBundle, rearmSlot } from './rotate.js';
+import { RearmRequestSchema, RotateRequestSchema } from '@vector-sigma/shared';
 
 export interface BuildOptions {
   db: NodePgDatabase;
@@ -109,6 +113,15 @@ export function buildApp(opts: BuildOptions): FastifyInstance {
   app.setErrorHandler((err, request, reply) => {
     request.log.error({ err }, 'unhandled error');
     reply.status(500).send({ error: 'internal_error' });
+  });
+
+  // Admin console + owner endpoints share this limiter for admin-key auth.
+  registerAdminRoutes(app, {
+    db,
+    config,
+    clock,
+    limiter,
+    sessionSecret: config.sessionSecret,
   });
 
   /** Rate-limit gate: returns seconds remaining, or null when the IP is free. */
@@ -319,6 +332,110 @@ export function buildApp(opts: BuildOptions): FastifyInstance {
         delivered_at: snap?.deliveredAt ? snap.deliveredAt.toISOString() : null,
       },
       bundle_version: blobs.length > 0 ? blobs[0].version : null,
+    });
+  });
+
+  /** Admin-key auth for owner endpoints; audits and never leaks which factor failed. */
+  async function adminGate(
+    request: FastifyRequest,
+  ): Promise<{ ok: true; keyId: string | null } | { ok: false; status: 401 | 429; reason: string; locked: number | null }> {
+    const presentedKey = extractBearer(request);
+    const auth = await verifyAdminKey(db, presentedKey, limiter, clientIp(request));
+    if (auth.ok) {
+      return { ok: true, keyId: keyFingerprint(presentedKey) };
+    }
+    if (auth.kind === 'locked') {
+      await audit(db, {
+        deviceId: null,
+        outcome: 'admin',
+        reason: 'rate_limited',
+        keyId: keyFingerprint(presentedKey),
+        sourceIp: clientIp(request),
+        occurredAt: clock.now(),
+      });
+      return { ok: false, status: 429, reason: 'rate_limited', locked: auth.locked ?? 1 };
+    }
+    await audit(db, {
+      deviceId: null,
+      outcome: 'admin',
+      reason: auth.kind === 'device_key' ? 'device_key_rejected' : 'admin_auth_failed',
+      keyId: keyFingerprint(presentedKey),
+      sourceIp: clientIp(request),
+      occurredAt: clock.now(),
+    });
+    return { ok: false, status: 401, reason: 'unauthorized', locked: null };
+  }
+
+  app.post('/v1/re-arm', async (request, reply) => {
+    const gate = await adminGate(request);
+    if (!gate.ok) {
+      if (gate.status === 429) {
+        return reply
+          .status(429)
+          .header('Retry-After', String(gate.locked))
+          .send({ error: 'rate_limited', retry_after_seconds: gate.locked });
+      }
+      return reply.status(401).send({ error: 'unauthorized' });
+    }
+
+    const parsed = RearmRequestSchema.safeParse(request.body ?? {});
+    if (!parsed.success) return reply.status(400).send({ error: 'invalid_request' });
+    const { balena_uuid: uuid } = parsed.data;
+
+    const devRows = await db.select().from(devices).where(eq(devices.balenaUuid, uuid));
+    if (devRows.length === 0) return reply.status(404).send({ error: 'not_found' });
+
+    await rearmSlot(db, uuid);
+    const snap = await readSlot(db, uuid);
+    await audit(db, {
+      deviceId: uuid,
+      outcome: 'admin',
+      reason: 'slot_rearmed',
+      keyId: gate.keyId,
+      sourceIp: clientIp(request),
+      occurredAt: clock.now(),
+    });
+    return reply.status(200).send({
+      balena_uuid: uuid,
+      slot: {
+        state: snap?.state ?? 'armed',
+        delivery_count: snap?.deliveryCount ?? 0,
+        delivered_at: snap?.deliveredAt ? snap.deliveredAt.toISOString() : null,
+      },
+    });
+  });
+
+  app.post('/v1/rotate', async (request, reply) => {
+    const gate = await adminGate(request);
+    if (!gate.ok) {
+      if (gate.status === 429) {
+        return reply
+          .status(429)
+          .header('Retry-After', String(gate.locked))
+          .send({ error: 'rate_limited', retry_after_seconds: gate.locked });
+      }
+      return reply.status(401).send({ error: 'unauthorized' });
+    }
+
+    const parsed = RotateRequestSchema.safeParse(request.body ?? {});
+    if (!parsed.success) return reply.status(400).send({ error: 'invalid_request' });
+    const { balena_uuid: uuid, files } = parsed.data;
+
+    const devRows = await db.select().from(devices).where(eq(devices.balenaUuid, uuid));
+    if (devRows.length === 0) return reply.status(404).send({ error: 'not_found' });
+
+    const result = await rotateBundle(
+      db,
+      clock,
+      uuid,
+      { kind: 'replace', files: files.map((f) => ({ path: f.path, mode: '0600', content: f.content })) },
+      { keyId: gate.keyId, sourceIp: clientIp(request), reason: 'bundle_rotated_api' },
+    );
+    return reply.status(200).send({
+      balena_uuid: uuid,
+      bundle_version: result.version,
+      slot_state: result.slotState,
+      delivery_count: result.deliveryCount,
     });
   });
 

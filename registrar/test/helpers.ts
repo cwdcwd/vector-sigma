@@ -4,15 +4,16 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import { buildApp } from '../src/app.js';
 import type { RegistrarConfig } from '../src/config.js';
 import { AuthRateLimiter } from '../src/rate-limit.js';
 import type { Clock } from '../src/clock.js';
 import { hashKey } from '../src/db/key-crypto.js';
 import { randomUUID } from 'node:crypto';
-import { devices, identityBlobs, deliverySlots } from '../src/db/schema.js';
+import { devices, identityBlobs, deliverySlots, adminKeys } from '../src/db/schema.js';
 import type { IdentityBundle } from '@vector-sigma/shared';
+import { SESSION_COOKIE, CSRF_COOKIE } from '../src/session.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -95,13 +96,14 @@ export class FakeClock implements Clock {
 }
 
 export const TEST_CONFIG: RegistrarConfig = {
-  databaseUrl: 'postgres://test:test@localhost:5432/test',
+  databaseUrl: 'postgres://test:***@localhost:5432/test',
   port: 3000,
   host: '127.0.0.1',
   logLevel: 'silent',
   trustProxy: false,
   rateLimitWindowMs: 900_000,
   rateLimitMaxFailures: 5,
+  sessionSecret: 'test-session-secret-0123456789abcdef',
 };
 
 export interface TestEnv {
@@ -203,6 +205,127 @@ export async function seedDevice(
       version: 1,
     });
   }
+}
+
+/** Insert an admin key row; returns its id. */
+export async function seedAdminKey(
+  db: NodePgDatabase,
+  key: string,
+  label = 'test-admin',
+): Promise<number> {
+  const hash = await hashKey(key, { memoryCostKiB: 256, timeCost: 1, parallelism: 1 });
+  const rows = await db.insert(adminKeys).values({ hash, label }).returning({ id: adminKeys.id });
+  return Number(rows[0].id);
+}
+
+/** Extract the _csrf hidden-input value from a rendered console page. */
+export function extractCsrf(html: string): string {
+  const m = /name="_csrf" value="([^"]+)"/.exec(html);
+  if (!m) throw new Error('no _csrf input found in page HTML');
+  return m[1];
+}
+
+/**
+ * Cookie-carrying admin console client for tests: walks the real flow
+ * (GET login → CSRF cookie → POST login → session cookie → mutations).
+ */
+export class AdminClient {
+  private cookies = new Map<string, string>();
+
+  constructor(private app: FastifyInstance) {}
+
+  private absorb(res: { headers: Record<string, unknown> }): void {
+    const sc = res.headers['set-cookie'];
+    const list = sc === undefined ? [] : Array.isArray(sc) ? sc : [sc];
+    for (const raw of list as string[]) {
+      const first = String(raw).split(';')[0];
+      const idx = first.indexOf('=');
+      if (idx === -1) continue;
+      const name = first.slice(0, idx).trim();
+      const value = first.slice(idx + 1).trim();
+      if (value === '') this.cookies.delete(name);
+      else this.cookies.set(name, value);
+    }
+  }
+
+  private cookieHeader(): string {
+    return [...this.cookies.entries()].map(([k, v]) => `${k}=${v}`).join('; ');
+  }
+
+  async login(adminKey: string): Promise<{ status: number; html: string }> {
+    const get = await this.app.inject({ method: 'GET', url: '/admin/login' });
+    this.absorb(get);
+    const csrf = this.cookies.get(CSRF_COOKIE) ?? '';
+    const post = await this.app.inject({
+      method: 'POST',
+      url: '/admin/login',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        cookie: this.cookieHeader(),
+      },
+      payload: `admin_key=${encodeURIComponent(adminKey)}&_csrf=${encodeURIComponent(csrf)}`,
+    });
+    this.absorb(post);
+    return { status: post.statusCode, html: post.body };
+  }
+
+  async get(url: string): Promise<{ status: number; html: string; headers: Record<string, unknown> }> {
+    const res = await this.app.inject({
+      method: 'GET',
+      url,
+      headers: { cookie: this.cookieHeader() },
+    });
+    return { status: res.statusCode, html: res.body, headers: res.headers };
+  }
+
+  async postForm(
+    url: string,
+    fields: Record<string, string>,
+  ): Promise<{ status: number; html: string; headers: Record<string, unknown> }> {
+    const payload = Object.entries(fields)
+      .map(([k, v]) => `${k}=${encodeURIComponent(v)}`)
+      .join('&');
+    const res = await this.app.inject({
+      method: 'POST',
+      url,
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        cookie: this.cookieHeader(),
+      },
+      payload,
+    });
+    this.absorb(res);
+    return { status: res.statusCode, html: res.body, headers: res.headers };
+  }
+
+  /** CSRF token for a mutation, harvested from the page that hosts its form. */
+  async csrfFrom(url: string): Promise<string> {
+    const page = await this.get(url);
+    return extractCsrf(page.html);
+  }
+
+  hasSession(): boolean {
+    return this.cookies.has(SESSION_COOKIE);
+  }
+}
+
+/** Typed views over the JSON request bodies (vitest runs untypechecked; this keeps tsc honest too). */
+export function asStatusBody(b: Record<string, unknown>): {
+  balena_uuid: string;
+  device_status: string;
+  slot: { state: string; delivery_count: number; delivered_at: string | null };
+  bundle_version: number | null;
+} {
+  return b as unknown as {
+    balena_uuid: string;
+    device_status: string;
+    slot: { state: string; delivery_count: number; delivered_at: string | null };
+    bundle_version: number | null;
+  };
+}
+
+export function asBundleBody(b: Record<string, unknown>): { bundle: IdentityBundle; bundle_version: number } {
+  return b as unknown as { bundle: IdentityBundle; bundle_version: number };
 }
 
 /** All audit rows, oldest first, via raw SQL on the mem DB. */

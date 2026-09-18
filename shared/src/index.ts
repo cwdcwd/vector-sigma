@@ -53,6 +53,18 @@ export const StatusRequestSchema = z.object({
 });
 export type StatusRequest = z.infer<typeof StatusRequestSchema>;
 
+export const RearmRequestSchema = z.object({
+  balena_uuid: z.string().uuid(),
+});
+export type RearmRequest = z.infer<typeof RearmRequestSchema>;
+
+export const RotateRequestSchema = z.object({
+  balena_uuid: z.string().uuid(),
+  /** Full replacement file set; each entry must satisfy BundleFileSchema. */
+  files: z.array(BundleFileSchema).min(1),
+});
+export type RotateRequest = z.infer<typeof RotateRequestSchema>;
+
 export const ApiErrorSchema = z.object({
   error: z.string(),
   reason: z.string().optional(),
@@ -84,4 +96,6 @@ export const REGISTRAR_ROUTES = {
   healthz: '/healthz',
   bootstrap: '/v1/bootstrap',
   status: '/v1/status',
+  reArm: '/v1/re-arm',
+  rotate: '/v1/rotate',
 } as const;
