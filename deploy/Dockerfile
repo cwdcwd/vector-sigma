@@ -22,6 +22,7 @@ RUN npm ci
 COPY shared/ shared/
 COPY registrar/ registrar/
 COPY registrant/ registrant/
+COPY deploy/tsconfig.json deploy/
 COPY deploy/seed/ deploy/seed/
 
 RUN npm run build
