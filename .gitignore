@@ -3,4 +3,4 @@ dist/
 *.tsbuildinfo
 .env
 coverage/
-*.log
+*.log.github/
