@@ -90,6 +90,6 @@ One image (`deploy/Dockerfile`), three entrypoints:
 | device    | `node registrant/dist/index.js`             |
 
 Build context is the repo root (see `.dockerignore`); all three workspaces
-are built by the root npm workspaces install. The container runs as
-non-root `vsigma` (uid 1000) — the device data volume must be writable by
-that uid (compose named volumes are).
+are built by the root npm workspaces install. The container runs as the
+base image's built-in non-root `node` user (uid/gid 1000) — the device data
+volume must be writable by that uid (compose named volumes are).

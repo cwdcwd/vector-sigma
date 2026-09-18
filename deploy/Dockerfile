@@ -31,13 +31,14 @@ RUN npm run build
 EXPOSE 3000
 
 # Non-root runtime user: the ready marker + bundle files live on a volume
-# owned by this uid/gid pair.
-RUN groupadd -g 1000 vsigma && useradd -u 1000 -g 1000 -m -s /usr/sbin/nologin vsigma
+# owned by this uid/gid pair. The official node image already ships a `node`
+# user at uid/gid 1000, so we reuse it — provisioning a second user at the
+# same id can only ever fail (groupadd -g 1000: GID 1000 exists, exit 4).
 # The device data volume mounts here. The mountpoint must exist in the image
-# owned by vsigma: a fresh named volume initializes from the image path's
+# owned by node: a fresh named volume initializes from the image path's
 # ownership (root-owned otherwise — the non-root registrant could not write
 # its bundle).
-RUN mkdir -p /data/agent && chown -R vsigma:vsigma /data/agent
-USER vsigma
+RUN mkdir -p /data/agent && chown -R node:node /data/agent
+USER node
 
 CMD ["node", "registrar/dist/index.js"]
