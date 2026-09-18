@@ -39,12 +39,22 @@ Every release is cut by pushing a git tag:
 - `registrar-v*` → builds a **final** release for the `registrar` fleet
 - `devices-v*` → builds a **final** release for the `devices` fleet
 
-No PR-draft releases. Canaries are done by pinning, not by drafts: pin
-the canary device to the new release via CLI (`balena device pin
-<UUID> <COMMIT>`), verify, then advance the fleet pin deliberately.
-All devices stay pinned to an explicit release; nothing auto-tracks
-`latest` (a fresh fleet's default `latest` tracking is switched off at
-provisioning time by pinning every device to the current release).
+No PR-draft releases. Canaries are done by pinning, not by drafts:
+
+1. The new release is built as **final** by the tag push.
+2. Pin the canary device to it: `balena device pin <UUID> <COMMIT>`
+   (a device pin overrides the fleet target — only that device moves).
+3. Verify on the canary (including the SIGTERM/WAL evidence standard).
+4. Advance the fleet: `balena fleet pin <FLEET_SLUG> <COMMIT>` — every
+   device not itself pinned updates to the pinned release.
+5. Clear the canary's pin so it rejoins fleet policy:
+   `balena device track-fleet <UUID>` — a left-behind device pin keeps
+   that device on the old release and blocks the next canary cycle.
+
+Release policy: the **fleet** is pinned, never the individual devices.
+A fresh balena fleet auto-tracks `latest` — switch that off at
+provisioning time with `balena fleet pin <FLEET_SLUG> <COMMIT>`, so no
+built release deploys without the pin being advanced deliberately.
 
 Tag scheme is per-fleet so either side ships independently: a registrar
 patch never rebuilds or redeploys device apps, and vice versa.
