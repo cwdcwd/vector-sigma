@@ -1,6 +1,5 @@
 import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
 import { IdentityBundleSchema, type IdentityBundle } from '@vector-sigma/shared';
 
 /** Name of the delivered bundle snapshot on the data volume. */
@@ -77,7 +76,10 @@ export class IdentityStore {
       }
     }
 
-    const staging = await mkdtemp(path.join(os.tmpdir(), 'vs-registrant-'));
+    // Stage UNDER the data dir: staging and final targets must share one
+    // filesystem or the tmp+rename apply dies EXDEV (rename(2) cannot cross
+    // devices — dataDir is a volume in real deployments, os.tmpdir() is not).
+    const staging = await mkdtemp(path.join(root, '.staging-'));
     try {
       for (const [i, f] of parsed.data.files.entries()) {
         const target = path.join(root, f.path);
