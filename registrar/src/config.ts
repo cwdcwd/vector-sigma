@@ -12,6 +12,7 @@ const EnvSchema = z.object({
   TRUST_PROXY: boolFromEnv.default('false'),
   RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(900_000),
   RATE_LIMIT_MAX_FAILURES: z.coerce.number().int().positive().default(5),
+  SESSION_SECRET: z.string().min(16).default('vsigma-change-me-session-secret'),
 });
 
 export interface RegistrarConfig {
@@ -22,6 +23,7 @@ export interface RegistrarConfig {
   trustProxy: boolean;
   rateLimitWindowMs: number;
   rateLimitMaxFailures: number;
+  sessionSecret: string;
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): RegistrarConfig {
@@ -39,5 +41,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     trustProxy: e.TRUST_PROXY,
     rateLimitWindowMs: e.RATE_LIMIT_WINDOW_MS,
     rateLimitMaxFailures: e.RATE_LIMIT_MAX_FAILURES,
+    sessionSecret: e.SESSION_SECRET,
   };
 }
