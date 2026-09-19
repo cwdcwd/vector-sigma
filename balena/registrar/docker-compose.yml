@@ -1,0 +1,53 @@
+# Vector Sigma registrar-fleet app — registrar + Postgres on balenaOS.
+#
+# Runs on the `registrar` balena fleet (1 device: Raspberry Pi 5,
+# architecture aarch64). This compose is read by the balena supervisor
+# (compose-file v2.4 semantics), NOT plain docker compose: no `${VAR}`
+# substitution — every runtime value reaches services as a balenaCloud
+# dashboard variable (service-scoped). See balena/registrar/README.md
+# for the variable table.
+#
+# Cross-fleet reachability: each balena fleet is its own VPN — devices
+# on the devices fleet CANNOT resolve this device over balena's
+# internal network. The registrar therefore publishes :3000 on the
+# device's LAN interfaces; devices-fleet devices reach it via
+# REGISTRAR_URL=http://<this-device-LAN-IP>:3000. TLS and public
+# ingress are deliberately out of scope (spec: off-LAN deployments
+# TAGGED FOR LATER REVIEW) — the registrar sits on a trusted LAN only.
+#
+# Secrets posture: no secrets in image layers or this file.
+# POSTGRES_* and SESSION_SECRET are service-scoped balena variables.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # pg_isready only probes server acceptance — it does not need a
+      # valid user, so this stays correct whatever POSTGRES_USER is.
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+    stop_grace_period: 60s
+    stop_signal: SIGTERM
+    restart: always
+
+  registrar:
+    build:
+      context: ./registrar
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    stop_grace_period: 60s
+    stop_signal: SIGTERM
+    restart: always
+
+volumes:
+  pgdata:

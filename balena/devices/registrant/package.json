@@ -1,0 +1,25 @@
+{
+  "name": "@vector-sigma/registrant",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "workspaces": [
+    "shared"
+  ],
+  "scripts": {
+    "build": "npm run build -w @vector-sigma/shared && tsc -p tsconfig.json",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@vector-sigma/shared": "*",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.5",
+    "typescript": "5.9.3"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
