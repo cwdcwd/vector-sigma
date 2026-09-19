@@ -27,16 +27,34 @@ pass() { PASS=$((PASS+1)); printf '[e2e] PASS %s — %s\n' "$1" "$2"; }
 fail() { FAIL=$((FAIL+1)); printf '[e2e] FAIL %s — %s\n' "$1" "$2"; }
 expect() { if [ "$2" = "$3" ]; then pass "$1" "got $2"; else fail "$1" "got $2, want $3"; fi; }
 
-# M2: trap/ERR cleanup — a failed run tears down its own stack
+# M2: trap/EXIT cleanup — a failed --up run tears down its own stack.
+# EXIT trap fires on all exit paths (exit N, -e abort, normal return);
+# ERR trap misses bare exit calls and in-function -e aborts without set -E.
+# Scoped to --up mode only: assert-only runs against an operator's stack
+# must not destroy evidence on first red AC.
 CLEANUP_DONE=false
+STACK_OWNER=false   # true only when this run did --up (owns the stack)
 cleanup_on_failure() {
-  if [ "$CLEANUP_DONE" = "true" ]; then return; fi
+  local rc=$?
+  if [ "$CLEANUP_DONE" = "true" ]; then return $rc; fi
   CLEANUP_DONE=true
+  if [ "$rc" -eq 0 ]; then return 0; fi
+  if [ "$STACK_OWNER" != "true" ]; then
+    note "non-zero exit ($rc) but this run does not own the stack — skipping teardown"
+    return $rc
+  fi
   echo
-  note "ERR trap triggered — tearing down stack to avoid orphan containers..."
-  $COMPOSE down -v >/dev/null 2>&1 || true
+  note "EXIT trap triggered (rc=$rc) — tearing down stack to avoid orphan containers..."
+  local down_rc=0
+  $COMPOSE down -v 2>&1 || down_rc=$?
+  if [ "$down_rc" -ne 0 ]; then
+    note "teardown exited $down_rc — partial cleanup possible"
+  else
+    note "teardown complete"
+  fi
+  return $rc
 }
-trap 'cleanup_on_failure' ERR
+trap 'cleanup_on_failure' EXIT
 
 psql_count() { # psql_count <sql-where-fragment> — count rows in delivery_log
   $COMPOSE exec -T postgres psql -U "$PG_USER" -d "$PG_DB" -tA \
@@ -64,6 +82,7 @@ wait_marker() { # wait for the device container to write the ready marker (up to
 # ---- lifecycle ----------------------------------------------------------------
 
 stack_up() {
+  STACK_OWNER=true  # This run owns the stack — enable auto-teardown on failure
   note "fresh stack: down -v, then build + up (project $PROJECT)..."
   $COMPOSE down -v >/dev/null 2>&1 || true
   $COMPOSE up -d --build || { note "compose up failed"; exit 1; }
@@ -97,10 +116,13 @@ ac2_replay_425() {
     -H "Authorization: Bearer $E2E_DEVICE_KEY" -H 'Content-Type: application/json' \
     -d "{\"balena_uuid\":\"$E2E_DEVICE_UUID\"}")"
   expect "AC2 replay status" "$code" "425"
+  # M1: guard the grep — missing Retry-After header is the defect this assertion
+  # exists to catch; unguarded grep -i exits 1 when not found, which -e kills
+  # before the fail() can record the FAIL. Guarded capture lets the assertion run.
   rh="$(curl -s -D - -o /dev/null -X POST "$BASE_URL/v1/bootstrap" \
-    -H "Authorization: Bearer $E2E_DEVICE_KEY" -H 'Content-Type: application/json' \
-    -d "{\"balena_uuid\":\"$E2E_DEVICE_UUID\"}" | tr -d '\r' | grep -i '^retry-after:' | cut -d' ' -f2)"
-  rb="$(node -e "const b=require('/tmp/e2e-body.json');console.log(b.retry_after_seconds ?? '')" 2>/dev/null)"
+    -H "Authorization: Bearer ***" -H 'Content-Type: application/json' \
+    -d "{\"balena_uuid\":\"$E2E_DEVICE_UUID\"}" | tr -d '\r' | grep -i '^retry-after:' | cut -d' ' -f2)" || rh=""
+  rb="$(node -e "const b=require('/tmp/e2e-body.json');console.log(b.retry_after_seconds ?? '')" 2>/dev/null)" || rb=""
   if [ -n "$rh" ] && [ "$rh" -gt 0 ] 2>/dev/null; then
     pass "AC2 Retry-After header" "$rh s"
   else
@@ -171,6 +193,9 @@ ac5_audit_complete() {
 ac6_volume_state() {
   note "AC6: bundle applied on the data volume (0600 modes, marker, contents)"
   local out
+  # M1: guard the docker exec — inspector failure (container down, node crash, etc.)
+  # is exactly what the assertion exists to catch; unguarded exits 1, -e kills before
+  # fail() can record. Guarded capture + empty check lets the FAIL record.
   out="$(docker exec "$PROJECT-device-1" node -e "
     const fs=require('fs');
     const stat=p=>{try{return fs.statSync('/data/agent/'+p)}catch{return null}};
@@ -183,7 +208,7 @@ ac6_volume_state() {
       agentEnv: read('config/agent.env'),
       secretsEnv: read('config/secrets.env')
     }));
-  " 2>/dev/null)"
+  " 2>/dev/null)" || out=""
   if [ -z "$out" ]; then fail AC6 "inspector produced no output"; return; fi
   node -e '
     const d = JSON.parse(process.argv[1]);

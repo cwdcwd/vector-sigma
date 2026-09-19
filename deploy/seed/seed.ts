@@ -48,7 +48,7 @@ function wait(ms: number): Promise<void> {
 /**
  * M3: Retry-with-backoff helper for DB connection.
  * Attempts up to `maxAttempts` times, waiting `delayMs` between failures.
- * Returns the connected client or throws the last error.
+ * Succeeds silently on connect; throws the last error on exhaustion.
  */
 async function connectWithRetry(
   client: Client,
@@ -62,8 +62,10 @@ async function connectWithRetry(
       return;
     } catch (err) {
       lastError = err;
-      console.log(`[seed] db not ready (attempt ${attempt}/${maxAttempts}), retrying in ${delayMs}ms...`);
-      await wait(delayMs);
+      if (attempt < maxAttempts) {
+        console.log(`[seed] db not ready (attempt ${attempt}/${maxAttempts}), retrying in ${delayMs}ms...`);
+        await wait(delayMs);
+      }
     }
   }
   throw lastError;
