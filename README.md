@@ -54,7 +54,12 @@ docs/         # engineering spec + balena architecture
 Registrar skeleton, registrant, admin console, and the self-host deploy
 example + simulated-device E2E are merged. Next: the two-fleet balena
 deployment ([docs/balena-architecture.md](docs/balena-architecture.md))
-and its GitHub Actions pipelines.
+and its GitHub Actions pipelines — the **devices-fleet app ships in this
+repo** ([balena/devices/](balena/devices/README.md)), with the owner
+runbook ([docs/balena-devices-runbook.md](docs/balena-devices-runbook.md))
+and canary checklist
+([docs/balena-devices-canary-checklist.md](docs/balena-devices-canary-checklist.md));
+the registrar-fleet app is a separate deliverable.
 
 Engineering spec: [docs/engineering-spec.md](docs/engineering-spec.md).
 

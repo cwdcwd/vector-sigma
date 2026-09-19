@@ -107,6 +107,31 @@ describe('config', () => {
   it('rejects invalid env with a field list', () => {
     expect(() => loadConfig({})).toThrow(/invalid registrant configuration/);
   });
+
+  // balena injects BALENA_DEVICE_UUID UNDASHED (32 hex chars — the live
+  // fleet shows b1e516d9cf23c6bd0b474edae9ec41e6). zod's .uuid() rejects
+  // that form, so config load would crash-loop a real device at boot.
+  // Regression: the platform value is normalized to canonical dashed
+  // form before it reaches the registrar API contract.
+  it('normalizes the undashed balena platform UUID to dashed form', () => {
+    const c = loadConfig({
+      BALENA_DEVICE_UUID: 'b1e516d9cf23c6bd0b474edae9ec41e6',
+      REGISTRAR_URL: 'https://registrar.example.com',
+      REGISTRAR_KEY: 'k-1234567890abcdef',
+    });
+    expect(c.balenaDeviceUuid).toBe(
+      'b1e516d9-cf23-c6bd-0b47-4edae9ec41e6',
+    );
+  });
+
+  it('still accepts the dashed form unchanged', () => {
+    const c = loadConfig({
+      BALENA_DEVICE_UUID: '123e4567-e89b-12d3-a456-426614174000',
+      REGISTRAR_URL: 'https://registrar.example.com',
+      REGISTRAR_KEY: 'k-1234567890abcdef',
+    });
+    expect(c.balenaDeviceUuid).toBe('123e4567-e89b-12d3-a456-426614174000');
+  });
 });
 
 describe('identity store', () => {
