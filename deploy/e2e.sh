@@ -41,8 +41,8 @@ wait_audit_count() { # wait_audit_count <where> <min> — poll up to 20s
   return 0
 }
 
-wait_marker() { # wait for the device container to write the ready marker (up to 180s)
-  local deadline=$((SECONDS + 180))
+wait_marker() { # wait for the device container to write the ready marker (up to 300s)
+  local deadline=$((SECONDS + 300))
   until docker exec "$PROJECT-device-1" test -f /data/agent/ready.marker 2>/dev/null; do
     [ $SECONDS -ge $deadline ] && return 1
     sleep 2
@@ -114,10 +114,14 @@ ac3_rearm_redelivers() {
     return
   fi
   # Which path did the real client take? (425→retry loop vs window already elapsed)
+  # The retry path is REQUIRED: the rearm window (SEED_REARM_SECONDS) is sized
+  # so the wiped device's bootstrap call must land inside it. If the window
+  # elapsed instead, the 425/Retry-After retry loop was never exercised and
+  # AC3 fails loudly rather than passing vacuously.
   if docker logs "$PROJECT-device-1" 2>&1 | grep -q 'slot not armed yet; retrying'; then
     pass "AC3 rearm path" "device hit 425, honored Retry-After, re-delivered"
   else
-    note "AC3 note: window elapsed before device retry (immediate re-delivery)"
+    fail "AC3 rearm path" "window elapsed before device retry — 425 retry loop not exercised (raise SEED_REARM_SECONDS)"
   fi
   if wait_audit_count "outcome='delivered'" 2; then
     pass "AC3 re-delivery audited" "delivered=2 (auto-rearm after window)"
