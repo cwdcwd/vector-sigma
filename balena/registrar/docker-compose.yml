@@ -21,12 +21,24 @@ version: "2.4"
 # ingress are deliberately out of scope (spec: off-LAN deployments
 # TAGGED FOR LATER REVIEW) — the registrar sits on a trusted LAN only.
 #
-# Secrets posture: no secrets in image layers or this file.
-# POSTGRES_* and SESSION_SECRET are service-scoped balena variables.
+# Secrets posture: no secrets in image layers or this file
+# (fleet-ops-f57.8). POSTGRES_USER / POSTGRES_DB / DB_HOST /
+# MIGRATE_ON_START ship here as static structural values; the owner sets
+# only two secrets as balenaCloud dashboard variables: POSTGRES_PASSWORD
+# (fleet-wide, so postgres and registrar see the same value) and
+# SESSION_SECRET (registrar service). Dashboard variables override the
+# static compose environment below.
 
 services:
   postgres:
     image: postgres:16-alpine
+    environment:
+      # Structural, non-secret (fleet-ops-f57.8): the role + database the
+      # postgres image creates at first init of the data volume. The
+      # registrar service carries the SAME values so the URL it builds
+      # from parts cannot disagree with what postgres created.
+      POSTGRES_USER: vsigma
+      POSTGRES_DB: vsigma
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -44,6 +56,17 @@ services:
     build:
       context: ./registrar
       dockerfile: Dockerfile
+    environment:
+      # Structural (fleet-ops-f57.8): the registrar builds DATABASE_URL
+      # from POSTGRES_USER/POSTGRES_PASSWORD/POSTGRES_DB/DB_HOST/DB_PORT
+      # when DATABASE_URL is unset — the owner sets only POSTGRES_PASSWORD
+      # (+ SESSION_SECRET) as balena variables. Same structural values as
+      # the postgres service above so the built URL always agrees with
+      # what postgres created.
+      POSTGRES_USER: vsigma
+      POSTGRES_DB: vsigma
+      DB_HOST: postgres
+      MIGRATE_ON_START: "true"
     ports:
       - "3000:3000"
     healthcheck:
