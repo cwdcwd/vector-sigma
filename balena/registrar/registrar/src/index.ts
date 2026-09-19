@@ -14,6 +14,13 @@ async function main(): Promise<void> {
   if (process.env.MIGRATE_ON_START === 'true') {
     const migrationsFolder = new URL('../drizzle', import.meta.url).pathname;
     await migrate(db, { migrationsFolder });
+  } else {
+    // No default on purpose (fleet-ops-f57.7): absent means migrations are
+    // SKIPPED — say so loudly instead of booting half-configured in silence.
+    console.warn(
+      'MIGRATE_ON_START is not "true" — database migrations were skipped. ' +
+        'Set MIGRATE_ON_START=true as a balena fleet/service variable on the registrar service (see balena/registrar/README.md).',
+    );
   }
 
   const app = buildApp({
