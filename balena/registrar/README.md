@@ -52,8 +52,8 @@ the root lockfile instead.
 | `POSTGRES_USER` | postgres | yes | Postgres superuser name created at first init of the data volume. |
 | `POSTGRES_PASSWORD` | postgres | yes | Postgres password. Device-scoped balena variable. |
 | `POSTGRES_DB` | postgres | yes | Database name. |
-| `SESSION_SECRET` | registrar | yes | Admin-console HMAC session secret (≥16 chars). Device-scoped. |
-| `MIGRATE_ON_START` | registrar | yes | Must be `true` — migrations run on boot. |
+| `SESSION_SECRET` | registrar | **yes — no default** | Admin-console HMAC session secret (≥16 chars). Device-scoped. **The registrar refuses to boot without it** — missing or short fails startup with the variable name; there is no fallback secret. Set it on the fleet before the first `registrar-v*` release ships. |
+| `MIGRATE_ON_START` | registrar | **set to `true` on the registrar fleet** | `true` = migrations run on boot. Absent/false = migrations are **skipped** with a WARN log — the API still boots, but against whatever schema the volume last had. The registrar fleet runs with `true`. |
 | `PORT` | registrar | no | Defaults to 3000. |
 | `LOG_LEVEL` | registrar | no | Defaults to `info`. |
 | `TRUST_PROXY` | registrar | no | `true` only if a reverse proxy sits in front (not in this LAN-only topology). |
