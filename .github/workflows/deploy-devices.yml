@@ -1,0 +1,27 @@
+name: Deploy devices fleet
+
+# Tags-only releases (owner ruling 2026-09-18): pushing a devices-v*
+# tag builds a FINAL release on balena remote builders. No drafts.
+# Canary discipline: pin the canary device to the new release via
+# `balena device pin <UUID> <COMMIT>`, verify (incl. SIGTERM/WAL
+# evidence), advance with `balena fleet pin <FLEET> <COMMIT>`, then
+# clear the canary pin (`balena device track-fleet <UUID>`) so it
+# rejoins fleet policy. The FLEET is pinned; devices track fleet policy.
+on:
+  push:
+    tags: ["devices-v*"]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: balena-io/deploy-to-balena-action@v2.3.1
+        id: deploy
+        with:
+          balena_token: ${{ secrets.BALENA_TOKEN }}
+          fleet: ${{ vars.DEVICES_FLEET }}
+          source: balena/devices
+          environment: balena-cloud.com
+      - name: Release id
+        run: echo "Built release ${{ steps.deploy.outputs.release_id }}"
