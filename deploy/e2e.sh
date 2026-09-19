@@ -120,7 +120,7 @@ ac2_replay_425() {
   # exists to catch; unguarded grep -i exits 1 when not found, which -e kills
   # before the fail() can record the FAIL. Guarded capture lets the assertion run.
   rh="$(curl -s -D - -o /dev/null -X POST "$BASE_URL/v1/bootstrap" \
-    -H "Authorization: Bearer ***" -H 'Content-Type: application/json' \
+    -H "Authorization: Bearer $E2E_DEVICE_KEY" -H 'Content-Type: application/json' \
     -d "{\"balena_uuid\":\"$E2E_DEVICE_UUID\"}" | tr -d '\r' | grep -i '^retry-after:' | cut -d' ' -f2)" || rh=""
   rb="$(node -e "const b=require('/tmp/e2e-body.json');console.log(b.retry_after_seconds ?? '')" 2>/dev/null)" || rb=""
   if [ -n "$rh" ] && [ "$rh" -gt 0 ] 2>/dev/null; then
