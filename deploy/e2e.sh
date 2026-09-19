@@ -10,7 +10,7 @@
 # Every acceptance criterion is asserted in order; PASS/FAIL lines are the
 # evidence transcript. Exit 0 only when every AC passes.
 
-set -uo pipefail
+set -euo pipefail
 
 PROJECT="vector-sigma-e2e"
 ENV_FILE="deploy/.env.e2e"
@@ -26,6 +26,17 @@ note() { printf '[e2e] %s\n' "$*"; }
 pass() { PASS=$((PASS+1)); printf '[e2e] PASS %s — %s\n' "$1" "$2"; }
 fail() { FAIL=$((FAIL+1)); printf '[e2e] FAIL %s — %s\n' "$1" "$2"; }
 expect() { if [ "$2" = "$3" ]; then pass "$1" "got $2"; else fail "$1" "got $2, want $3"; fi; }
+
+# M2: trap/ERR cleanup — a failed run tears down its own stack
+CLEANUP_DONE=false
+cleanup_on_failure() {
+  if [ "$CLEANUP_DONE" = "true" ]; then return; fi
+  CLEANUP_DONE=true
+  echo
+  note "ERR trap triggered — tearing down stack to avoid orphan containers..."
+  $COMPOSE down -v >/dev/null 2>&1 || true
+}
+trap 'cleanup_on_failure' ERR
 
 psql_count() { # psql_count <sql-where-fragment> — count rows in delivery_log
   $COMPOSE exec -T postgres psql -U "$PG_USER" -d "$PG_DB" -tA \

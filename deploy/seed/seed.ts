@@ -45,6 +45,30 @@ function wait(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/**
+ * M3: Retry-with-backoff helper for DB connection.
+ * Attempts up to `maxAttempts` times, waiting `delayMs` between failures.
+ * Returns the connected client or throws the last error.
+ */
+async function connectWithRetry(
+  client: Client,
+  maxAttempts: number,
+  delayMs: number,
+): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await client.connect();
+      return;
+    } catch (err) {
+      lastError = err;
+      console.log(`[seed] db not ready (attempt ${attempt}/${maxAttempts}), retrying in ${delayMs}ms...`);
+      await wait(delayMs);
+    }
+  }
+  throw lastError;
+}
+
 /** The deterministic bundle the E2E device receives. */
 function e2eBundle(): IdentityBundle {
   return {
@@ -60,18 +84,9 @@ function e2eBundle(): IdentityBundle {
 
 async function main(): Promise<void> {
   // Schema gate: registrar (migrate-on-start) must be up first; the compose
-  // healthcheck mostly ensures this, the loop makes it structural.
+  // healthcheck mostly ensures this, connectWithRetry makes it structural.
   const client = new Client({ connectionString: env.databaseUrl });
-  for (let attempt = 1; ; attempt++) {
-    try {
-      await client.connect();
-      break;
-    } catch (err) {
-      if (attempt >= 30) throw err;
-      console.log(`[seed] db not ready (attempt ${attempt}), retrying...`);
-      await wait(2000);
-    }
-  }
+  await connectWithRetry(client, 30, 2000);
   const db = drizzle(client);
 
   const hash = await hashKey(env.key);
