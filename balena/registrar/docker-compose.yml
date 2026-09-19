@@ -3,9 +3,15 @@
 # Runs on the `registrar` balena fleet (1 device: Raspberry Pi 5,
 # architecture aarch64). This compose is read by the balena supervisor
 # (compose-file v2.4 semantics), NOT plain docker compose: no `${VAR}`
-# substitution — every runtime value reaches services as a balenaCloud
-# dashboard variable (service-scoped). See balena/registrar/README.md
+# substitution — every runtime value reaches services as a
+# balenaCloud dashboard variable (service-scoped). See balena/registrar/README.md
 # for the variable table.
+#
+# NOTE: the explicit `version: "2.4"` below is load-bearing — without it
+# the balena CLI falls back to the legacy v1 schema and rejects every
+# modern service key with "data/services should NOT have additional
+# properties" (verified against the CLI's bundled ajv schema, v24.x).
+version: "2.4"
 #
 # Cross-fleet reachability: each balena fleet is its own VPN — devices
 # on the devices fleet CANNOT resolve this device over balena's

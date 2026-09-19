@@ -7,6 +7,12 @@
 # balenaCloud dashboard variable (device or fleet scope). See
 # balena/devices/README.md and docs/balena-devices-runbook.md.
 #
+# NOTE: the explicit `version: "2.4"` below is load-bearing — without it
+# the balena CLI falls back to the legacy v1 schema and rejects every
+# modern service key with "data/services should NOT have additional
+# properties" (verified against the CLI's bundled ajv schema, v24.x).
+version: "2.4"
+#
 # No secrets in image layers, build args, or this file. The per-device
 # REGISTRAR_KEY is a device-scoped balena variable; BALENA_DEVICE_UUID is
 # injected by the platform automatically.
