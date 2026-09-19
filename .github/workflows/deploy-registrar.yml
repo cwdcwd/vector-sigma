@@ -1,0 +1,29 @@
+name: Deploy registrar fleet
+
+# Tags-only releases (owner ruling 2026-09-18): pushing a registrar-v*
+# tag builds a FINAL release on balena remote builders. No drafts.
+# Advance pins manually: canary first, verify, then the fleet.
+on:
+  push:
+    tags: ["registrar-v*"]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Guard — source dir must exist
+        run: |
+          test -d balena/registrar || { \
+            echo "::error::balena/registrar/ does not exist yet (fleet-ops-f57.6 builds it)."; \
+            echo "::error::Do not push registrar-v* tags until the app dir lands."; \
+            exit 1; }
+      - uses: balena-io/deploy-to-balena-action@v2.3.1
+        id: deploy
+        with:
+          balena_token: ${{ secrets.BALENA_TOKEN }}
+          fleet: ${{ vars.REGISTRAR_FLEET }}
+          source: balena/registrar
+          environment: balena-cloud.com
+      - name: Release id
+        run: echo "Built release ${{ steps.deploy.outputs.release_id }}"
