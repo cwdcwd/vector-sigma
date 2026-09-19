@@ -51,8 +51,65 @@ describe('registrar config — SESSION_SECRET is fail-loud', () => {
     expect(c.rateLimitMaxFailures).toBe(5);
   });
 
-  it('still requires DATABASE_URL with no default', () => {
-    const { DATABASE_URL: _omitted, ...envWithoutDb } = validEnv;
-    expect(() => loadConfig(envWithoutDb)).toThrow(/invalid registrar configuration/);
+});
+
+/**
+ * DATABASE_URL built from parts (fleet-ops-f57.8).
+ *
+ * Owner ruling: "The db URL should really be based on the docker host
+ * name of the container in the composition. There should actually be
+ * very little set from the outside by myself." DATABASE_URL becomes an
+ * optional whole-URL override; when absent the registrar builds it from
+ * DB_HOST (default 'postgres' — the compose service name), DB_PORT
+ * (default 5432), POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB, and
+ * fails startup naming every missing part plus the balena fix path.
+ */
+describe('registrar config — DATABASE_URL built from parts (fleet-ops-f57.8)', () => {
+  const secret = 'a-strong-random-session-secret-0123456789';
+  const partEnv = {
+    POSTGRES_USER: 'vsigma',
+    POSTGRES_PASSWORD: 's3cret-pw',
+    POSTGRES_DB: 'vsigma',
+    SESSION_SECRET: secret,
+  };
+
+  it('builds the database URL from parts when DATABASE_URL is absent', () => {
+    const c = loadConfig(partEnv);
+    expect(c.databaseUrl).toBe('postgres://vsigma:s3cret-pw@postgres:5432/vsigma');
+  });
+
+  it('URL-encodes user/password and honors DB_HOST/DB_PORT overrides', () => {
+    const c = loadConfig({
+      ...partEnv,
+      DB_HOST: 'db.internal',
+      DB_PORT: '5433',
+      POSTGRES_USER: 'u ser',
+      POSTGRES_PASSWORD: 'p@ss:w/rd',
+    });
+    expect(c.databaseUrl).toBe('postgres://u%20ser:p%40ss%3Aw%2Frd@db.internal:5433/vsigma');
+  });
+
+  it('fails loud naming each missing part and the balena fix path', () => {
+    const { POSTGRES_USER: _u, POSTGRES_PASSWORD: _p, ...env } = partEnv;
+    expect(() => loadConfig(env)).toThrow(
+      /DATABASE_URL is unset and required part\(s\) are missing: POSTGRES_USER, POSTGRES_PASSWORD — set each as a balena fleet\/service variable/,
+    );
+  });
+
+  it('treats empty or whitespace-only parts as missing', () => {
+    expect(() => loadConfig({ ...partEnv, POSTGRES_PASSWORD: '   ' })).toThrow(
+      /required part\(s\) are missing: POSTGRES_PASSWORD/,
+    );
+  });
+
+  it('DATABASE_URL set overrides the parts entirely', () => {
+    const c = loadConfig({ ...partEnv, DATABASE_URL: 'postgres://external.example.com:5432/other' });
+    expect(c.databaseUrl).toBe('postgres://external.example.com:5432/other');
+  });
+
+  it('DATABASE_URL set but empty fails loud naming the variable', () => {
+    expect(() => loadConfig({ ...partEnv, DATABASE_URL: '   ' })).toThrow(
+      /DATABASE_URL is set but empty/,
+    );
   });
 });

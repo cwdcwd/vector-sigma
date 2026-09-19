@@ -44,23 +44,51 @@ dev tooling the image does not need, and `workspaces` is scoped to the
 vendored `shared/`); the drift test pins its dependency versions to
 the root lockfile instead.
 
-## Runtime configuration (service-scoped balena variables)
+## Runtime configuration
+
+Owner-set surface is **two secrets** (lazybaer ruling, 2026-09-19:
+"There should actually be very little set from the outside by
+myself"). Everything structural ships in the compose file as static
+environment entries; balenaCloud **dashboard variables override** the
+compose `environment:` values for the same variable name (the balena
+supervisor applies dashboard values on top of the per-release compose
+env).
+
+### Owner-set (balenaCloud dashboard variables)
 
 | Variable | Service | Required | Purpose |
 |---|---|---|---|
-| `DATABASE_URL` | registrar | yes | `postgres://<user>:<password>@postgres:5432/<db>` — same Postgres role/database values the postgres service creates. |
-| `POSTGRES_USER` | postgres | yes | Postgres superuser name created at first init of the data volume. |
-| `POSTGRES_PASSWORD` | postgres | yes | Postgres password. Device-scoped balena variable. |
-| `POSTGRES_DB` | postgres | yes | Database name. |
-| `SESSION_SECRET` | registrar | **yes — no default** | Admin-console HMAC session secret (≥16 chars). Device-scoped. **The registrar refuses to boot without it** — missing or short fails startup with the variable name; there is no fallback secret. Set it on the fleet before the first `registrar-v*` release ships. |
-| `MIGRATE_ON_START` | registrar | **set to `true` on the registrar fleet** | `true` = migrations run on boot. Absent/false = migrations are **skipped** with a WARN log — the API still boots, but against whatever schema the volume last had. The registrar fleet runs with `true`. |
-| `PORT` | registrar | no | Defaults to 3000. |
-| `LOG_LEVEL` | registrar | no | Defaults to `info`. |
-| `TRUST_PROXY` | registrar | no | `true` only if a reverse proxy sits in front (not in this LAN-only topology). |
+| `POSTGRES_PASSWORD` | **fleet-wide** | **yes — no default** | Postgres role password. Fleet-scoped: both the postgres service (role creation) and the registrar service (URL part) must see the same value. **No secrets in compose or image layers.** |
+| `SESSION_SECRET` | registrar | **yes — no default** | Admin-console HMAC session secret (≥16 chars). **The registrar refuses to boot without it** — missing or short fails startup with the variable name; there is no fallback secret. Set it on the fleet before the first `registrar-v*` release ships. |
 
-The postgres service variables must agree with `DATABASE_URL`. The
-registrar's admin console + API ride the same port (3000), published on
-the device LAN interfaces.
+### Static in compose (override only if you know why)
+
+| Variable | Service | Value | Purpose |
+|---|---|---|---|
+| `POSTGRES_USER` | postgres + registrar | `vsigma` | Postgres role name created at first init of the data volume. |
+| `POSTGRES_DB` | postgres + registrar | `vsigma` | Database name. |
+| `DB_HOST` | registrar | `postgres` | Host the registrar connects to — the compose service name, deterministic within the composition (f57.8: the db URL is based on the docker host name of the container). |
+| `DB_PORT` | registrar | (default 5432) | Postgres port; override via dashboard variable if non-standard. |
+| `MIGRATE_ON_START` | registrar | `true` | `true` = migrations run on boot. Absent/false = migrations are **skipped** with a WARN log — the API still boots, but against whatever schema the volume last had. |
+
+### Optional registrar overrides (dashboard variables)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `DATABASE_URL` | *(unset — built from parts)* | Whole-URL override; wins over the parts entirely. Set only to point the registrar at an external Postgres. |
+| `PORT` | 3000 | Registrar listen port. |
+| `LOG_LEVEL` | `info` | Fastify log level. |
+| `TRUST_PROXY` | `false` | `true` only if a reverse proxy sits in front (not in this LAN-only topology). |
+
+When `DATABASE_URL` is unset, the registrar builds it from
+`POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` / `DB_HOST` /
+`DB_PORT`; any missing part fails startup naming the variable(s) and
+the fix path (balena fleet/service variable). The compose file pins
+the structural parts, so the owner only ever supplies the password
+secret.
+
+The registrar's admin console + API ride the same port (3000),
+published on the device LAN interfaces.
 
 ## Failure domain & recovery
 
