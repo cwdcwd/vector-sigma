@@ -20,4 +20,9 @@ jobs:
           set -euo pipefail
           UUID="${{ inputs.uuid }}"
           SVC="${{ inputs.service }}"
-          npx --yes balena-cli@release balena logs "$UUID" --lines 100 ${SVC:+--service "$SVC"} 2>&1 | sed -E 's/(Bearer|token|api_?key)[^ ]*/[REDACTED]/gi'
+          # Redact credential-shaped values from CLI output before they land
+          # in the workflow log: 'Bearer <value>', token=<value>, api_key=<value>.
+          # [: =]+ consumes the separator so the VALUE is redacted, not just the
+          # keyword (review finding on PR #14: '[^ ]*' alone stops at the space
+          # after 'Bearer' and leaves the token visible).
+          npx --yes balena-cli@release balena logs "$UUID" --lines 100 ${SVC:+--service "$SVC"} 2>&1 | sed -E 's/(Bearer|token|api_?key)[: =]+[^ ]+/[REDACTED]/gi'
