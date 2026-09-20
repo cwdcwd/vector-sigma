@@ -103,6 +103,15 @@ CREATE TABLE admin_keys (
 - Pages: devices dashboard, device detail, bundle editor, new device,
   re-arm, revoke/activate, per-device key regeneration (shows once),
   read-only audit log.
+- Bundle editor (structured, fleet-ops-f57.11): named fields (agent name,
+  model route, gateway API key, extra env, SOUL contents, A2A identity key
+  + trusted peers, Slack bot token, GitHub App PEM) render to canonical
+  files (config/agent.env, SOUL.md, config/a2a.json, config/secrets.env,
+  config/github-app.pem) via fixed templates with field-level merge
+  semantics — a blank field keeps its existing line even when several
+  fields share one file. A raw file upload with the same canonical name
+  replaces the rendered section and the form marks the field
+  "overridden by uploaded file".
 - Secret fields write-only: masked on display, never rendered into HTML;
   blank means keep existing.
 - Bundle save = version bump + slot armed + audit row — same code path

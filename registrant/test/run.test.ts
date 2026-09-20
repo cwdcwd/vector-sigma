@@ -43,6 +43,7 @@ function testConfig(dataDir: string) {
     dataDir,
     clockGateTimeoutMs: 60_000,
     watchIntervalMs: 20,
+    gracePollIntervalMs: 20,
     logLevel: 'silent',
   };
 }

@@ -1,3 +1,5 @@
+import type { StructuredFields } from './structured-fields.js';
+
 /**
  * HTML rendering for the admin console. Zero-framework, server-rendered,
  * per spec. Every dynamic value passes through esc() at its interpolation
@@ -204,7 +206,43 @@ export interface EditorView {
   version: number | null;
   csrfToken: string;
   error?: string;
+  /**
+   * Non-secret pre-fill values for the structured section (f57.11),
+   * derived server-side from the current bundle. SECRET fields are never
+   * pre-filled — their inputs render blank (write-only).
+   */
+  preFill?: StructuredFields;
 }
+
+/**
+ * Structured editor section rows (f57.11). One row per owner-ruled field;
+ * `secret` marks write-only inputs (blank = keep existing); `canonical`
+ * names the file the field renders into (displayed to the operator);
+ * `overridden` is computed by the caller from the existing bundle's file
+ * paths (an existing bundle file with the same canonical path means a raw
+ * upload previously won — the form warns, it does not silently render).
+ */
+export interface StructuredFieldRow {
+  name: string;
+  label: string;
+  canonical: string;
+  secret: boolean;
+  multiline: boolean;
+  placeholder: string;
+  hint?: string;
+}
+
+export const STRUCTURED_FIELD_ROWS: StructuredFieldRow[] = [
+  { name: 'agent_name', label: 'Agent name', canonical: 'config/agent.env', secret: false, multiline: false, placeholder: 'doombot', hint: 'Rendered as the AGENT_NAME= line of config/agent.env.' },
+  { name: 'model_route', label: 'Model route', canonical: 'config/agent.env', secret: false, multiline: false, placeholder: 'openai/gpt-5.2' },
+  { name: 'gateway_api_key', label: 'Gateway API key', canonical: 'config/agent.env', secret: true, multiline: false, placeholder: 'sk-…', hint: 'Write-only: blank keeps the existing value.' },
+  { name: 'extra_env', label: 'Extra env (KEY=VALUE lines)', canonical: 'config/agent.env', secret: false, multiline: true, placeholder: 'LOG_LEVEL=debug\nA2A_UUID=…' },
+  { name: 'soul_contents', label: 'SOUL.md contents', canonical: 'SOUL.md', secret: false, multiline: true, placeholder: '# SOUL\n\nYou are …' },
+  { name: 'a2a_identity_key', label: 'A2A identity key', canonical: 'config/a2a.json', secret: true, multiline: false, placeholder: 'a2a-key…', hint: 'Write-only: blank keeps the existing value.' },
+  { name: 'a2a_trusted_peers', label: 'A2A trusted peers', canonical: 'config/a2a.json', secret: false, multiline: true, placeholder: 'ultronbot\nkangbot' },
+  { name: 'slack_bot_token', label: 'Slack bot token', canonical: 'config/secrets.env', secret: true, multiline: false, placeholder: 'xoxb-…', hint: 'Write-only: blank keeps the existing value.' },
+  { name: 'github_app_pem', label: 'GitHub App PEM', canonical: 'config/github-app.pem', secret: true, multiline: true, placeholder: '-----BEGIN RSA PRIVATE KEY-----\n…\n-----END RSA PRIVATE KEY-----', hint: 'Write-only: blank keeps the existing value.' },
+];
 
 export function bundleEditorPage(v: EditorView): string {
   const existingRows = v.existing
@@ -218,6 +256,24 @@ export function bundleEditorPage(v: EditorView): string {
 </fieldset>`,
     )
     .join('\n');
+  const structuredRows = STRUCTURED_FIELD_ROWS.map((row) => {
+    const overridden = v.existing.some((f) => f.path === row.canonical);
+    // Non-secret fields pre-fill with the current value (AC4: only secret
+    // fields are write-only); secret inputs always render blank. The
+    // preFill map itself is derived server-side by buildFormPreFill with
+    // a SECRETISH filter — secret-looking keys from raw uploads never
+    // reach the page even through the non-secret fields.
+    const current = row.secret ? '' : (v.preFill?.[row.name as keyof StructuredFields] ?? '');
+    const input = row.multiline
+      ? `<textarea name="structured_${esc(row.name)}" rows="4" data-path="${esc(row.canonical)}" placeholder="${esc(row.placeholder)}">${esc(current)}</textarea>`
+      : `<input type="${row.secret ? 'password' : 'text'}" name="structured_${esc(row.name)}" data-path="${esc(row.canonical)}" placeholder="${esc(row.placeholder)}" value="${esc(current)}" autocomplete="off">`;
+    return `<fieldset class="structured-field">
+<legend>${esc(row.label)}</legend>
+<p class="muted">renders to <code>${esc(row.canonical)}</code>${row.secret ? ' · write-only (blank = keep existing)' : ''}${overridden ? ' · <span class="danger">overridden by uploaded file</span>' : ''}</p>
+${input}
+${row.hint ? `<p class="muted">${esc(row.hint)}</p>` : ''}
+</fieldset>`;
+  }).join('\n');
   const newRows = Array.from({ length: 3 })
     .map(
       (_x, i) => `<fieldset class="new-file">
@@ -238,6 +294,11 @@ ${v.error ? `<p class="danger">${esc(v.error)}</p>` : ''}
 <input type="hidden" name="_csrf" value="${esc(v.csrfToken)}">
 <input type="hidden" name="existing_count" value="${v.existing.length}">
 <input type="hidden" name="new_count" value="3">
+<fieldset>
+<legend>Structured identity</legend>
+<p class="muted">Fields below render to their canonical files via fixed templates. A raw file upload with the same canonical name replaces the rendered section.</p>
+${structuredRows}
+</fieldset>
 ${existingRows}
 ${newRows}
 <p><button type="submit">Save bundle</button> <a href="/admin/devices/${esc(v.device.balenaUuid)}">Cancel</a></p>

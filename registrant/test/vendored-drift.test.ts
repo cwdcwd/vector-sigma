@@ -50,6 +50,8 @@ const vendoredFiles = [
   ['registrar/src/rotate.ts', 'balena/registrar/registrar/src/rotate.ts'],
   ['registrar/src/session.ts', 'balena/registrar/registrar/src/session.ts'],
   ['registrar/src/slots.ts', 'balena/registrar/registrar/src/slots.ts'],
+  // f57.11: structured-fields renderer is a registrar source — vendored
+  ['registrar/src/structured-fields.ts', 'balena/registrar/registrar/src/structured-fields.ts'],
   ['registrar/src/db/key-crypto.ts', 'balena/registrar/registrar/src/db/key-crypto.ts'],
   ['registrar/src/db/schema.ts', 'balena/registrar/registrar/src/db/schema.ts'],
   ['registrar/tsconfig.json', 'balena/registrar/registrar/tsconfig.json'],

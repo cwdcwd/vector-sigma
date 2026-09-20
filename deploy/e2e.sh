@@ -20,6 +20,9 @@ PG_USER="$(grep -E '^POSTGRES_USER=' "$ENV_FILE" | cut -d= -f2-)"
 PG_DB="$(grep -E '^POSTGRES_DB=' "$ENV_FILE" | cut -d= -f2-)"
 E2E_DEVICE_UUID="$(grep -E '^E2E_DEVICE_UUID=' "$ENV_FILE" | cut -d= -f2-)"
 E2E_DEVICE_KEY="$(grep -E '^E2E_DEVICE_KEY=' "$ENV_FILE" | cut -d= -f2-)"
+E2E_GRACE_UUID="$(grep -E '^E2E_GRACE_UUID=' "$ENV_FILE" | cut -d= -f2-)"
+E2E_GRACE_KEY="$(grep -E '^E2E_GRACE_KEY=' "$ENV_FILE" | cut -d= -f2-)"
+E2E_ADMIN_KEY="$(grep -E '^E2E_ADMIN_KEY=' "$ENV_FILE" | cut -d= -f2-)"
 
 PASS=0; FAIL=0
 note() { printf '[e2e] %s\n' "$*"; }
@@ -233,6 +236,153 @@ ac6_volume_state() {
   '; then PASS=$((PASS+5)); else FAIL=$((FAIL+5)); fi
 }
 
+# ---- f57.11 ---------------------------------------------------------------------
+
+# AC7: the REAL admin console drives a structured-fields save; the device's
+# NEXT delivery must carry the canonical rendering. This proves the console
+# flow end-to-end (login → CSRF → structured form → single rotate path) and
+# that the rendered files are exactly what the device-side assembly consumes.
+ac7_console_structured_save() {
+  note "AC7: console structured save renders canonical files (f57.11)"
+  # 1. Login: GET /admin/login sets the CSRF cookie; POST with admin key.
+  local jar=/tmp/f5711-cookies.txt csrf
+  rm -f "$jar"
+  csrf="$(curl -s -c "$jar" "$BASE_URL/admin/login" | grep -o 'name="_csrf" value="[^"]*"' | cut -d'"' -f4)"
+  local login_code
+  login_code="$(curl -s -o /dev/null -w '%{http_code}' -b "$jar" -c "$jar" \
+    -X POST "$BASE_URL/admin/login" \
+    --data-urlencode "admin_key=$E2E_ADMIN_KEY" \
+    --data-urlencode "_csrf=$csrf")"
+  expect "AC7 console login" "$login_code" "303"
+  # 2. Structured save on the E2E device: every canonical file gets content.
+  csrf="$(curl -s -b "$jar" "$BASE_URL/admin/devices/$E2E_DEVICE_UUID/bundle" | grep -o 'name="_csrf" value="[^"]*"' | cut -d'"' -f4)"
+  local save_code
+  save_code="$(curl -s -o /dev/null -w '%{http_code}' -b "$jar" -c "$jar" \
+    -X POST "$BASE_URL/admin/devices/$E2E_DEVICE_UUID/bundle" \
+    --data-urlencode "_csrf=$csrf" \
+    --data-urlencode "existing_count=2" \
+    --data-urlencode "new_count=3" \
+    --data-urlencode "existing_path_0=config/agent.env" \
+    --data-urlencode "existing_content_0=" \
+    --data-urlencode "existing_path_1=config/secrets.env" \
+    --data-urlencode "existing_content_1=" \
+    --data-urlencode "structured_agent_name=doombot-e2e" \
+    --data-urlencode "structured_model_route=openai/gpt-5.2" \
+    --data-urlencode "structured_gateway_api_key=sk-e2e-gateway" \
+    --data-urlencode "structured_extra_env=LOG_LEVEL=debug" \
+    --data-urlencode "structured_soul_contents=# E2E Soul" \
+    --data-urlencode "structured_a2a_identity_key=a2a-e2e-key" \
+    --data-urlencode "structured_a2a_trusted_peers=ultronbot
+kangbot" \
+    --data-urlencode "structured_slack_bot_token=xoxb-e2e-slack" \
+    --data-urlencode "structured_github_app_pem=-----BEGIN RSA PRIVATE KEY-----
+e2e-pem
+-----END RSA PRIVATE KEY-----
+")"
+  expect "AC7 structured save status" "$save_code" "303"
+  # 3. Version bumped to 2 via the shared path.
+  local version
+  version="$(curl -s -H "Authorization: Bearer $E2E_DEVICE_KEY" \
+    "$BASE_URL/v1/status?balena_uuid=$E2E_DEVICE_UUID" | node -e "console.log(JSON.parse(require('fs').readFileSync(0,'utf8')).bundle_version ?? '')")"
+  expect "AC7 version bumped via console save" "$version" "2"
+  # 4. Wipe the device volume + restart: the re-armed slot re-delivers the
+  #    structured bundle; the volume must carry the rendered canonicals.
+  $COMPOSE rm -f -s device >/dev/null 2>&1 || $COMPOSE stop device >/dev/null 2>&1 || true
+  docker volume rm -f "${PROJECT}_device-data" >/dev/null 2>&1 || true
+  $COMPOSE up -d --no-deps device || { fail AC7 "device re-up failed"; return; }
+  if ! wait_marker; then
+    fail AC7 "device never became ready after structured re-delivery"
+    docker logs "$PROJECT-device-1" 2>&1 | tail -30
+    return
+  fi
+  local out
+  out="$(docker exec "$PROJECT-device-1" node -e "
+    const read=p=>{try{return require('fs').readFileSync('/data/agent/'+p,'utf8')}catch{return 'absent'}};
+    process.stdout.write(JSON.stringify({
+      agentEnv: read('config/agent.env'),
+      secretsEnv: read('config/secrets.env'),
+      soul: read('SOUL.md'),
+      a2a: read('config/a2a.json'),
+      pem: read('config/github-app.pem')
+    }));
+  " 2>/dev/null)" || out=""
+  if [ -z "$out" ]; then fail AC7 "inspector produced no output"; return; fi
+  node -e '
+    const d = JSON.parse(process.argv[1]);
+    const checks = [
+      ["agent.env merged render", d.agentEnv.includes("AGENT_NAME=doombot-e2e") && d.agentEnv.includes("GATEWAY_API_KEY=sk-e2e-gateway") && d.agentEnv.includes("MODEL_ROUTE=openai/gpt-5.2") && d.agentEnv.includes("LOG_LEVEL=debug") && d.agentEnv.includes("SOURCE=vector-sigma-e2e")],
+      ["secrets.env line-merge", d.secretsEnv.includes("SLACK_BOT_TOKEN=xoxb-e2e-slack") && d.secretsEnv.includes("SIMULATED_SECRET=e2e-rotate-me")],
+      ["SOUL.md verbatim", d.soul.includes("# E2E Soul")],
+      ["a2a.json object render", (d.a2a.includes("a2a-e2e-key") && d.a2a.includes("ultronbot") && d.a2a.includes("kangbot"))],
+      ["github-app.pem verbatim", d.pem.includes("BEGIN RSA PRIVATE KEY")],
+    ];
+    for (const [name, ok] of checks) console.log("[e2e] " + (ok ? "PASS" : "FAIL") + " AC7 " + name + (ok ? " — ok" : " — got " + JSON.stringify(d)));
+  ' "$out" | while IFS= read -r line; do printf '%s\n' "$line"; done
+  if printf '%s' "$out" | node -e '
+    const d = JSON.parse(require("fs").readFileSync(0, "utf8"));
+    const ok = d.agentEnv.includes("AGENT_NAME=doombot-e2e") && d.agentEnv.includes("GATEWAY_API_KEY=sk-e2e-gateway")
+      && d.agentEnv.includes("MODEL_ROUTE=openai/gpt-5.2") && d.agentEnv.includes("LOG_LEVEL=debug")
+      && d.agentEnv.includes("SOURCE=vector-sigma-e2e")
+      && d.secretsEnv.includes("SLACK_BOT_TOKEN=xoxb-e2e-slack") && d.secretsEnv.includes("SIMULATED_SECRET=e2e-rotate-me")
+      && d.soul.includes("# E2E Soul")
+      && d.a2a.includes("a2a-e2e-key") && d.a2a.includes("ultronbot") && d.a2a.includes("kangbot")
+      && d.pem.includes("BEGIN RSA PRIVATE KEY");
+    process.exit(ok ? 0 : 1);
+  '; then PASS=$((PASS+5)); else FAIL=$((FAIL+5)); fi
+}
+
+# AC8: grace-path device — 403 on pending row stays RESIDENT (no crash
+# loop), ACTION REQUIRED line present in logs, then the console fix
+# activates the row and the resident poll SELF-HEALS (bundle delivered,
+# marker present) without a container restart.
+ac8_grace_self_heal() {
+  note "AC8: registrant grace — 403 resident + self-heal (f57.11)"
+  # 1. Grace device is up (compose started it alongside device).
+  if ! docker ps --format '{{.Names}}' | grep -q "$PROJECT-grace-device-1"; then
+    fail AC8 "grace-device container not running"
+    return
+  fi
+  # 2. Resident evidence: the ACTION REQUIRED line, and container NOT restarted.
+  local deadline=$((SECONDS + 30))
+  until docker logs "$PROJECT-grace-device-1" 2>&1 | grep -q 'ACTION REQUIRED'; do
+    [ $SECONDS -ge $deadline ] && break
+    sleep 1
+  done
+  if docker logs "$PROJECT-grace-device-1" 2>&1 | grep -q 'ACTION REQUIRED'; then
+    pass "AC8 ACTION REQUIRED line" "resident, loud line in logs"
+  else
+    fail "AC8 ACTION REQUIRED line" "no ACTION REQUIRED in grace-device logs"
+  fi
+  local restarts
+  restarts="$(docker inspect -f '{{.RestartCount}}' "$PROJECT-grace-device-1" 2>/dev/null || echo '?')"
+  if [ "$restarts" = "0" ]; then
+    pass "AC8 stays resident" "RestartCount=0 (no crash loop)"
+  else
+    fail "AC8 stays resident" "RestartCount=$restarts (crash looped)"
+  fi
+  # 3. Console fix: re-run seed with E2E_GRACE_FIX=1 (activates row + arms bundle).
+  E2E_GRACE_FIX=1 $COMPOSE run --rm --no-deps seed >/dev/null 2>&1 \
+    || { fail AC8 "seed fix pass failed"; return; }
+  pass "AC8 console fix applied" "grace device activated + bundle armed"
+  # 4. Self-heal: marker appears WITHOUT a container restart.
+  local marker_deadline=$((SECONDS + 90))
+  local healed=false
+  until docker exec "$PROJECT-grace-device-1" test -f /data/agent/ready.marker 2>/dev/null; do
+    [ $SECONDS -ge $marker_deadline ] && break
+    sleep 2
+  done
+  if docker exec "$PROJECT-grace-device-1" test -f /data/agent/ready.marker 2>/dev/null; then
+    healed=true
+  fi
+  restarts="$(docker inspect -f '{{.RestartCount}}' "$PROJECT-grace-device-1" 2>/dev/null || echo '?')"
+  if [ "$healed" = "true" ]; then
+    pass "AC8 self-heal" "ready.marker present, RestartCount=$restarts (poll healed, no restart)"
+  else
+    fail "AC8 self-heal" "no marker after fix (RestartCount=$restarts)"
+    docker logs "$PROJECT-grace-device-1" 2>&1 | tail -20
+  fi
+}
+
 # ---- main ---------------------------------------------------------------------
 
 case "${1:-}" in
@@ -247,6 +397,8 @@ ac3_rearm_redelivers
 ac4_status_version
 ac5_audit_complete
 ac6_volume_state
+ac7_console_structured_save
+ac8_grace_self_heal
 
 echo
 echo "[e2e] ===== RESULT: $PASS passed, $FAIL failed ====="

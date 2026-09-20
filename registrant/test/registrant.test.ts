@@ -102,6 +102,18 @@ describe('config', () => {
     expect(c.dataDir).toBe('/data/agent');
     expect(c.watchIntervalMs).toBe(300_000);
     expect(c.clockGateTimeoutMs).toBe(600_000);
+    // f57.11: grace poll default matches the owner-ruled 5-minute status poll
+    expect(c.gracePollIntervalMs).toBe(300_000);
+  });
+
+  it('GRACE_POLL_INTERVAL_MS overrides the default (E2E shortens it)', () => {
+    const c = loadConfig({
+      BALENA_DEVICE_UUID: '123e4567-e89b-12d3-a456-426614174000',
+      REGISTRAR_URL: 'https://registrar.example.com',
+      REGISTRAR_KEY: 'k-1234567890abcdef',
+      GRACE_POLL_INTERVAL_MS: '2000',
+    });
+    expect(c.gracePollIntervalMs).toBe(2000);
   });
 
   it('rejects invalid env with a field list', () => {
