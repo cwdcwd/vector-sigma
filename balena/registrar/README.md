@@ -101,6 +101,48 @@ serves the public URL and the LAN front door.
 > fails to register. Tag → confirm the registrar device pulled the
 > release → flip `REGISTRAR_URL` → verify LAN + public URL.
 
+## First admin key
+
+The admin console (`/admin/login`) authenticates against rows in the
+`admin_keys` table. There is no default key and no way to mint one from
+the console itself — a fresh database has no admin access until you
+insert the first key. Mint + insert flow (balenaCloud device terminal):
+
+1. **Mint** — open a terminal on the **registrar** service (device page
+   → the *registrar* service → ⋯ → *Select terminal*) and run:
+
+   ```bash
+   node dist/admin-key.js <label>
+   ```
+
+   Example label: `bootstrap` or `owner-<date>`. The tool prints the
+   plaintext admin key (shown **once**), its argon2id hash, and a ready
+   to paste `INSERT INTO admin_keys ...` statement.
+
+2. **Insert** — open a terminal on the **postgres** service (same
+   device page, *postgres* service) and paste the printed INSERT:
+
+   ```bash
+   psql -U vsigma -d vsigma
+   ```
+
+   …then paste the INSERT line and `\q` to exit. (No password prompt on
+   the local socket inside the container.)
+
+3. **Login** — browse to `http://<device-LAN-IP>/admin/login` (or the
+   balenaCloud public URL) and paste the `ak_…` plaintext key. The
+   console session lasts 12h.
+
+**Rotation:** mint a new key + insert its row (steps 1–2), log in with
+it, then delete the old row from a postgres terminal:
+`DELETE FROM admin_keys WHERE label = '<old-label>';`. Keys are
+referenced by id in the audit trail, not by the hash — deleting a row
+never rewrites history.
+
+**Never store the plaintext** anywhere — not in balena variables, env
+files, chat, or the database (only the argon2id hash is stored). If a
+plaintext key leaks, rotate immediately and delete the leaked row.
+
 ## Password resets & the pgdata trap
 
 Postgres consumes `POSTGRES_PASSWORD` **exactly once**, at the first

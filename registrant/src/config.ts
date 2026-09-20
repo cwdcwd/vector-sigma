@@ -1,20 +1,24 @@
 import { z } from 'zod';
+import { BALENA_UUID_SHORT_RE, BALENA_UUID_CANONICAL_RE, normalizeBalenaUuid } from '@vector-sigma/shared';
 
 const boolFromEnv = z
   .enum(['true', 'false'])
   .transform((v) => v === 'true');
 
 const EnvSchema = z.object({
-  /** Device UUID injected by the platform (balena env). */
+  /**
+   * Device UUID injected by the platform (balena env). balenaOS injects
+   * the balena-native SHORT form (32 hex, no hyphens); both forms are
+   * accepted and normalized to canonical via the shared contract
+   * (fleet-ops-f57.10) — the same normalizer the registrar applies.
+   */
   BALENA_DEVICE_UUID: z
     .string()
-    .regex(/^[0-9a-f]{32}$/i, 'balena device UUID (undashed 32-hex or dashed)')
-    .or(z.string().uuid())
-    .transform((v) =>
-      /^[0-9a-f]{32}$/i.test(v)
-        ? `${v.slice(0, 8)}-${v.slice(8, 12)}-${v.slice(12, 16)}-${v.slice(16, 20)}-${v.slice(20)}`
-        : v,
-    ),
+    .refine(
+      (v) => BALENA_UUID_SHORT_RE.test(v) || BALENA_UUID_CANONICAL_RE.test(v),
+      'balena device UUID must be balena short-form (32 hex chars) or canonical hyphenated',
+    )
+    .transform(normalizeBalenaUuid),
   REGISTRAR_URL: z.string().url(),
   REGISTRAR_KEY: z.string().min(16),
   /** Data volume root; bundle files land here relative to it. */

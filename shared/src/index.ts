@@ -41,25 +41,62 @@ export type DeviceStatus = z.infer<typeof DeviceStatusSchema>;
 export const SlotStateSchema = z.enum(['armed', 'consumed']);
 export type SlotState = z.infer<typeof SlotStateSchema>;
 
+/**
+ * Balena device UUID forms (fleet-ops-f57.10).
+ *
+ * balenaOS injects BALENA_DEVICE_UUID in its native SHORT form — 32 hex
+ * chars, no hyphens (e.g. b1e516d9cf23c6bd0b474edae9ec41e6) — and the
+ * balenaCloud dashboard shows the same short form. Postgres uuid
+ * columns accept either form and store canonical lowercase, so every
+ * entry point accepts BOTH and normalizes to canonical before any
+ * insert or comparison. One source of truth for the wire format, used
+ * by the registrar (validation), the registrant (env parsing), and
+ * the admin console (form validation).
+ */
+export const BALENA_UUID_SHORT_RE = /^[0-9a-f]{32}$/i;
+export const BALENA_UUID_CANONICAL_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Normalize a validated balena UUID to canonical lowercase hyphenated
+ * form (what the devices PK and Postgres uuid columns hold). Input MUST
+ * already match one of the two regexes above — callers validate first.
+ */
+export function normalizeBalenaUuid(value: string): string {
+  const v = value.toLowerCase();
+  return BALENA_UUID_SHORT_RE.test(v)
+    ? `${v.slice(0, 8)}-${v.slice(8, 12)}-${v.slice(12, 16)}-${v.slice(16, 20)}-${v.slice(20)}`
+    : v;
+}
+
+/** balena_uuid: accepts balena-native short form or canonical UUID; emits canonical. */
+const BalenaUuid = z
+  .string()
+  .refine(
+    (v) => BALENA_UUID_SHORT_RE.test(v) || BALENA_UUID_CANONICAL_RE.test(v),
+    'balena_uuid must be a balena short-form UUID (32 hex chars) or a canonical hyphenated UUID',
+  )
+  .transform(normalizeBalenaUuid);
+
 /** API contracts (versioned /v1). */
 
 export const BootstrapRequestSchema = z.object({
-  balena_uuid: z.string().uuid(),
+  balena_uuid: BalenaUuid,
 });
 export type BootstrapRequest = z.infer<typeof BootstrapRequestSchema>;
 
 export const StatusRequestSchema = z.object({
-  balena_uuid: z.string().uuid(),
+  balena_uuid: BalenaUuid,
 });
 export type StatusRequest = z.infer<typeof StatusRequestSchema>;
 
 export const RearmRequestSchema = z.object({
-  balena_uuid: z.string().uuid(),
+  balena_uuid: BalenaUuid,
 });
 export type RearmRequest = z.infer<typeof RearmRequestSchema>;
 
 export const RotateRequestSchema = z.object({
-  balena_uuid: z.string().uuid(),
+  balena_uuid: BalenaUuid,
   /** Full replacement file set; each entry must satisfy BundleFileSchema. */
   files: z.array(BundleFileSchema).min(1),
 });

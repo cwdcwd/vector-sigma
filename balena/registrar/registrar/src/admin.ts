@@ -11,6 +11,7 @@ import { verifyAdminKey } from './admin-auth.js';
 import { mintDeviceKey } from './keys.js';
 import { rotateBundle, rearmSlot, parseConsoleFiles, EmptyBundleError, InvalidBundleError } from './rotate.js';
 import { readSlot } from './slots.js';
+import { BALENA_UUID_SHORT_RE, BALENA_UUID_CANONICAL_RE, normalizeBalenaUuid } from '@vector-sigma/shared';
 import type { Clock } from './clock.js';
 import type { RegistrarConfig } from './config.js';
 import * as html from './admin-html.js';
@@ -86,7 +87,16 @@ export function cookieMap(request: FastifyRequest): Map<string, string> {
   return out;
 }
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/**
+ * Console UUID gate (fleet-ops-f57.10): balena device UUIDs arrive in
+ * either the balena-native SHORT form (32 hex chars, no hyphens — what
+ * balenaOS injects as BALENA_DEVICE_UUID and the balenaCloud dashboard
+ * shows) or the canonical hyphenated form. Both are accepted; the value
+ * is normalized to canonical lowercase via normalizeBalenaUuid before
+ * the duplicate check and insert, so the PK comparison matches what
+ * the API side stores.
+ */
+const UUID_RE = /^[0-9a-f]{32}$|^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function deviceView(d: DbRow): html.DeviceRowView {
   return {
@@ -341,7 +351,8 @@ export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): v
 
     if (agentName === '' || balenaUuid === '') return errorPage('Agent name and UUID are required.');
     if (!UUID_RE.test(balenaUuid)) return errorPage('UUID must be a valid UUID.');
-    if ((await db.select().from(devices).where(eq(devices.balenaUuid, balenaUuid))).length > 0) {
+    const canonicalUuid = normalizeBalenaUuid(balenaUuid);
+    if ((await db.select().from(devices).where(eq(devices.balenaUuid, canonicalUuid))).length > 0) {
       return errorPage('A device with this UUID already exists.');
     }
     if ((await db.select().from(devices).where(eq(devices.agentName, agentName))).length > 0) {
@@ -350,14 +361,14 @@ export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): v
 
     const key = mintDeviceKey();
     await db.insert(devices).values({
-      balenaUuid,
+      balenaUuid: canonicalUuid,
       agentName,
       registrarKeyHash: await hashKey(key),
       status: 'pending',
       notes,
     });
     await audit(db, {
-      deviceId: balenaUuid,
+      deviceId: canonicalUuid,
       outcome: 'admin',
       reason: 'device_created',
       sourceIp: request.ip,
@@ -365,7 +376,7 @@ export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): v
     });
     return securityHeaders(reply)
       .type('text/html')
-      .send(html.newDeviceResultPage(agentName, balenaUuid, key, session.csrfToken));
+      .send(html.newDeviceResultPage(agentName, canonicalUuid, key, session.csrfToken));
   });
 
   app.post('/admin/devices/:uuid/re-arm', async (request, reply) => {
