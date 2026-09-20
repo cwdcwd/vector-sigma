@@ -1,0 +1,23 @@
+name: Device logs
+
+on:
+  workflow_dispatch:
+    inputs:
+      uuid:
+        description: Device UUID
+        required: true
+      service:
+        description: Service name (or empty for all)
+        required: false
+        default: ""
+
+jobs:
+  logs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch device logs
+        run: |
+          set -euo pipefail
+          UUID="${{ inputs.uuid }}"
+          SVC="${{ inputs.service }}"
+          npx --yes balena-cli@release balena logs "$UUID" --lines 100 ${SVC:+--service "$SVC"} 2>&1 | sed -E 's/(Bearer|token|api_?key)[^ ]*/[REDACTED]/gi'
