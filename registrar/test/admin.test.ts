@@ -586,3 +586,164 @@ describe('Admin console — misc', () => {
     expect(dupName.status).toBe(400);
   });
 });
+
+describe('Admin console — balena UUID forms (fleet-ops-f57.10)', () => {
+  const SHORT_UUID = 'b1e516d9cf23c6bd0b474edae9ec41e6';
+  const CANONICAL_UUID = 'b1e516d9-cf23-c6bd-0b47-4edae9ec41e6';
+
+  it('accepts the balena-native 32-hex short form and stores canonical', async () => {
+    const c = await loginClient();
+    const csrf = await c.csrfFrom('/admin/new-device');
+    const res = await c.postForm('/admin/new-device', {
+      _csrf: csrf,
+      agent_name: 'short-form-agent',
+      balena_uuid: SHORT_UUID,
+    });
+    expect(res.status).toBe(200);
+    expect(res.html).toContain(CANONICAL_UUID); // one-time key page shows canonical
+    const rows = await env.db.select().from(devices);
+    const row = rows.find((r) => r.balenaUuid === CANONICAL_UUID);
+    expect(row).toBeDefined();
+    expect(row!.agentName).toBe('short-form-agent');
+    expect(row!.status).toBe('pending');
+  });
+
+  it('still accepts the canonical hyphenated form unchanged', async () => {
+    const c = await loginClient();
+    const csrf = await c.csrfFrom('/admin/new-device');
+    const res = await c.postForm('/admin/new-device', {
+      _csrf: csrf,
+      agent_name: 'canonical-form-agent',
+      balena_uuid: CANONICAL_UUID,
+    });
+    expect(res.status).toBe(200);
+    const rows = await env.db.select().from(devices);
+    expect(rows.some((r) => r.balenaUuid === CANONICAL_UUID)).toBe(true);
+  });
+
+  it('short form and canonical form of the same UUID collide (duplicate rejected)', async () => {
+    const c = await loginClient();
+    const csrf = await c.csrfFrom('/admin/new-device');
+    const first = await c.postForm('/admin/new-device', {
+      _csrf: csrf,
+      agent_name: 'dupe-agent-a',
+      balena_uuid: SHORT_UUID,
+    });
+    expect(first.status).toBe(200);
+    const csrf2 = await c.csrfFrom('/admin/new-device');
+    const second = await c.postForm('/admin/new-device', {
+      _csrf: csrf2,
+      agent_name: 'dupe-agent-b',
+      balena_uuid: CANONICAL_UUID,
+    });
+    expect(second.status).toBe(400);
+    expect(second.html).toContain('A device with this UUID already exists.');
+  });
+
+  it('rejects garbage UUIDs in either-form gate (40-hex, non-hex, near-miss hyphenless)', async () => {
+    const c = await loginClient();
+    for (const bad of [
+      'b1e516d9cf23c6bd0b474edae9ec41e600', // 40 hex — too long
+      'z1e516d9cf23c6bd0b474edae9ec41e6', // 32 chars but not hex
+      'b1e516d9-cf23-c6bd-0b47-4edae9ec41e', // 31 hex + hyphens (malformed)
+      'b1e516d9cf23c6bd0b474edae9ec41e', // 31 hex — too short
+      'b1e516d9cf23c6bd 0b474edae9ec41e6', // embedded space
+    ]) {
+      const csrf = await c.csrfFrom('/admin/new-device');
+      const res = await c.postForm('/admin/new-device', {
+        _csrf: csrf,
+        agent_name: 'garbage-agent',
+        balena_uuid: bad,
+      });
+      expect(res.status).toBe(400);
+      expect(res.html).toContain('UUID must be a valid UUID.');
+    }
+  });
+
+  it('uppercase short form is normalized to lowercase canonical', async () => {
+    const c = await loginClient();
+    const csrf = await c.csrfFrom('/admin/new-device');
+    const res = await c.postForm('/admin/new-device', {
+      _csrf: csrf,
+      agent_name: 'uppercase-agent',
+      balena_uuid: SHORT_UUID.toUpperCase(),
+    });
+    expect(res.status).toBe(200);
+    const rows = await env.db.select().from(devices);
+    expect(rows.some((r) => r.balenaUuid === CANONICAL_UUID)).toBe(true);
+  });
+});
+
+describe('/v1/bootstrap + /v1/status — balena UUID forms on the wire (fleet-ops-f57.10)', () => {
+  const SHORT_UUID = 'b1e516d9cf23c6bd0b474edae9ec41e6';
+  const CANONICAL_UUID = 'b1e516d9-cf23-c6bd-0b47-4edae9ec41e6';
+
+  it('bootstrap with the balena-native short form matches the canonical-stored device', async () => {
+    await seedDevice(env.db, { uuid: CANONICAL_UUID, hash: env.device.hash, bundle: SECRET_BUNDLE });
+    const res = await env.request({
+      method: 'POST',
+      url: '/v1/bootstrap',
+      body: { balena_uuid: SHORT_UUID },
+      key: env.device.key,
+    });
+    expect(res.status).toBe(200);
+    expect(JSON.stringify(res.body.bundle)).toContain('topsecret-agent-token-value');
+    const audit = await getAuditRows(env);
+    expect(audit.some((a) => a.device_id === CANONICAL_UUID && a.outcome === 'delivered')).toBe(true);
+  });
+
+  it('bootstrap with the canonical form still matches the same device', async () => {
+    await seedDevice(env.db, { uuid: CANONICAL_UUID, hash: env.device.hash, bundle: SECRET_BUNDLE });
+    const res = await env.request({
+      method: 'POST',
+      url: '/v1/bootstrap',
+      body: { balena_uuid: CANONICAL_UUID },
+      key: env.device.key,
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it('short and canonical forms of the same UUID hit the SAME slot (425 replay across forms)', async () => {
+    await seedDevice(env.db, { uuid: CANONICAL_UUID, hash: env.device.hash, bundle: SECRET_BUNDLE });
+    const first = await env.request({
+      method: 'POST',
+      url: '/v1/bootstrap',
+      body: { balena_uuid: SHORT_UUID },
+      key: env.device.key,
+    });
+    expect(first.status).toBe(200);
+    // the device re-presenting the SAME UUID in canonical form is a replay,
+    // not a second delivery: normalization happens before the DB lookup.
+    const replay = await env.request({
+      method: 'POST',
+      url: '/v1/bootstrap',
+      body: { balena_uuid: CANONICAL_UUID },
+      key: env.device.key,
+    });
+    expect(replay.status).toBe(425);
+  });
+
+  it('status via querystring accepts the short form; response echoes canonical', async () => {
+    await seedDevice(env.db, { uuid: CANONICAL_UUID, hash: env.device.hash, bundle: SECRET_BUNDLE });
+    const res = await env.request({
+      method: 'GET',
+      url: `/v1/status?balena_uuid=${SHORT_UUID}`,
+      key: env.device.key,
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.balena_uuid).toBe(CANONICAL_UUID);
+  });
+
+  it('invalid_body on garbage in the API body (400, no device lookup)', async () => {
+    const res = await env.request({
+      method: 'POST',
+      url: '/v1/bootstrap',
+      body: { balena_uuid: 'not-a-uuid-at-all' },
+      key: env.device.key,
+    });
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: 'invalid_request' });
+    const audit = await getAuditRows(env);
+    expect(audit.some((a) => a.reason === 'invalid_body')).toBe(true);
+  });
+});
