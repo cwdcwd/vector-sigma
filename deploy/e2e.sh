@@ -244,22 +244,37 @@ ac6_volume_state() {
 # that the rendered files are exactly what the device-side assembly consumes.
 ac7_console_structured_save() {
   note "AC7: console structured save renders canonical files (f57.11)"
-  # 1. Login: GET /admin/login sets the CSRF cookie; POST with admin key.
-  local jar=/tmp/f5711-cookies.txt csrf
-  rm -f "$jar"
-  csrf="$(curl -s -c "$jar" "$BASE_URL/admin/login" | grep -o 'name="_csrf" value="[^"]*"' | cut -d'"' -f4)"
-  local login_code
-  login_code="$(curl -s -o /dev/null -w '%{http_code}' -b "$jar" -c "$jar" \
-    -X POST "$BASE_URL/admin/login" \
+  # Console cookies carry Secure (production-correct). curl's cookie jar
+  # honors the attribute and refuses to send them over plain http, so the
+  # E2E passes cookies EXPLICITLY (-b "name=value"), which bypasses
+  # attribute checks — a plain-HTTP loopback harness talking to its own
+  # registrar. Tokens are harvested from each page just like the browser
+  # flow: login CSRF from the login page, session from the login response,
+  # editor CSRF from the editor page.
+  local csrf session_cookie editor_csrf login_code save_code version
+  csrf="$(curl -s -D - -o /dev/null "$BASE_URL/admin/login" \
+    | tr -d '\r' | grep -i '^set-cookie: vsigma_csrf=' | cut -d' ' -f2- | cut -d';' -f1 | tr -d ' ')"
+  if [ -z "$csrf" ]; then fail AC7 "no csrf cookie on login page"; return; fi
+  session_cookie="$(curl -s -D - -o /dev/null -X POST "$BASE_URL/admin/login" \
+    -H "Cookie: ${csrf}" \
     --data-urlencode "admin_key=$E2E_ADMIN_KEY" \
-    --data-urlencode "_csrf=$csrf")"
+    --data-urlencode "_csrf=${csrf#vsigma_csrf=}" \
+    | tr -d '\r' | grep -i '^set-cookie: vsigma_admin=' | cut -d' ' -f2- | cut -d';' -f1 | tr -d ' ')"
+  login_code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE_URL/admin/login" \
+    -H "Cookie: ${csrf}" \
+    --data-urlencode "admin_key=$E2E_ADMIN_KEY" \
+    --data-urlencode "_csrf=${csrf#vsigma_csrf=}")"
   expect "AC7 console login" "$login_code" "303"
+  if [ -z "$session_cookie" ]; then fail AC7 "no session cookie after login"; return; fi
   # 2. Structured save on the E2E device: every canonical file gets content.
-  csrf="$(curl -s -b "$jar" "$BASE_URL/admin/devices/$E2E_DEVICE_UUID/bundle" | grep -o 'name="_csrf" value="[^"]*"' | cut -d'"' -f4)"
-  local save_code
-  save_code="$(curl -s -o /dev/null -w '%{http_code}' -b "$jar" -c "$jar" \
-    -X POST "$BASE_URL/admin/devices/$E2E_DEVICE_UUID/bundle" \
-    --data-urlencode "_csrf=$csrf" \
+  editor_csrf="$(curl -s -H "Cookie: ${csrf}; ${session_cookie}" \
+    "$BASE_URL/admin/devices/$E2E_DEVICE_UUID/bundle" \
+    | grep -o 'name="_csrf" value="[^"]*"' | cut -d'"' -f4)"
+  if [ -z "$editor_csrf" ]; then fail AC7 "no editor csrf (session cookie rejected?)"; return; fi
+  save_code="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+    "$BASE_URL/admin/devices/$E2E_DEVICE_UUID/bundle" \
+    -H "Cookie: ${csrf}; ${session_cookie}" \
+    --data-urlencode "_csrf=$editor_csrf" \
     --data-urlencode "existing_count=2" \
     --data-urlencode "new_count=3" \
     --data-urlencode "existing_path_0=config/agent.env" \
@@ -353,15 +368,20 @@ ac8_grace_self_heal() {
   else
     fail "AC8 ACTION REQUIRED line" "no ACTION REQUIRED in grace-device logs"
   fi
-  local restarts
+  local restarts running
   restarts="$(docker inspect -f '{{.RestartCount}}' "$PROJECT-grace-device-1" 2>/dev/null || echo '?')"
-  if [ "$restarts" = "0" ]; then
-    pass "AC8 stays resident" "RestartCount=0 (no crash loop)"
+  running="$(docker inspect -f '{{.State.Running}}' "$PROJECT-grace-device-1" 2>/dev/null || echo '?')"
+  # restart:"no" means a crash EXITS (RestartCount stays 0) — the resident
+  # proof needs the process alive, not just an unrestarted tomb.
+  if [ "$restarts" = "0" ] && [ "$running" = "true" ]; then
+    pass "AC8 stays resident" "container RUNNING, RestartCount=0 (no crash loop)"
   else
-    fail "AC8 stays resident" "RestartCount=$restarts (crash looped)"
+    fail "AC8 stays resident" "Running=$running, RestartCount=$restarts"
   fi
   # 3. Console fix: re-run seed with E2E_GRACE_FIX=1 (activates row + arms bundle).
-  E2E_GRACE_FIX=1 $COMPOSE run --rm --no-deps seed >/dev/null 2>&1 \
+  # -e passes the flag INTO the container (the shell prefix never reaches
+  # compose run's environment).
+  $COMPOSE run --rm --no-deps -e E2E_GRACE_FIX=1 seed >/dev/null 2>&1 \
     || { fail AC8 "seed fix pass failed"; return; }
   pass "AC8 console fix applied" "grace device activated + bundle armed"
   # 4. Self-heal: marker appears WITHOUT a container restart.
