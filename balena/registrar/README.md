@@ -90,6 +90,27 @@ secret.
 The registrar's admin console + API ride the same port (3000),
 published on the device LAN interfaces.
 
+## Password resets & the pgdata trap
+
+Postgres consumes `POSTGRES_PASSWORD` **exactly once**, at the first
+initdb of the `pgdata` volume. After that, the role's password lives in
+the database — changing the balena variable does nothing until the
+database is told. If the registrar reports `28P01 password
+authentication failed for user "vsigma"`:
+
+- **Before the registrar holds real data (bootstrap window):** device
+  page → ⋯ actions → **Purge data**. This wipes `pgdata` and re-runs
+  initdb with the *current* dashboard values — password mismatch gone.
+- **After the registrar holds real identity bundles:** NEVER purge.
+  Rotate inside the running postgres instead — `ALTER ROLE vsigma
+  PASSWORD '<new>';` (via the balena device terminal on the postgres
+  service), then update the `POSTGRES_PASSWORD` balena variable to
+  match and restart the registrar service. Purging here destroys
+  every device's identity bundles.
+- Also check for a **service-scoped `POSTGRES_PASSWORD`** shadowing the
+  fleet-wide one (a service-scoped variable silently beats the fleet
+  value for that service — one more way auth can disagree).
+
 ## Failure domain & recovery
 
 This device is the **identity source and the entire reflash-recovery
