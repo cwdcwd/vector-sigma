@@ -180,10 +180,13 @@ ac4_status_version() {
 
 ac5_audit_complete() {
   note "AC5: audit log complete"
+  # f57.11: scoped to the PRIMARY device — the grace device (AC8) writes
+  # its own audit rows (device_not_active denials with key_id), which a
+  # global count would attribute to this device's lifecycle.
   local delivered denied complete
-  delivered="$(psql_count "outcome='delivered'")"
-  denied="$(psql_count "outcome='denied' AND reason='slot_consumed'")"
-  complete="$(psql_count "key_id IS NOT NULL AND source_ip IS NOT NULL AND occurred_at IS NOT NULL")"
+  delivered="$(psql_count "outcome='delivered' AND device_id='$E2E_DEVICE_UUID'")"
+  denied="$(psql_count "outcome='denied' AND reason='slot_consumed' AND device_id='$E2E_DEVICE_UUID'")"
+  complete="$(psql_count "key_id IS NOT NULL AND source_ip IS NOT NULL AND occurred_at IS NOT NULL AND device_id='$E2E_DEVICE_UUID'")"
   [ "${delivered:-0}" -ge 2 ] && pass "AC5 delivered rows" "$delivered (>=2)" \
     || fail "AC5 delivered rows" "$delivered (<2)"
   [ "${denied:-0}" -ge 1 ] && pass "AC5 slot_consumed denial" "$denied (>=1)" \
@@ -367,6 +370,8 @@ ac8_grace_self_heal() {
     pass "AC8 ACTION REQUIRED line" "resident, loud line in logs"
   else
     fail "AC8 ACTION REQUIRED line" "no ACTION REQUIRED in grace-device logs"
+    note "grace-device recent logs (self-diagnosis):"
+    docker logs "$PROJECT-grace-device-1" 2>&1 | tail -15 || true
   fi
   local restarts running
   restarts="$(docker inspect -f '{{.RestartCount}}' "$PROJECT-grace-device-1" 2>/dev/null || echo '?')"
