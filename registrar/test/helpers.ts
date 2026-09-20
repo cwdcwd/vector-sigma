@@ -252,6 +252,15 @@ export class AdminClient {
     return [...this.cookies.entries()].map(([k, v]) => `${k}=${v}`).join('; ');
   }
 
+  /**
+   * Raw Cookie header for the current jar (fleet-ops-f57.9): tests use it
+   * to present the Path=/admin session cookie at GET / exactly the way a
+   * cookie-jar client would, exercising the front door's session branch.
+   */
+  cookieHeaderForTest(): string {
+    return this.cookieHeader();
+  }
+
   async login(adminKey: string): Promise<{ status: number; html: string }> {
     const get = await this.app.inject({ method: 'GET', url: '/admin/login' });
     this.absorb(get);

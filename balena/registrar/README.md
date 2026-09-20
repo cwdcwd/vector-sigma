@@ -87,8 +87,19 @@ the fix path (balena fleet/service variable). The compose file pins
 the structural parts, so the owner only ever supplies the password
 secret.
 
-The registrar's admin console + API ride the same port (3000),
-published on the device LAN interfaces.
+The registrar's admin console + API ride the same container port (3000),
+published as **host port 80** on the device LAN interfaces (standard HTTP
+port, fleet-ops-f57.9): `http://<device-LAN-IP>/` — no port suffix. The
+balenaCloud public URL tunnels to device port 80, so the same release
+serves the public URL and the LAN front door.
+
+> **Deploy sequencing (read before tagging a release):** the release that
+> carries fleet-ops-f57.9 stops publishing `:3000` and starts publishing
+> `:80`. From the moment it lands on the registrar device, the devices
+> fleet's `REGISTRAR_URL` dashboard variable must drop the `:3000` — a
+> device bootstrapping between the release landing and the variable flip
+> fails to register. Tag → confirm the registrar device pulled the
+> release → flip `REGISTRAR_URL` → verify LAN + public URL.
 
 ## Password resets & the pgdata trap
 

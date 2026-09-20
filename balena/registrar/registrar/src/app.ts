@@ -17,10 +17,11 @@ import { systemClock, type Clock } from './clock.js';
 import { consumeSlot, ensureSlot, readSlot, retryAfterSeconds, effectiveState } from './slots.js';
 import { audit } from './audit.js';
 import type { RegistrarConfig } from './config.js';
-import { registerAdminRoutes } from './admin.js';
+import { registerAdminRoutes, cookieMap } from './admin.js';
 import { verifyAdminKey } from './admin-auth.js';
 import { rotateBundle, rearmSlot } from './rotate.js';
 import { RearmRequestSchema, RotateRequestSchema } from '@vector-sigma/shared';
+import { SessionManager, SESSION_COOKIE } from './session.js';
 
 export interface BuildOptions {
   db: NodePgDatabase;
@@ -115,13 +116,39 @@ export function buildApp(opts: BuildOptions): FastifyInstance {
     reply.status(500).send({ error: 'internal_error' });
   });
 
+  // Exactly ONE SessionManager for the whole app (fleet-ops-f57.9): the
+  // /admin/* routes and the front door below must resolve sessions against
+  // the same in-memory store — the store is per-instance, and a second
+  // manager would silently disagree about who is logged in.
+  const sessions = new SessionManager(config.sessionSecret, clock);
+
   // Admin console + owner endpoints share this limiter for admin-key auth.
   registerAdminRoutes(app, {
     db,
     config,
     clock,
     limiter,
-    sessionSecret: config.sessionSecret,
+    sessions,
+  });
+
+  /**
+   * Front door (fleet-ops-f57.9): GET / must never 404. A live admin
+   * session goes straight to the device list; everyone else lands on the
+   * login page. Same session resolution the /admin pages use — note the
+   * session cookie is scoped Path=/admin, so real browsers take the
+   * /admin/login hop (which re-redirects sessioned users to
+   * /admin/devices); cookie-jar clients resolve directly here.
+   */
+  app.get('/', async (request, reply) => {
+    const session = sessions.resolve(cookieMap(request).get(SESSION_COOKIE));
+    return reply.redirect(session ? '/admin/devices' : '/admin/login', 302);
+  });
+
+  // Plain JSON 404 for everything else (fleet-ops-f57.9): the default
+  // Fastify envelope ('Route GET:/ not found') reads as a broken service;
+  // keep the API-wide { error } shape instead.
+  app.setNotFoundHandler((_request, reply) => {
+    reply.status(404).send({ error: 'not_found' });
   });
 
   /** Rate-limit gate: returns seconds remaining, or null when the IP is free. */

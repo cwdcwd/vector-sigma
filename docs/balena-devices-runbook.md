@@ -20,7 +20,7 @@ Both share the named volume `agent-data`, mounted at `/data/agent`. Identity liv
 1. **Create the device row in the registrar.** On the registrar admin console (or via its API): add the device with its balena UUID, agent name, and a fresh per-device registrar key. Note the key — it is shown once. The device starts `pending`.
 2. **Flash the device.** balenaCloud dashboard → Devices fleet → *Add device* → download the balenaOS image for Raspberry Pi 5 with the devices-fleet provisioning key embedded, flash the SD card, boot the device.
 3. **Set the device variables** (dashboard → device → *Variables*):
-   - `REGISTRAR_URL` — the registrar's LAN endpoint, e.g. `https://registrar.internal:3000` (whatever the owner's reverse proxy exposes; see the registrar fleet's own runbook).
+   - `REGISTRAR_URL` — the registrar's LAN endpoint, e.g. `http://<registrar-device-LAN-IP>` (port 80, the standard publish since fleet-ops-f57.9; no port suffix unless a reverse proxy fronts it — then whatever that proxy exposes).
    - `REGISTRAR_KEY` — the per-device key from step 1. Device-scoped, never fleet-scoped.
 4. **Activate the device** in the registrar console (status `pending` → `active`) — the slot must be armed for delivery. Or pre-activate before boot.
 5. **Watch it come up.** Device logs (dashboard → device → *Logs*) show the registrant lifecycle: clock gate, bootstrap, `identity bootstrapped`, then the agent's `[gate] identity present … starting agent runtime` and heartbeat. Container status turns **Running** for both services.

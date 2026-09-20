@@ -48,8 +48,10 @@ COPY drizzle/ ./drizzle/
 # Non-root runtime: base-image built-in node user (uid/gid 1000).
 USER node
 
-# Registrar serves :3000 on the fleet's private network; balena
-# publishes no ports (devices reach it over the fleet's network).
+# Container listens on :3000; the balena compose publishes host 80 ->
+# container 3000 (fleet-ops-f57.9) so the standard HTTP port — and the
+# balenaCloud public-URL feature, which tunnels to device port 80 only —
+# both work without any app-level port change.
 EXPOSE 3000
 
 CMD ["node", "dist/index.js"]
