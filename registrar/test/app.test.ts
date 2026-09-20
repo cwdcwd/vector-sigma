@@ -1,5 +1,12 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { createTestEnv, seedDevice, getAuditRows, type TestEnv } from './helpers.js';
+import {
+  createTestEnv,
+  seedDevice,
+  seedAdminKey,
+  AdminClient,
+  getAuditRows,
+  type TestEnv,
+} from './helpers.js';
 import { randomUUID } from 'node:crypto';
 
 let env: TestEnv;
@@ -225,3 +232,61 @@ async function getSlot(e: TestEnv): Promise<Array<Record<string, unknown>>> {
   );
   return (res as unknown as { rows: Array<Record<string, unknown>> }).rows;
 }
+// ---- fleet-ops-f57.9: front door + JSON 404 -----------------------------------
+
+/** Admin key for the front-door session tests (own row per test env). */
+const ADMIN_KEY = 'ak_front-door-test-0001';
+
+describe('GET / — front door redirect (fleet-ops-f57.9)', () => {
+  it('302 to /admin/login when no session cookie', async () => {
+    const res = await env.request({ method: 'GET', url: '/' });
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toBe('/admin/login');
+  });
+
+  it('302 to /admin/devices with a live admin session', async () => {
+    await seedAdminKey(env.db, ADMIN_KEY);
+    const client = new AdminClient(env.app);
+    const login = await client.login(ADMIN_KEY);
+    expect(login.status).toBe(303);
+    // The AdminClient jar holds the Path=/admin cookie; present it at / the
+    // way a cookie-jar client would — the front door must resolve it.
+    const cookieHeader = client.cookieHeaderForTest();
+    const res = await env.app.inject({ method: 'GET', url: '/', headers: { cookie: cookieHeader } });
+    expect(res.statusCode).toBe(302);
+    expect(res.headers.location).toBe('/admin/devices');
+  });
+
+  it('302 to /admin/login when the cookie is garbage', async () => {
+    const res = await env.app.inject({ method: 'GET', url: '/', headers: { cookie: 'vsigma_admin=garbage-value' } });
+    expect(res.statusCode).toBe(302);
+    expect(res.headers.location).toBe('/admin/login');
+  });
+
+  it('sessioned request no longer logs in after logout (redirects to login)', async () => {
+    await seedAdminKey(env.db, ADMIN_KEY);
+    const client = new AdminClient(env.app);
+    await client.login(ADMIN_KEY);
+    await client.postForm('/admin/logout', { _csrf: await client.csrfFrom('/admin/devices') });
+    const cookieHeader = client.cookieHeaderForTest();
+    const res = await env.app.inject({ method: 'GET', url: '/', headers: { cookie: cookieHeader } });
+    expect(res.statusCode).toBe(302);
+    expect(res.headers.location).toBe('/admin/login');
+  });
+});
+
+describe('unknown routes — plain JSON 404 (fleet-ops-f57.9)', () => {
+  it('404 JSON for an unknown path', async () => {
+    const res = await env.request({ method: 'GET', url: '/no/such/route' });
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'not_found' });
+    expect(String(res.headers['content-type']).startsWith('application/json')).toBe(true);
+  });
+
+  it('unknown path stays JSON after the login page renders HTML (no HTML 404 leak)', async () => {
+    await env.request({ method: 'GET', url: '/admin/login' });
+    const res = await env.request({ method: 'GET', url: '/still-not-a-route' });
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'not_found' });
+  });
+});

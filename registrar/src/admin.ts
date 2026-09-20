@@ -20,8 +20,14 @@ export interface AdminOptions {
   config: RegistrarConfig;
   clock: Clock;
   limiter: AuthRateLimiter;
-  /** Overrides for tests; defaults are production wiring. */
-  sessionSecret?: string;
+  /**
+   * Session store shared with the app-level front door (fleet-ops-f57.9).
+   * buildApp constructs exactly ONE SessionManager and hands it in: GET /
+   * and the /admin/* routes must resolve cookies against the same
+   * in-memory session set — two instances would silently disagree about
+   * who is logged in.
+   */
+  sessions: SessionManager;
 }
 
 type DbRow = typeof devices.$inferSelect;
@@ -63,7 +69,12 @@ function parseFormBody(raw: string): Map<string, string> {
   return out;
 }
 
-function cookieMap(request: FastifyRequest): Map<string, string> {
+/**
+ * Parse the request Cookie header into name -> value. Exported for the
+ * app-level front door (fleet-ops-f57.9), which resolves the admin
+ * session cookie at GET / using the same parsing the console uses.
+ */
+export function cookieMap(request: FastifyRequest): Map<string, string> {
   const header = request.headers.cookie;
   const out = new Map<string, string>();
   if (!header) return out;
@@ -95,7 +106,7 @@ export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): v
   const { db } = opts;
   const clock = opts.clock;
   const limiter = opts.limiter;
-  const sessions = new SessionManager(opts.sessionSecret ?? 'vsigma-dev-secret', clock);
+  const sessions = opts.sessions;
 
   app.addContentTypeParser('application/x-www-form-urlencoded', { parseAs: 'string' }, (_req, body, done) => {
     done(null, parseFormBody(String(body)));
