@@ -29,6 +29,10 @@ services:
       E2E_DEVICE_UUID: ${E2E_DEVICE_UUID:?set in deploy/.env.e2e}
       E2E_DEVICE_KEY: ${E2E_DEVICE_KEY:?set in deploy/.env.e2e}
       E2E_AGENT_NAME: ${E2E_AGENT_NAME:-sim-deploy-e2e}
+      # f57.11: grace-path device + admin key for the console E2E flow.
+      E2E_GRACE_UUID: ${E2E_GRACE_UUID:?set in deploy/.env.e2e}
+      E2E_GRACE_KEY: ${E2E_GRACE_KEY:?set in deploy/.env.e2e}
+      E2E_ADMIN_KEY: ${E2E_ADMIN_KEY:?set in deploy/.env.e2e}
       # Short auto-rearm window so the re-delivery path is observable in
       # seconds (production default is 1 hour).
       SEED_REARM_SECONDS: ${SEED_REARM_SECONDS:-45}
@@ -64,5 +68,34 @@ services:
         condition: service_completed_successfully
     restart: "no"
 
+  # f57.11: grace-path device — PENDING row, no bundle. The registrant
+  # must stay resident on 403 (ACTION REQUIRED + status poll) instead of
+  # crash-looping; e2e.sh flips the row active and asserts self-heal.
+  grace-device:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command: ["node", "registrant/dist/index.js"]
+    environment:
+      BALENA_DEVICE_UUID: ${E2E_GRACE_UUID:?set in deploy/.env.e2e}
+      REGISTRAR_URL: http://registrar:3000
+      REGISTRAR_KEY: ${E2E_GRACE_KEY:?set in deploy/.env.e2e}
+      DATA_DIR: /data/agent
+      CLOCK_GATE_TIMEOUT_MS: "2000"
+      # Short grace poll so self-heal is observable inside the CI budget;
+      # production default is 5 minutes (owner-ruled).
+      GRACE_POLL_INTERVAL_MS: "2000"
+      WATCH_INTERVAL_MS: "600000"
+      LOG_LEVEL: info
+    volumes:
+      - grace-device-data:/data/agent
+    depends_on:
+      registrar:
+        condition: service_healthy
+      seed:
+        condition: service_completed_successfully
+    restart: "no"
+
 volumes:
   device-data:
+  grace-device-data:

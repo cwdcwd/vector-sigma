@@ -30,6 +30,14 @@ export function parseConsoleFiles(fields: {
   existing_contents: string[];
   new_paths: string[];
   new_contents: string[];
+  /**
+   * Structured-editor rendered canonicals (f57.11): full-content updates
+   * that join the same merge as existing-file content updates. The admin
+   * route has already resolved raw-upload-vs-rendered precedence (raw
+   * same-path upload wins), so this list carries only the effective
+   * renders.
+   */
+  structured_updates?: Array<{ path: string; mode: '0600'; content: string }>;
 }): RotateInput {
   const keep = new Set<string>();
   const updates = new Map<string, string>();
@@ -41,6 +49,10 @@ export function parseConsoleFiles(fields: {
     } else {
       updates.set(path, content);
     }
+  }
+  // Rendered canonicals: update semantics (replace whole file), same map.
+  for (const f of fields.structured_updates ?? []) {
+    updates.set(f.path, f.content);
   }
   const additions: Array<{ path: string; mode: '0600'; content: string }> = [];
   for (let i = 0; i < fields.new_paths.length; i++) {

@@ -74,6 +74,15 @@ What the E2E proves, in order (the bead's acceptance criteria):
 6. **Volume state**: bundle files on the data volume are mode `0600` with
    the expected contents; `ready.marker` present (the agent entrypoint's
    gate).
+7. **Console structured save (f57.11)**: the real admin console drives a
+   structured-fields save (login → CSRF → form); the re-delivered bundle
+   carries the rendered canonicals — merged `config/agent.env`,
+   `config/secrets.env` line-merge, verbatim `SOUL.md`, `config/a2a.json`
+   object render, verbatim `config/github-app.pem`.
+8. **Registrant grace (f57.11)**: a pending (403) device stays resident
+   (no crash loop, `ACTION REQUIRED` line in logs); after the console fix
+   (activate + bundle) the resident `/v1/status` poll self-heals —
+   `ready.marker` appears without a container restart.
 
 The device service runs the real registrant image (`registrant/dist/index.js`)
 — the same container shape the balenaOS device app uses (f57.6), with

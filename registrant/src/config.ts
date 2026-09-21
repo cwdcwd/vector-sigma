@@ -27,6 +27,13 @@ const EnvSchema = z.object({
   CLOCK_GATE_TIMEOUT_MS: z.coerce.number().int().positive().default(600_000),
   /** Watcher poll interval for remote bundle_version changes (ms). */
   WATCH_INTERVAL_MS: z.coerce.number().int().positive().default(300_000),
+  /**
+   * Grace-poll interval for permanent bootstrap errors (f57.11): how
+   * often a blocked device re-checks /v1/status while waiting for the
+   * console fix. Production default 5 min; the compose E2E shortens it
+   * so self-heal is observable inside the CI budget.
+   */
+  GRACE_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(300_000),
   LOG_LEVEL: z.string().default('info'),
 });
 
@@ -37,6 +44,7 @@ export interface RegistrantConfig {
   dataDir: string;
   clockGateTimeoutMs: number;
   watchIntervalMs: number;
+  gracePollIntervalMs: number;
   logLevel: string;
 }
 
@@ -58,6 +66,7 @@ export function loadConfig(
     dataDir: e.DATA_DIR,
     clockGateTimeoutMs: e.CLOCK_GATE_TIMEOUT_MS,
     watchIntervalMs: e.WATCH_INTERVAL_MS,
+    gracePollIntervalMs: e.GRACE_POLL_INTERVAL_MS,
     logLevel: e.LOG_LEVEL,
   };
 }

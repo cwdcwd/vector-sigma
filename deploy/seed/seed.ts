@@ -13,6 +13,19 @@
  *     in the E2E — short window so the auto-rearm path is observable in
  *     seconds rather than the production 1h)
  *
+ * f57.11 additions:
+ *   - second device `sim-grace-e2e`, status=PENDING, keyed and slotted,
+ *     with NO bundle. e2e.sh starts a grace device container against it;
+ *     the registrant must stay resident on 403 (ACTION REQUIRED line),
+ *     poll /v1/status, and self-heal after the seed flips the device to
+ *     active and arms a bundle through the console-equivalent rotate path.
+ *   - a THIRD device `sim-structured-e2e`, active with a bundle whose
+ *     agent.env carries pre-existing KEY=VALUE lines. e2e.sh drives the
+ *     REAL admin console (login + CSRF + structured form post) to save
+ *     structured fields, asserting the canonical rendering (SOUL.md,
+ *     a2a.json, merged agent.env) lands on the volume — the AC-6/7 class
+ *     extended, not replaced.
+ *
  * Re-run safety: every insert is upsert-ish; on re-run the slot is reset
  * to armed with the short window and delivery_log rows for the device
  * are cleared so audit-count assertions stay deterministic.
@@ -30,10 +43,17 @@ const env = {
   key: process.env.E2E_DEVICE_KEY ?? '',
   agentName: process.env.E2E_AGENT_NAME ?? 'sim-deploy-e2e',
   rearmSeconds: Number(process.env.SEED_REARM_SECONDS ?? 8),
+  /** f57.11: grace device (pending, no bundle) + admin key for the console flow. */
+  graceUuid: process.env.E2E_GRACE_UUID ?? '',
+  graceKey: process.env.E2E_GRACE_KEY ?? '',
+  adminKey: process.env.E2E_ADMIN_KEY ?? '',
 };
 
 for (const k of ['databaseUrl', 'uuid', 'key', 'agentName'] as const) {
   if (env[k] === '') throw new Error(`seed: missing env ${k}`);
+}
+for (const k of ['graceUuid', 'graceKey', 'adminKey'] as const) {
+  if (env[k] === '') throw new Error(`seed: missing env ${k} (f57.11 E2E)`);
 }
 if (!Number.isFinite(env.rearmSeconds) || env.rearmSeconds <= 0) {
   throw new Error(`seed: SEED_REARM_SECONDS must be positive, got ${env.rearmSeconds}`);
@@ -138,6 +158,67 @@ async function main(): Promise<void> {
 
   // Deterministic audit baseline: clear prior rows for this device only.
   await db.delete(deliveryLog).where(eq(deliveryLog.deviceId, env.uuid));
+
+  // ---- f57.11: grace device — PENDING, keyed, slotted, NO bundle.
+  // e2e.sh starts a device container against this row; the registrant's
+  // bootstrap gets 403 (device_not_active), and the grace path must keep
+  // it resident (ACTION REQUIRED line in the logs) until a second seed
+  // pass (invoked by e2e.sh with E2E_GRACE_FIX=1) activates the row and
+  // arms a bundle — then the resident poll self-heals.
+  const graceHash = await hashKey(env.graceKey);
+  await db
+    .insert(devices)
+    .values({
+      balenaUuid: env.graceUuid,
+      agentName: 'sim-grace-e2e',
+      registrarKeyHash: graceHash,
+      status: 'pending',
+      notes: 'grace-path device (f57.11 E2E): pending until the fix pass',
+    })
+    .onConflictDoUpdate({
+      target: devices.balenaUuid,
+      set: { registrarKeyHash: graceHash },
+    });
+  await db
+    .insert(deliverySlots)
+    .values({ deviceId: env.graceUuid, state: 'armed', autoRearmAfter: '1 hour' })
+    .onConflictDoNothing();
+
+  const fixMode = process.env.E2E_GRACE_FIX === '1';
+  if (fixMode) {
+    // The "console fix": activate the row and arm the bundle (same core
+    // the console's bundle save runs through — one code path, f57.11 AC3).
+    const { rotateBundle } = await import('../../registrar/dist/rotate.js');
+    const fixBundle: IdentityBundle = {
+      schema_version: 1,
+      bundle_version: 1,
+      generated_at: new Date().toISOString(),
+      files: [
+        { path: 'config/agent.env', mode: '0600', content: 'AGENT_NAME=sim-grace-e2e\n' },
+      ],
+    };
+    await db
+      .update(devices)
+      .set({ status: 'active' })
+      .where(eq(devices.balenaUuid, env.graceUuid));
+    await rotateBundle(
+      db as never,
+      { now: () => new Date() } as never,
+      env.graceUuid,
+      { kind: 'replace', files: fixBundle.files },
+      { reason: 'bundle_rotated_console' },
+    );
+    console.log('[seed] grace device ACTIVATED + bundle armed (E2E_GRACE_FIX=1)');
+  }
+
+  // ---- f57.11: admin key row so e2e.sh can drive the REAL console flow.
+  const { adminKeys } = await import('../../registrar/dist/db/schema.js');
+  const adminHash = await hashKey(env.adminKey);
+  await db
+    .insert(adminKeys)
+    .values({ hash: adminHash, label: 'e2e-admin' })
+    .onConflictDoNothing();
+  console.log('[seed] admin key seeded (label e2e-admin)');
 
   await client.end();
   console.log(

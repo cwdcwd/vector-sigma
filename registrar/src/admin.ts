@@ -10,6 +10,14 @@ import { SessionManager, SESSION_COOKIE, CSRF_COOKIE, type AdminSession } from '
 import { verifyAdminKey } from './admin-auth.js';
 import { mintDeviceKey } from './keys.js';
 import { rotateBundle, rearmSlot, parseConsoleFiles, EmptyBundleError, InvalidBundleError } from './rotate.js';
+import {
+  FIELD_NAMES,
+  SECRET_FIELDS,
+  InvalidExtraEnvError,
+  renderCanonicalFiles,
+  buildFormPreFill,
+  type StructuredFields,
+} from './structured-fields.js';
 import { readSlot } from './slots.js';
 import { BALENA_UUID_SHORT_RE, BALENA_UUID_CANONICAL_RE, normalizeBalenaUuid } from '@vector-sigma/shared';
 import type { Clock } from './clock.js';
@@ -108,6 +116,36 @@ function deviceView(d: DbRow): html.DeviceRowView {
   };
 }
 
+/**
+ * Harvest the structured-editor fields from a parsed form body (f57.11).
+ * Absent fields stay undefined; blank trimmed values stay blank (the
+ * renderer treats them as no-ops). Secrets are NEVER echoed back — the
+ * form posts them once and this is the only place they are read.
+ */
+function readStructuredFields(body: Map<string, string>): StructuredFields {
+  const out: StructuredFields = {};
+  for (const name of FIELD_NAMES) {
+    const raw = body.get(`structured_${name}`);
+    if (raw !== undefined) out[name] = raw;
+  }
+  return out;
+}
+
+/**
+ * Non-secret fields of a submitted form, for re-rendering the editor after
+ * a bounced save (f57.11). Secret fields are dropped — a failed save must
+ * never echo what was typed into a write-only field.
+ */
+function sanitizeSubmittedPreFill(submitted: StructuredFields): StructuredFields {
+  const out: StructuredFields = {};
+  for (const name of FIELD_NAMES) {
+    if (SECRET_FIELDS.has(name)) continue;
+    const raw = submitted[name];
+    if (raw !== undefined) out[name] = raw;
+  }
+  return out;
+}
+
 interface BlobBundleShape {
   files: Array<{ path: string; content: string }>;
 }
@@ -127,14 +165,26 @@ export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): v
   const preview = document.getElementById('diff-preview');
   if (!preview) return;
   const out = document.getElementById('diff-out');
-  const areas = document.querySelectorAll('textarea[data-path]');
+  const areas = document.querySelectorAll('textarea[data-path], input[data-path]');
   const show = () => {
-    const lines = [];
+    // Group by canonical path (f57.11): several structured fields share one
+    // target file (four render into config/agent.env). The preview shows
+    // the FINAL file set — one block per path, inputs concatenated in DOM
+    // order (the same order the server renders them).
+    const byPath = new Map();
     for (const area of areas) {
       if (area.value === '') continue;
-      lines.push('--- ' + area.dataset.path);
-      lines.push('+++ ' + area.dataset.path + ' (new)');
-      for (const line of area.value.split('\\n')) lines.push('+' + line);
+      const p = area.dataset.path;
+      if (!byPath.has(p)) byPath.set(p, []);
+      byPath.get(p).push(area.value);
+    }
+    const lines = [];
+    for (const [p, parts] of byPath) {
+      lines.push('--- ' + p);
+      lines.push('+++ ' + p + ' (new)');
+      for (const part of parts) {
+        for (const line of part.split('\\n')) lines.push('+' + line);
+      }
     }
     if (lines.length === 0) { preview.classList.add('hidden'); return; }
     out.textContent = lines.join('\\n');
@@ -461,6 +511,22 @@ export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): v
       );
   });
 
+  /**
+   * Current bundle file contents by path (f57.11). Server-side only —
+   * used for structured-field merge and non-secret pre-fill; contents
+   * never render into any page.
+   */
+  async function loadCurrentFileContents(uuid: string): Promise<Map<string, string>> {
+    const blobRows = await db
+      .select({ bundle: identityBlobs.bundle })
+      .from(identityBlobs)
+      .where(eq(identityBlobs.deviceId, uuid));
+    const bundleShape = blobRows[0]?.bundle as BlobBundleShape | undefined;
+    const out = new Map<string, string>();
+    for (const f of bundleShape?.files ?? []) out.set(f.path, f.content);
+    return out;
+  }
+
   // ---------- Bundle editor ----------
 
   app.get('/admin/devices/:uuid/bundle', async (request, reply) => {
@@ -472,6 +538,9 @@ export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): v
     const existing = loaded.blob
       ? loaded.blob.files.map((f) => ({ path: f.path, bytes: f.bytes }))
       : [];
+    // Non-secret pre-fill (f57.11): derive from the current bundle contents
+    // server-side; secrets never render into the page.
+    const currentFileContents = await loadCurrentFileContents(uuid);
     return securityHeaders(reply)
       .type('text/html')
       .send(
@@ -480,6 +549,7 @@ export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): v
           existing,
           version: loaded.blob?.version ?? null,
           csrfToken: session.csrfToken,
+          preFill: buildFormPreFill(currentFileContents, loaded.device.agentName),
         }),
       );
   });
@@ -507,19 +577,58 @@ export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): v
       newPaths.push(body.get(`new_path_${i}`) ?? '');
       newContents.push(body.get(`new_content_${i}`) ?? '');
     }
-    const input = parseConsoleFiles({
-      existing_paths: existingPaths,
-      existing_contents: existingContents,
-      new_paths: newPaths,
-      new_contents: newContents,
-    });
+
+    // Harvested before the try: the bounced-save re-render needs the
+    // operator's non-secret edits even when the render itself threw.
+    const structured = readStructuredFields(body);
 
     try {
+      // Structured fields (fleet-ops-f57.11): render to canonical files via
+      // fixed templates, then merge into the SAME rotate input the raw file
+      // rows feed — one code path, no drift. The renderer merges against
+      // the CURRENT bundle contents (re-queried here, server-side only)
+      // so blank fields keep existing values at FIELD level — several
+      // fields share config/agent.env, and a save of one must not drop
+      // the delivered lines of another. Existing content never reaches
+      // the browser; only the merged result is stored. Inside the try so
+      // extra_env validation errors bounce to the editor as 400s.
+      const currentFileContents = await loadCurrentFileContents(uuid);
+      const structuredFiles = renderCanonicalFiles(structured, currentFileContents);
+      // A raw upload with the SAME canonical name REPLACES the rendered
+      // section (uploaded file wins — owner ruling f57.11): drop any
+      // rendered canonical whose path also carries actual raw CONTENT in
+      // this submission. A blank existing-file row is "keep existing",
+      // not an upload, and must NOT suppress the structured render.
+      const rawTargets = new Set<string>();
+      for (let i = 0; i < existingPaths.length; i++) {
+        if (existingPaths[i].trim() !== '' && (existingContents[i] ?? '').trim() !== '') {
+          rawTargets.add(existingPaths[i].trim());
+        }
+      }
+      for (let i = 0; i < newPaths.length; i++) {
+        if (newPaths[i].trim() !== '' && (newContents[i] ?? '').trim() !== '') {
+          rawTargets.add(newPaths[i].trim());
+        }
+      }
+      const effectiveStructured = structuredFiles.filter((f) => !rawTargets.has(f.path));
+
+      const input = parseConsoleFiles({
+        existing_paths: existingPaths,
+        existing_contents: existingContents,
+        new_paths: newPaths,
+        new_contents: newContents,
+        // Rendered canonicals join as updates: same-path merge semantics as
+        // an existing-file content update.
+        structured_updates: effectiveStructured,
+      });
+
       await rotateBundle(db, clock, uuid, input, { sourceIp: request.ip, reason: 'bundle_rotated_console' });
       return reply.redirect(`/admin/devices/${uuid}`, 303);
     } catch (err) {
-      const message =
-        err instanceof EmptyBundleError || err instanceof InvalidBundleError ? err.message : 'Save failed.';
+      // f57.11: extra_env validation errors carry operator-actionable
+      // messages; keep them alongside the bundle-shape errors.
+      const known = [EmptyBundleError, InvalidBundleError, InvalidExtraEnvError];
+      const message = known.some((c) => err instanceof c) ? (err as Error).message : 'Save failed.';
       const existing = loaded.blob
         ? loaded.blob.files.map((f) => ({ path: f.path, bytes: f.bytes }))
         : [];
@@ -533,6 +642,9 @@ export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): v
             version: loaded.blob?.version ?? null,
             csrfToken: session.csrfToken,
             error: message,
+            // Re-render keeps the operator's non-secret edits visible on a
+            // bounced save; secrets never echo back.
+            preFill: sanitizeSubmittedPreFill(structured),
           }),
         );
     }
