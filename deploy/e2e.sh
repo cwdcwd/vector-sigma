@@ -470,6 +470,100 @@ ac9_litellm_smoke() {
   fi
 }
 
+# ---- AC10 (f57.15): the VS queue plane — dolt health, scotty serving,
+# bd client round-trip against the compose dolt ------------------------------
+
+ac10_queue_plane() {
+  note "AC10: VS queue plane — dolt + scotty + bd round-trip (f57.15)"
+  local dolt_password
+  dolt_password="$(grep -E '^DOLT_PASSWORD=' "$ENV_FILE" | cut -d= -f2-)"
+  if [ -z "$dolt_password" ]; then
+    fail AC10 "DOLT_PASSWORD missing from $ENV_FILE"
+    return
+  fi
+
+  # 1. Dolt container healthy: the documented liveness probe via the compose
+  # exec path (the healthcheck asserts the in-container shape; this asserts
+  # the SAME query lands over the mysql protocol from the compose network).
+  local q
+  if q="$($COMPOSE exec -T dolt dolt --host 127.0.0.1 --port 3306 --no-tls sql -q 'select current_timestamp();' 2>/dev/null)" \
+    && [ -n "$q" ]; then
+    pass "AC10 dolt healthy" "current_timestamp() answered: $(printf '%s' "$q" | tail -1)"
+  else
+    fail "AC10 dolt healthy" "no answer to select current_timestamp()"
+  fi
+
+  # 2. Scotty serves: /api/projects must 200 (the picker data route; verified
+  # present at cc55734). Poll: the patched image build is cold on CI runners.
+  local deadline=$((SECONDS + 240)) code=""
+  until code="$(curl -s -o /dev/null -w '%{http_code}' -m 5 http://127.0.0.1:3306/api/projects 2>/dev/null)" \
+    && [ "$code" = "200" ]; do
+    [ $SECONDS -ge $deadline ] && break
+    sleep 3
+  done
+  if [ "$code" = "200" ]; then
+    pass "AC10 scotty serves" "http://127.0.0.1:3306/api/projects -> 200"
+  else
+    fail "AC10 scotty serves" "last code: ${code:-none} (deadline 240s)"
+    note "scotty container recent logs (self-diagnosis):"
+    docker logs "$PROJECT-scotty-1" 2>&1 | tail -25 || true
+    return
+  fi
+
+  # 3. bd round-trip against the compose dolt: init (the one-time act —
+  # throwaway CI volume, so init IS correct here), create, list, close.
+  # The bd binary is the scotty image's (bd 1.2.2 pinned); running it via
+  # compose exec uses the image's own client against the compose-network dolt.
+  local workdir=/tmp/vs-queue-e2e
+  rm -rf "$workdir"; mkdir -p "$workdir"
+  if ! docker run --rm \
+      --network "$PROJECT"_default \
+      -e BEADS_DOLT_PASSWORD="$dolt_password" \
+      -v "$workdir":/workspace -w /workspace \
+      --entrypoint /usr/local/bin/bd.real \
+      "$PROJECT-scotty" init --server \
+        --server-host dolt --server-port 3306 --server-user vs \
+        --database vs_ops --non-interactive >/dev/null 2>&1; then
+    fail "AC10 bd init" "bd init --server failed against compose dolt"
+    return
+  fi
+  pass "AC10 bd init" "server-mode init minted the project contract"
+  docker run --rm \
+    --network "$PROJECT"_default \
+    -e BEADS_DOLT_PASSWORD="$dolt_password" \
+    -v "$workdir":/workspace -w /workspace \
+    --entrypoint /usr/local/bin/bd.real \
+    "$PROJECT-scotty" create "e2e round-trip probe" -y >/dev/null 2>&1 \
+    || { fail "AC10 bd create" "bd create failed"; return; }
+  pass "AC10 bd create" "probe bead created"
+  local listed
+  listed="$(docker run --rm \
+    --network "$PROJECT"_default \
+    -e BEADS_DOLT_PASSWORD="$dolt_password" \
+    -v "$workdir":/workspace -w /workspace \
+    --entrypoint /usr/local/bin/bd.real \
+    "$PROJECT-scotty" list 2>/dev/null || true)"
+  if printf '%s' "$listed" | grep -q 'e2e round-trip probe'; then
+    pass "AC10 bd list" "probe bead visible in bd list"
+  else
+    fail "AC10 bd list" "probe bead not listed"
+  fi
+  local probe_id
+  probe_id="$(printf '%s' "$listed" | grep -oE '[a-z0-9]{3}-[a-zA-Z0-9]+' | head -1 || true)"
+  if [ -n "$probe_id" ]; then
+    if docker run --rm \
+        --network "$PROJECT"_default \
+        -e BEADS_DOLT_PASSWORD="$dolt_password" \
+        -v "$workdir":/workspace -w /workspace \
+        --entrypoint /usr/local/bin/bd.real \
+        "$PROJECT-scotty" close "$probe_id" >/dev/null 2>&1; then
+      pass "AC10 bd close" "probe bead $probe_id closed"
+    else
+      fail "AC10 bd close" "bd close failed for $probe_id"
+    fi
+  fi
+}
+
 # ---- main ---------------------------------------------------------------------
 
 case "${1:-}" in
@@ -487,6 +581,7 @@ ac6_volume_state
 ac7_console_structured_save
 ac8_grace_self_heal
 ac9_litellm_smoke
+ac10_queue_plane
 
 echo
 echo "[e2e] ===== RESULT: $PASS passed, $FAIL failed ====="

@@ -1,0 +1,11 @@
+{
+  "_comment": "bd server-mode join config for the scotty container (fleet-ops-f57.15). This is the .beads/metadata.json the in-image bd reads when scotty runs `bd export --json` against BEADS_REPO=/queue-join. Field names MUST match bd 1.2.2 exactly (beads-shared-db skill: dolt_mode, dolt_server_host, dolt_server_user, dolt_database, project_id, dolt_server_port). PROJECT_ID IS THE FLEET CONTRACT — it is minted ONCE by the coordinator's first `bd init --server` against the container dolt (see scripts/vs-queue-bootstrap.md, the landmine section) and pasted here + into every VS device join config. NEVER regenerate it; obtain it from the coordinator or fleet memory.",
+  "database": "vs_ops",
+  "backend": "dolt",
+  "dolt_mode": "server",
+  "dolt_server_host": "dolt",
+  "dolt_server_user": "vs",
+  "dolt_database": "vs_ops",
+  "project_id": "SET_BY_COORDINATOR_AFTER_FIRST_INIT — see scripts/vs-queue-bootstrap.md",
+  "dolt_server_port": 3306
+}

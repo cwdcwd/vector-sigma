@@ -1,0 +1,122 @@
+diff --git a/app/p/[projectId]/page.tsx b/app/p/[projectId]/page.tsx
+index 2c18912..e72f692 100644
+--- a/app/p/[projectId]/page.tsx
++++ b/app/p/[projectId]/page.tsx
+@@ -1,4 +1,3 @@
+-import { Suspense } from "react";
+ import type { Metadata } from "next";
+ import { AppShell } from "@/components/app-shell";
+ import { projectTitle } from "@/lib/app-title";
+@@ -20,5 +19,14 @@ export default async function ProjectPage({ params }: Props) {
+   // A project route owns transient UI state (drawer trails, palettes, and the
+   // notification watcher baseline). A distinct key prevents state from one
+   // client-side project visit leaking into the next one.
+-  return <Suspense fallback={<div className="p-6 text-sm">Loading project…</div>}><AppShell key={projectId} projectId={projectId} /></Suspense>;
++  //
++  // NOTE (fleet patch, doombot 2026-09-17, bead fleet-ops-8ea): no Suspense
++  // boundary here. A pending boundary's server content is swapped in by
++  // React's completeBoundary, which schedules via requestAnimationFrame —
++  // an event that never fires in a hidden (background) tab, so deep links
++  // opened in background tabs hung on "Loading project…" forever. AppShell
++  // renders synchronously during SSR (react-query does not suspend, and the
++  // URL search-params hook no longer bails out to client rendering), so it
++  // can stream inline like the picker page, which always rendered fine.
++  return <AppShell key={projectId} projectId={projectId} />;
+ }
+diff --git a/hooks/use-url-state.ts b/hooks/use-url-state.ts
+index 0cf30fb..a6d7113 100644
+--- a/hooks/use-url-state.ts
++++ b/hooks/use-url-state.ts
+@@ -1,19 +1,80 @@
+ "use client";
+ 
+ import * as React from "react";
+-import { useSearchParams } from "next/navigation";
+ 
+ export type UrlHistoryMode = "push" | "replace";
+ export type UrlParamsUpdater = (params: URLSearchParams) => void;
+ export type UrlUpdater = (url: URL) => void;
+ 
+ /**
+- * Read and update state in the current URL without navigating away. Native
+- * history updates are reflected by Next's useSearchParams, including browser
+- * back and forward navigation.
++ * Read and update state in the current URL without navigating away.
++ *
++ * NOTE (fleet patch, doombot 2026-09-17, bead fleet-ops-8ea): this previously
++ * called Next's `useSearchParams()`, which forces the whole AppShell subtree
++ * into a pending Suspense boundary (CSR bailout). The boundary swap is
++ * scheduled via requestAnimationFrame, which NEVER fires in a hidden tab —
++ * so a deep link opened in a background tab sat on "Loading project…"
++ * forever (and hydration/fetches never started) until the tab was focused.
++ *
++ * Reading `window.location.search` via useSyncExternalStore instead removes
++ * the bailout: the page streams fully-rendered HTML like the picker page,
++ * which renders fine in hidden tabs. Browser history (back/forward) is still
++ * honored via popstate, and Next client navigations re-sync via the
++ * navigationchange event where available.
+  */
++
++const EMPTY = "?";
++
++function currentSearch(): string {
++  return window.location.search || EMPTY;
++}
++
++// One shared listener set + version counter for all hook instances.
++let listeners: Array<() => void> = [];
++const notify = () => listeners.forEach((l) => l());
++
++if (typeof window !== "undefined") {
++  window.addEventListener("popstate", notify);
++  // Navigation API (Next client-side route changes surface here in Chromium).
++  (window as unknown as { addEventListener: (t: string, f: () => void) => void })
++    .addEventListener?.("navigationchange", notify);
++  // Patch history once so programmatic push/replace also notify (Next and the
++  // app both mutate history directly without dispatching popstate).
++  const wrapHistory = (method: "pushState" | "replaceState") => {
++    const orig = history[method].bind(history);
++    history[method] = function (this: History, ...args: unknown[]) {
++      // eslint-disable-next-line @typescript-eslint/no-explicit-any
++      const r = (orig as any)(...args);
++      notify();
++      return r;
++    } as typeof orig;
++  };
++  wrapHistory("pushState");
++  wrapHistory("replaceState");
++}
++
++function subscribe(cb: () => void): () => void {
++  listeners.push(cb);
++  return () => {
++    listeners = listeners.filter((l) => l !== cb);
++  };
++}
++
++function getSnapshot(): string {
++  return currentSearch();
++}
++
++function getServerSnapshot(): string {
++  // Deterministic empty query on the server: the SSR render treats every
++  // param as absent. First client render uses the same snapshot via
++  // getServerSnapshot during hydration, then re-renders with the real URL
++  // — matches the old behavior where SSR saw no search params either.
++  return EMPTY;
++}
++
+ export function useUrlState() {
+-  const searchParams = useSearchParams();
++  const search = React.useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
++  const searchParams = React.useMemo(() => new URLSearchParams(search), [search]);
+ 
+   const updateLocation = React.useCallback(
+     (update: UrlUpdater, mode: UrlHistoryMode = "push") => {
+@@ -38,4 +99,4 @@ export function useUrlState() {
+   );
+ 
+   return { searchParams, updateLocation, updateUrl };
+-}
++}
+\ No newline at end of file

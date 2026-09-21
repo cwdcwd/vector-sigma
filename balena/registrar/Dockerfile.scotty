@@ -1,0 +1,97 @@
+# balena/registrar/Dockerfile.scotty — the VS queue dashboard (fleet-ops-f57.15).
+#
+# Fleet-proven stack, pinned (the bead's provenance contract):
+#   - Bead Me Up Scotty v0.3.0 = cc55734df9ba44262b34a2133f0f10f410021e19
+#     (tag 12de35a9; verified 2026-09-21: v0.3.0's tag object points at cc55734)
+#   - the fleet's 8ea deep-link patch (hydrated-tab hang, fleet-ops-8ea:
+#     sha256 1bdd684884bb0a63ec1f48c41666c4e2809b4dbc6522dc7600db3f60cea8bc93,
+#     5243B/122L, verified byte-exact this session; applies clean to cc55734)
+#   - bd CLI pinned at 1.2.2 (fleet convention fleet/conventions/bd-version-pin:
+#     bd 1.3.x auto-migrates the shared Dolt schema and would lock out every
+#     other client — NEVER bump past the fleet pin; upstream Dockerfile defaults
+#     to BD_VERSION=1.1.0, so the pin is load-bearing)
+#
+# The build fetches the upstream source at the pinned commit from GitHub
+# (public, MIT) and applies the vendored patch from THIS repo — no other
+# network access needed. The balena remote builder receives only this app dir
+# (balena-app-dir-self-contained convention), so the vendored patch must live
+# in balena/registrar/ with this Dockerfile.
+#
+# Result: image = scotty @ cc55734 + 8ea patch + bd 1.2.2 + bd-readonly wrapper
+# at /usr/local/bin/bd (scotty's default BD_BIN) with the real binary at
+# /usr/local/bin/bd.real — the two-layer read-only posture (see bd-readonly).
+
+FROM node:26.4.0-slim AS source
+# NOTE: cloned with --filter=blob:none is NOT used: we need working-tree bytes
+# to build. Depth-1 clone at the pinned SHA; the tag object is verified at
+# build time by asserting the checked-out HEAD equals the pin.
+ARG SCOTTY_SHA=cc55734df9ba44262b34a2133f0f10f410021e19
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /scotty
+RUN git clone --quiet --no-checkout https://github.com/brendan-appstart/bead-me-up-scotty.git src \
+    && cd src \
+    && git fetch --quiet origin "${SCOTTY_SHA}" \
+    && git checkout --quiet "${SCOTTY_SHA}" \
+    && test "$(git rev-parse HEAD)" = "${SCOTTY_SHA}"
+# Apply the fleet's 8ea patch (vendored in-repo; hash-checked at build start).
+COPY scotty-8ea-deep-link.patch /tmp/scotty-8ea-deep-link.patch
+RUN sha256sum /tmp/scotty-8ea-deep-link.patch | grep -q '^1bdd684884bb0a63ec1f48c41666c4e2809b4dbc6522dc7600db3f60cea8bc93' \
+    && cd /scotty/src \
+    && git apply --check /tmp/scotty-8ea-deep-link.patch \
+    && git apply /tmp/scotty-8ea-deep-link.patch
+
+# ── bd 1.2.2: prebuilt release binary (upstream scotty Dockerfile shape) ─────
+FROM node:26.4.0-alpine AS bd
+# Pinned per the fleet convention; TARGETARCH matches Docker's values used in
+# the beads release asset names (arm64 on the Pi, amd64 in CI).
+ARG BD_VERSION=1.2.2
+ARG TARGETARCH
+ADD "https://github.com/gastownhall/beads/releases/download/v${BD_VERSION}/beads_${BD_VERSION}_linux_${TARGETARCH}.tar.gz" /tmp/bd.tar.gz
+RUN tar -xzf /tmp/bd.tar.gz -C /tmp && mv /tmp/bd /usr/local/bin/bd.real
+
+# ── Builder: scotty npm ci + build (upstream shape, 8ea-patched tree) ─────────
+FROM node:26.4.0-alpine AS builder
+WORKDIR /app
+COPY --from=source /scotty/src/package.json /scotty/src/package-lock.json ./
+RUN npm ci
+COPY --from=source /scotty/src/ ./
+# Standalone output is opt-in upstream (next.config.ts); the image runs the
+# standalone server. NEXT_STANDALONE=1 mirrors the upstream Dockerfile.
+ENV NEXT_STANDALONE=1
+RUN npm run build
+
+# ── Runner: upstream shape + our wrapper layer ───────────────────────────────
+FROM node:26.4.0-slim AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+ENV PORT=3306
+ENV HOSTNAME=0.0.0.0
+ENV HOME=/home/nextjs
+ENV XDG_CONFIG_HOME=/home/nextjs/.config
+# Upstream user setup (uid/gid 1001, world-writable home/config so any
+# --user remap can still write app settings — docker-base-image-builtin-user
+# convention: keep the image's own user shape rather than forking it).
+RUN groupadd --system --gid 1001 nodejs \
+ && useradd --system --uid 1001 --gid nodejs --create-home --home-dir /home/nextjs nextjs \
+ && mkdir -p /home/nextjs/.config \
+ && chown -R nextjs:nodejs /home/nextjs \
+ && chmod 0777 /home/nextjs /home/nextjs/.config
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+COPY --from=builder --chown=nextjs:nodejs /app/public ./public
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/@11ty /node_modules/@11ty
+# bd: real binary + the read-only wrapper in its default PATH slot. bd itself
+# is glibc-linked (embedded Dolt, CGO) — slim (not alpine) runner, same as
+# upstream.
+COPY --from=bd /usr/local/bin/bd.real /usr/local/bin/bd.real
+COPY --chown=nextjs:nodejs bd-readonly /usr/local/bin/bd
+# f57.15: the join-config workspace BEADS_REPO points at (server-mode join to
+# the dolt service — config-only, NEVER bd init inside the image; the
+# project_id is the fleet contract set by the coordinator, see
+# queue-join/metadata.json + scripts/vs-queue-bootstrap.md).
+COPY --chown=nextjs:nodejs queue-join /queue-join
+RUN chmod 0755 /usr/local/bin/bd /usr/local/bin/bd.real
+USER nextjs
+EXPOSE 3306
+CMD ["node", "server.js"]
