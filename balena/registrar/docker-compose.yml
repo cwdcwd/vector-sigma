@@ -1,4 +1,5 @@
-# Vector Sigma registrar-fleet app — registrar + Postgres on balenaOS.
+# Vector Sigma registrar-fleet app — registrar + Postgres + the VS fleet's
+# own LiteLLM gateway (f57.12) on balenaOS.
 #
 # Runs on the `registrar` balena fleet (1 device: Raspberry Pi 5,
 # architecture aarch64). This compose is read by the balena supervisor
@@ -33,6 +34,13 @@ version: "2.4"
 # (fleet-wide, so postgres and registrar see the same value) and
 # SESSION_SECRET (registrar service). Dashboard variables override the
 # static compose environment below.
+#
+# f57.12 gateway additions: LITELLM_MASTER_KEY, LITELLM_PG_PASSWORD and
+# OLLAMA_CLOUD_API_KEY are owner-set balenaCloud FLEET variables (the bead's
+# variable contract — fleet scope per the spec; service scope would be a
+# hardening option, noted in the README). OLLAMA_CLOUD_API_BASE ships as a
+# static structural value here (public endpoint, not a secret); override via
+# dashboard variable only if Ollama Cloud's URL ever changes.
 
 services:
   postgres:
@@ -81,6 +89,66 @@ services:
       # feature tunnels to DEVICE port 80 only, so 80 is the host side.
       - "80:3000"
     healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    stop_grace_period: 60s
+    stop_signal: SIGTERM
+    restart: always
+
+  # f57.12: one-shot provisioning of the gateway's database (idempotent role
+  # + database + least-privilege REVOKE; safe on the LIVE pgdata volume —
+  # see README "The VS gateway (LiteLLM)"). The script ships in an image so
+  # the balena supervisor and the deploy/ self-host compose run byte-identical
+  # provisioning (the supervisor does no ${VAR} substitution). Uses the
+  # POSTGRES_PASSWORD fleet var as the superuser credential and mints the
+  # `litellm` role with the LITELLM_PG_PASSWORD fleet var — same parts the
+  # litellm service's entrypoint assembles its DATABASE_URL from, so the URL
+  # and the role can never disagree (the f57.8 trap, closed by construction).
+  litellm-init:
+    build:
+      context: .
+      dockerfile: Dockerfile.litellm-init
+    environment:
+      # Structural (mirror of the postgres service's role/db — the superuser
+      # this script connects as). Secrets arrive as fleet variables:
+      # POSTGRES_PASSWORD + LITELLM_PG_PASSWORD (no static values here).
+      PGHOST: postgres
+      PGUSER: vsigma
+      PGDATABASE: vsigma
+    depends_on:
+      - postgres
+    restart: "no"
+
+  # f57.12: the VS fleet's own LiteLLM gateway — models front door + virtual
+  # keys + the /a2a/* mesh for VS devices. Same image the deploy/ self-host
+  # example builds (config baked by Dockerfile.litellm — the supervisor
+  # cannot bind-mount). Port 4000 published to the device LAN per the AC;
+  # devices point GATEWAY_URL / A2A_PUBLIC_URL at http://<device-LAN-IP>:4000.
+  # No reverse proxy in this topology → PROXY_BASE_URL unset is CORRECT (cards
+  # advertise from the request Host header = the master's LAN IP); the README
+  # documents it as an optional dashboard override for future proxy fronting.
+  litellm:
+    build:
+      context: .
+      dockerfile: Dockerfile.litellm
+    environment:
+      # Structural parts (the entrypoint assembles DATABASE_URL; password
+      # arrives as the LITELLM_PG_PASSWORD fleet variable).
+      LITELLM_PG_USER: litellm
+      LITELLM_PG_HOST: postgres
+      LITELLM_PG_PORT: "5432"
+      LITELLM_PG_DB: litellm
+      # Public structural endpoint (not a secret); owner-set fleet vars:
+      # LITELLM_MASTER_KEY, LITELLM_PG_PASSWORD, OLLAMA_CLOUD_API_KEY.
+      OLLAMA_CLOUD_API_BASE: https://ollama.com/v1
+    ports:
+      - "4000:4000"
+    healthcheck:
+      # Process liveness — parity with the registrar service's healthcheck
+      # shape (the litellm image ships no curl/wget; /health/liveliness is
+      # asserted externally by the deploy E2E smoke).
       test: ["CMD-SHELL", "kill -0 1"]
       interval: 30s
       timeout: 5s

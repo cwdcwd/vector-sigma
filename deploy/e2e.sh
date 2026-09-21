@@ -425,6 +425,51 @@ ac8_grace_self_heal() {
   fi
 }
 
+ac9_litellm_smoke() {
+  note "AC9: VS gateway smoke — liveliness + models list (f57.12)"
+  local base="http://127.0.0.1:4000"
+  local master
+  master="$(grep -E '^LITELLM_MASTER_KEY=' "$ENV_FILE" | cut -d= -f2-)"
+  if [ -z "$master" ]; then
+    fail AC9 "LITELLM_MASTER_KEY missing from $ENV_FILE"
+    return
+  fi
+  # 1. Liveliness: poll /health/liveliness for 200 — generous deadline: cold
+  # start runs prisma migrations against a fresh database (tens of seconds),
+  # and the compose build pulls the litellm base image on cold runners.
+  local deadline=$((SECONDS + 240)) code=""
+  until code="$(curl -s -o /dev/null -w '%{http_code}' -m 5 "$base/health/liveliness" 2>/dev/null)" \
+    && [ "$code" = "200" ]; do
+    [ $SECONDS -ge $deadline ] && break
+    sleep 3
+  done
+  if [ "$code" = "200" ]; then
+    pass "AC9 liveliness" "/health/liveliness -> 200"
+  else
+    fail "AC9 liveliness" "last code: ${code:-none} (deadline 240s)"
+    note "litellm container recent logs (self-diagnosis):"
+    docker logs "$PROJECT-litellm-1" 2>&1 | tail -25 || true
+    return
+  fi
+  # 2. Models list: the config-served model list must contain the explicit
+  # j9f groups (a call to /v1/models with the master key — no completion, no
+  # upstream traffic; the API key value is never exercised against Ollama).
+  # Substring checks: /v1/models ids are the config model_names, but a
+  # substring match stays robust to any deployment-version id decoration.
+  local models
+  models="$(curl -s -m 10 "$base/v1/models" -H "Authorization: Bearer $master" 2>/dev/null || true)"
+  if [ -n "$models" ]; then
+    if printf '%s' "$models" | grep -q 'glm-5\.3' \
+      && printf '%s' "$models" | grep -q 'glm-5\.2'; then
+      pass "AC9 models list" "glm-5.3 + glm-5.2 groups served (j9f explicit groups)"
+    else
+      fail "AC9 models list" "explicit groups missing from /v1/models: $models"
+    fi
+  else
+    fail "AC9 models list" "no response from $base/v1/models"
+  fi
+}
+
 # ---- main ---------------------------------------------------------------------
 
 case "${1:-}" in
@@ -441,6 +486,7 @@ ac5_audit_complete
 ac6_volume_state
 ac7_console_structured_save
 ac8_grace_self_heal
+ac9_litellm_smoke
 
 echo
 echo "[e2e] ===== RESULT: $PASS passed, $FAIL failed ====="

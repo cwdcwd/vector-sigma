@@ -238,8 +238,8 @@ export const STRUCTURED_FIELD_ROWS: StructuredFieldRow[] = [
   { name: 'gateway_api_key', label: 'Gateway API key', canonical: 'config/agent.env', secret: true, multiline: false, placeholder: 'sk-…', hint: 'Write-only: blank keeps the existing value.' },
   { name: 'extra_env', label: 'Extra env (KEY=VALUE lines)', canonical: 'config/agent.env', secret: false, multiline: true, placeholder: 'LOG_LEVEL=debug\nA2A_UUID=…' },
   { name: 'soul_contents', label: 'SOUL.md contents', canonical: 'SOUL.md', secret: false, multiline: true, placeholder: '# SOUL\n\nYou are …' },
-  { name: 'a2a_identity_key', label: 'A2A identity key', canonical: 'config/a2a.json', secret: true, multiline: false, placeholder: 'a2a-key…', hint: 'Write-only: blank keeps the existing value.' },
-  { name: 'a2a_trusted_peers', label: 'A2A trusted peers', canonical: 'config/a2a.json', secret: false, multiline: true, placeholder: 'ultronbot\nkangbot' },
+  { name: 'a2a_identity_key', label: 'A2A identity key', canonical: 'config/a2a.json', secret: true, multiline: false, placeholder: 'a2a-key…', hint: 'Write-only: blank keeps the existing value. Devices mesh through the master gateway (/a2a/* pass-through): set A2A_PUBLIC_URL on the device to http://<master-LAN-IP>:4000 — see balena/registrar/README.md.' },
+  { name: 'a2a_trusted_peers', label: 'A2A trusted peers', canonical: 'config/a2a.json', secret: false, multiline: true, placeholder: 'ultronbot\nkangbot', hint: 'One agent id per line. Peer traffic rides the master device gateway at /a2a/* (fleet-ops-f57.12): each device points A2A_PUBLIC_URL at http://<master-LAN-IP>:4000 so its card is served by the VS gateway, not ai.lan.' },
   { name: 'slack_bot_token', label: 'Slack bot token', canonical: 'config/secrets.env', secret: true, multiline: false, placeholder: 'xoxb-…', hint: 'Write-only: blank keeps the existing value.' },
   { name: 'github_app_pem', label: 'GitHub App PEM', canonical: 'config/github-app.pem', secret: true, multiline: true, placeholder: '-----BEGIN RSA PRIVATE KEY-----\n…\n-----END RSA PRIVATE KEY-----', hint: 'Write-only: blank keeps the existing value.' },
 ];

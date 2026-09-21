@@ -1,0 +1,14 @@
+# balena/registrar/Dockerfile.litellm-init — one-shot provisioning image for
+# the VS gateway's database (fleet-ops-f57.12).
+#
+# The init logic ships as an IMAGE (not a compose `command:` string) so the
+# balena supervisor (no variable substitution) and plain docker compose
+# (${VAR} interpolation) run byte-identical scripts — no per-side escaping
+# fork of the provisioning SQL.
+
+FROM postgres:16-alpine
+
+COPY litellm-init.sh /usr/local/bin/litellm-init.sh
+RUN chmod +x /usr/local/bin/litellm-init.sh
+
+CMD ["/usr/local/bin/litellm-init.sh"]
