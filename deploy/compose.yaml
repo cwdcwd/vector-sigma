@@ -112,7 +112,7 @@ services:
   # fail-closed here (deploy's ${VAR:?} pattern): DOLT_PASSWORD +
   # DOLT_ROOT_PASSWORD + BEADS_DOLT_PASSWORD must exist in deploy/.env.
   dolt:
-    image: dolthub/dolt-sqlserver:2.3.5
+    image: dolthub/dolt-sql-server:2.3.5
     environment:
       DOLT_DATABASE: vs_ops
       DOLT_USER: vs
