@@ -483,12 +483,14 @@ ac10_queue_plane() {
   fi
 
   # 1. Dolt container healthy: the documented liveness query, AUTHENTICATED
-  # as the app user (a root probe without a password is Access-denied once
-  # DOLT_ROOT_PASSWORD is set — dolthub issue #7428; the run-2 red). The
-  # healthcheck asserts the in-container shape; this asserts the same
-  # query lands over the mysql protocol from the compose network.
+  # as the app user, with dolt's client flags as GLOBAL flags BEFORE the
+  # sql subcommand (the CLI rejects them after the subcommand — proven live
+  # against dolt 2.3.5; a root probe without a password is Access-denied
+  # once DOLT_ROOT_PASSWORD is set — dolthub issue #7428; both were this
+  # lane's CI run-2/run-3 reds). The healthcheck asserts the in-container
+  # shape; this asserts the same query lands from the compose network.
   local q
-  if q="$($COMPOSE exec -T dolt dolt sql --host 127.0.0.1 --port 3306 --no-tls -u vs -p "$dolt_password" -q 'select current_timestamp();' 2>/dev/null)" \
+  if q="$($COMPOSE exec -T dolt dolt --host 127.0.0.1 --port 3306 --no-tls -u vs -p "$dolt_password" sql -q 'select current_timestamp();' 2>/dev/null)" \
     && [ -n "$q" ]; then
     pass "AC10 dolt healthy" "current_timestamp() answered as app user: $(printf '%s' "$q" | tail -1)"
   else

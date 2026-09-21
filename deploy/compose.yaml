@@ -128,13 +128,15 @@ services:
       # contract; documented in scripts/vs-queue-bootstrap.md.
       - "3326:3306"
     healthcheck:
-      # Same authenticated liveness probe as the balena side (probe as the
-      # app user, not root — root is passworded via DOLT_ROOT_PASSWORD, and a
-      # passwordless root probe is Access-denied). `$$` defers expansion to
-      # the in-container shell: compose config-time interpolation would bake
-      # the secret into `docker inspect` output; runtime expansion reads the
-      # service's own environment.
-      test: ["CMD-SHELL", "dolt sql --host 127.0.0.1 --port 3306 --no-tls -u vs -p \"$$DOLT_PASSWORD\" -q 'select current_timestamp();'"]
+      # Same authenticated liveness probe as the balena side, with the
+      # dolt client flags as GLOBAL flags BEFORE the sql subcommand (the
+      # CLI rejects them after the subcommand — proven live against dolt
+      # 2.3.5) and app-user auth (root is passworded via
+      # DOLT_ROOT_PASSWORD; a passwordless root probe is Access-denied).
+      # `$$` defers expansion to the in-container shell: compose config-time
+      # interpolation would bake the secret into `docker inspect` output;
+      # runtime expansion reads the service's own environment.
+      test: ["CMD-SHELL", "dolt --host 127.0.0.1 --port 3306 --no-tls -u vs -p \"$$DOLT_PASSWORD\" sql -q 'select current_timestamp();'"]
       interval: 10s
       timeout: 5s
       retries: 30

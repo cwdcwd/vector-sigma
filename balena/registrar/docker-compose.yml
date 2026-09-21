@@ -187,16 +187,19 @@ services:
       # Dolt :3326 serving every fleet client.
       - "3326:3306"
     healthcheck:
-      # Dolt's documented liveness query, but AUTHENTICATED: once
-      # DOLT_ROOT_PASSWORD is set, a root probe without a password is
-      # Access-denied (dolthub issue #7428's exact symptom) and the
-      # container flaps unhealthy for its whole retry budget — CI run-2's
-      # red. Probe as the app user instead: the entrypoint creates
-      # DOLT_USER/DOLT_PASSWORD before serving; `$DOLT_PASSWORD` is
-      # expanded by the in-container shell from the fleet variable (the
-      # supervisor does no interpolation itself). Fail-closed: a missing
-      # fleet variable fails the healthcheck rather than probing blind.
-      test: ["CMD-SHELL", "dolt sql --host 127.0.0.1 --port 3306 --no-tls -u vs -p \"$DOLT_PASSWORD\" -q 'select current_timestamp();'"]
+      # Dolt's documented liveness query, AUTHENTICATED, with the client
+      # flags in the right position: dolt's connection flags are GLOBAL flags
+      # — they must PRECEDE the subcommand (`dolt --host ... sql -q ...`);
+      # placed after `sql` the CLI rejects them ("unknown option `host'",
+      # proven live against dolt 2.3.5 — CI run-3's red). And the probe
+      # must authenticate as the app user: once DOLT_ROOT_PASSWORD is set,
+      # a root probe without a password is Access-denied (dolthub issue
+      # #7428's symptom — CI run-2's red). The entrypoint creates
+      # DOLT_USER/DOLT_PASSWORD before serving; the in-container shell
+      # expands the password from the fleet variable at probe time (the
+      # supervisor does no interpolation). Fail-closed: a missing fleet
+      # variable fails the healthcheck rather than probing blind.
+      test: ["CMD-SHELL", "dolt --host 127.0.0.1 --port 3306 --no-tls -u vs -p \"$DOLT_PASSWORD\" sql -q 'select current_timestamp();'"]
       interval: 10s
       timeout: 5s
       retries: 30
