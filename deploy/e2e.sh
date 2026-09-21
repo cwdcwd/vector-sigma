@@ -558,20 +558,20 @@ ac10_queue_plane() {
   local bd_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
   # The compose dolt publishes host 3326 (the queue contract — device bd
   # clients reach it exactly this way); the host-side client connects there.
-  if ! (cd "$workdir" && PATH="$bd_path" CI=true "$bd_bin" init --server --external \
+  if ! (cd "$workdir" && PATH="$bd_path" BEADS_DOLT_PASSWORD="$dolt_password" CI=true "$bd_bin" init --server --external \
         --server-host 127.0.0.1 --server-port 3326 --server-user vs \
         --database vs_ops --non-interactive) 2>"$init_err"; then
     fail "AC10 bd init" "bd init failed: $(tail -3 "$init_err" 2>/dev/null | tr '\n' ' ') [host PATH=$PATH, git=$(command -v git || echo none)]"
     return
   fi
   pass "AC10 bd init" "server-mode init minted the project contract"
-  if ! (cd "$workdir" && PATH="$bd_path" CI=true "$bd_bin" create "e2e round-trip probe") >/dev/null 2>"$init_err"; then
+  if ! (cd "$workdir" && PATH="$bd_path" BEADS_DOLT_PASSWORD="$dolt_password" CI=true "$bd_bin" create "e2e round-trip probe") >/dev/null 2>"$init_err"; then
     fail "AC10 bd create" "bd create failed: $(tail -2 "$init_err" 2>/dev/null | tr '\n' ' ')"
     return
   fi
   pass "AC10 bd create" "probe bead created"
   local listed
-  listed="$(cd "$workdir" && PATH="$bd_path" "$bd_bin" list 2>/dev/null || true)"
+  listed="$(cd "$workdir" && PATH="$bd_path" BEADS_DOLT_PASSWORD="$dolt_password" "$bd_bin" list 2>/dev/null || true)"
   if printf '%s' "$listed" | grep -q 'e2e round-trip probe'; then
     pass "AC10 bd list" "probe bead visible in bd list"
   else
@@ -582,7 +582,7 @@ ac10_queue_plane() {
   local probe_id
   probe_id="$(printf '%s' "$listed" | grep 'e2e round-trip probe' | awk '{print $1}' | head -1 || true)"
   if [ -n "$probe_id" ]; then
-    if (cd "$workdir" && PATH="$bd_path" CI=true "$bd_bin" close "$probe_id") >/dev/null 2>"$init_err"; then
+    if (cd "$workdir" && PATH="$bd_path" BEADS_DOLT_PASSWORD="$dolt_password" CI=true "$bd_bin" close "$probe_id") >/dev/null 2>"$init_err"; then
       pass "AC10 bd close" "probe bead $probe_id closed"
     else
       fail "AC10 bd close" "bd close failed for $probe_id: $(tail -2 "$init_err" 2>/dev/null | tr '\n' ' ')"
