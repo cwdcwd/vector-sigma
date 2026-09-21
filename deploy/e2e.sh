@@ -482,15 +482,17 @@ ac10_queue_plane() {
     return
   fi
 
-  # 1. Dolt container healthy: the documented liveness probe via the compose
-  # exec path (the healthcheck asserts the in-container shape; this asserts
-  # the SAME query lands over the mysql protocol from the compose network).
+  # 1. Dolt container healthy: the documented liveness query, AUTHENTICATED
+  # as the app user (a root probe without a password is Access-denied once
+  # DOLT_ROOT_PASSWORD is set — dolthub issue #7428; the run-2 red). The
+  # healthcheck asserts the in-container shape; this asserts the same
+  # query lands over the mysql protocol from the compose network.
   local q
-  if q="$($COMPOSE exec -T dolt dolt --host 127.0.0.1 --port 3306 --no-tls sql -q 'select current_timestamp();' 2>/dev/null)" \
+  if q="$($COMPOSE exec -T dolt dolt sql --host 127.0.0.1 --port 3306 --no-tls -u vs -p "$dolt_password" -q 'select current_timestamp();' 2>/dev/null)" \
     && [ -n "$q" ]; then
-    pass "AC10 dolt healthy" "current_timestamp() answered: $(printf '%s' "$q" | tail -1)"
+    pass "AC10 dolt healthy" "current_timestamp() answered as app user: $(printf '%s' "$q" | tail -1)"
   else
-    fail "AC10 dolt healthy" "no answer to select current_timestamp()"
+    fail "AC10 dolt healthy" "no answer to select current_timestamp() as app user"
   fi
 
   # 2. Scotty serves: /api/projects must 200 (the picker data route; verified
