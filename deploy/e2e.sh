@@ -514,71 +514,78 @@ ac10_queue_plane() {
     return
   fi
 
-  # 3. bd round-trip against the compose dolt. The scotty image's bd is a
-  # CLIENT here; the dolt container is the server. bd init --server against
-  # an ALREADY-RUNNING external server needs --external (proven from the
-  # bd 1.2.2 --help: "--server Use external dolt sql-server" but the
-  # server-startup path is the default; --external = "Server is externally
-  # managed (skip server startup); use with --shared-server or --server" —
-  # without it bd tries to START a second dolt on the same port and the
-  # init dies). bd's non-interactive mode auto-detects (CI=true / no tty);
-  # HOME must be writable (bd writes ~/.beads client state) — the image's
-  # nextjs user owns /home/nextjs, and -w /workspace is a mounted tmp dir.
-  # Error output is CAPTURED, never swallowed: a failed init prints its
-  # stderr into the FAIL line so CI-red triage sees the real cause.
+  # 3. bd round-trip against the compose dolt from the HOST, with a pinned
+  # bd 1.2.2 client downloaded fresh (the same release the scotty image
+  # bakes). Why host-side: bd init inits a git repository in the workspace
+  # for the sync protocol, and the scotty image deliberately ships WITHOUT
+  # git (upstream README documents it); more importantly this mirrors the
+  # real device story — VS devices run their OWN bd clients against the
+  # LAN dolt (deploy compose publishes 3326), not through the scotty
+  # container. The runner provides git + writable HOME; CI=true keeps bd
+  # non-interactive. --external: the compose dolt is already running
+  # (without it bd starts its OWN server on the port and dies — run-4's
+  # lesson). --database vs_ops: use the database the dolt image already
+  # created (bd --help: for when an external tool has already created the
+  # database) — the vs user holds privileges on vs_ops only.
+  # Error output is CAPTURED, never swallowed.
   local workdir=/tmp/vs-queue-e2e
   rm -rf "$workdir"; mkdir -p "$workdir"
   local init_err="/tmp/vs-queue-e2e-init.err"
-  if ! docker run --rm \
-      --network "$PROJECT"_default \
-      -e BEADS_DOLT_PASSWORD="$dolt_password" \
-      -e CI=true \
-      -v "$workdir":/workspace -w /workspace \
-      --entrypoint /usr/local/bin/bd.real \
-      "$PROJECT-scotty" init --server --external \
-        --server-host dolt --server-port 3306 --server-user vs \
-        --database vs_ops --non-interactive 2>"$init_err"; then
-    fail "AC10 bd init" "bd init failed: $(tail -3 "$init_err" 2>/dev/null | tr '\n' ' ')"
+  local arch="amd64"
+  case "$(uname -m)" in aarch64|arm64) arch="arm64" ;; esac
+  local bd_bin="$workdir/bd"
+  if ! curl -sL "https://github.com/gastownhall/beads/releases/download/v1.2.2/beads_1.2.2_linux_${arch}.tar.gz" \
+      -o "$workdir/bd.tgz" 2>"$init_err" \
+    || ! tar -xzf "$workdir/bd.tgz" -C "$workdir" bd 2>>"$init_err" \
+    || ! chmod +x "$bd_bin" 2>>"$init_err"; then
+    fail "AC10 bd client" "download/extract failed: $(tail -2 "$init_err" 2>/dev/null | tr '\n' ' ')"
+    return
+  fi
+  # bd execs `git` for its workspace init (Go exec.LookPath inside bd's own
+  # process env). Run-5 lesson: bd died with 'exec: "git": executable file
+  # not found in $PATH' on a runner where /usr/bin/git verifiably exists
+  # (teardown ran it seconds later), while the same pinned bd 1.2.2 passes
+  # git-init locally with a normal PATH. Hardening, two layers:
+  #   1) loud guard — if the e2e host shell can't see git, FAIL naming PATH;
+  #   2) every bd invocation gets an explicit absolute PATH so bd's
+  #      LookPath cannot miss /usr/bin whatever the step env inherited.
+  # If it fails again, the FAIL lines now carry the host PATH — no more
+  # swallowed environment.
+  if ! command -v git >/dev/null 2>&1; then
+    fail "AC10 bd client" "git not found on e2e host — PATH=[$PATH] command -v git: $(command -v git 2>&1 || echo none)"
+    return
+  fi
+  local bd_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  # The compose dolt publishes host 3326 (the queue contract — device bd
+  # clients reach it exactly this way); the host-side client connects there.
+  if ! (cd "$workdir" && PATH="$bd_path" CI=true "$bd_bin" init --server --external \
+        --server-host 127.0.0.1 --server-port 3326 --server-user vs \
+        --database vs_ops --non-interactive) 2>"$init_err"; then
+    fail "AC10 bd init" "bd init failed: $(tail -3 "$init_err" 2>/dev/null | tr '\n' ' ') [host PATH=$PATH, git=$(command -v git || echo none)]"
     return
   fi
   pass "AC10 bd init" "server-mode init minted the project contract"
-  docker run --rm \
-    --network "$PROJECT"_default \
-    -e BEADS_DOLT_PASSWORD="$dolt_password" \
-    -e CI=true \
-    -v "$workdir":/workspace -w /workspace \
-    --entrypoint /usr/local/bin/bd.real \
-    "$PROJECT-scotty" create "e2e round-trip probe" >/dev/null 2>&1 \
-    || { fail "AC10 bd create" "bd create failed"; return; }
+  if ! (cd "$workdir" && PATH="$bd_path" CI=true "$bd_bin" create "e2e round-trip probe") >/dev/null 2>"$init_err"; then
+    fail "AC10 bd create" "bd create failed: $(tail -2 "$init_err" 2>/dev/null | tr '\n' ' ')"
+    return
+  fi
   pass "AC10 bd create" "probe bead created"
   local listed
-  listed="$(docker run --rm \
-    --network "$PROJECT"_default \
-    -e BEADS_DOLT_PASSWORD="$dolt_password" \
-    -e CI=true \
-    -v "$workdir":/workspace -w /workspace \
-    --entrypoint /usr/local/bin/bd.real \
-    "$PROJECT-scotty" list 2>/dev/null || true)"
+  listed="$(cd "$workdir" && PATH="$bd_path" "$bd_bin" list 2>/dev/null || true)"
   if printf '%s' "$listed" | grep -q 'e2e round-trip probe'; then
     pass "AC10 bd list" "probe bead visible in bd list"
   else
     fail "AC10 bd list" "probe bead not listed"
   fi
-  # bd list renders "<prefix>-<id>" first token per row (verified live); the
-  # CI=true env keeps create/close non-interactive inside docker run.
+  # bd list renders "<prefix>-<id>" as the first token per row (verified
+  # live against bd 1.2.2).
   local probe_id
   probe_id="$(printf '%s' "$listed" | grep 'e2e round-trip probe' | awk '{print $1}' | head -1 || true)"
   if [ -n "$probe_id" ]; then
-    if docker run --rm \
-        --network "$PROJECT"_default \
-        -e BEADS_DOLT_PASSWORD="$dolt_password" \
-        -e CI=true \
-        -v "$workdir":/workspace -w /workspace \
-        --entrypoint /usr/local/bin/bd.real \
-        "$PROJECT-scotty" close "$probe_id" >/dev/null 2>&1; then
+    if (cd "$workdir" && PATH="$bd_path" CI=true "$bd_bin" close "$probe_id") >/dev/null 2>"$init_err"; then
       pass "AC10 bd close" "probe bead $probe_id closed"
     else
-      fail "AC10 bd close" "bd close failed for $probe_id"
+      fail "AC10 bd close" "bd close failed for $probe_id: $(tail -2 "$init_err" 2>/dev/null | tr '\n' ' ')"
     fi
   else
     fail "AC10 bd close" "could not parse probe id from bd list output"
