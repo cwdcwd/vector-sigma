@@ -20,7 +20,7 @@ Both share the named volume `agent-data`, mounted at `/data/agent`. Identity liv
 1. **Create the device row in the registrar.** On the registrar admin console (or via its API): add the device with its balena UUID, agent name, and a fresh per-device registrar key. Note the key — it is shown once. The device starts `pending`.
 2. **Flash the device.** balenaCloud dashboard → Devices fleet → *Add device* → download the balenaOS image for Raspberry Pi 5 with the devices-fleet provisioning key embedded, flash the SD card, boot the device.
 3. **Set the device variables** (dashboard → device → *Variables*):
-   - `REGISTRAR_URL` — the registrar's LAN endpoint, e.g. `http://<registrar-device-LAN-IP>` (port 80, the standard publish since fleet-ops-f57.9; no port suffix unless a reverse proxy fronts it — then whatever that proxy exposes).
+   - `REGISTRAR_URL` — the registrar's TLS endpoint (f57.13): `https://<master-hostname>` (e.g. `https://vsigma.lan` — the Pi-hole record the owner sets; port 443 via the caddy edge, no port suffix). Before f57.13 this was `http://<registrar-device-LAN-IP>` — the https flip rides the release carrying f57.13; see the deploy-sequencing note in `balena/registrar/README.md` and [tls-runbook.md](tls-runbook.md).
    - `REGISTRAR_KEY` — the per-device key from step 1. Device-scoped, never fleet-scoped.
 4. **Activate the device** in the registrar console (status `pending` → `active`) — the slot must be armed for delivery. Or pre-activate before boot.
 5. **Watch it come up.** Device logs (dashboard → device → *Logs*) show the registrant lifecycle: clock gate, bootstrap, `identity bootstrapped`, then the agent's `[gate] identity present … starting agent runtime` and heartbeat. Container status turns **Running** for both services.
@@ -33,7 +33,8 @@ Both share the named volume `agent-data`, mounted at `/data/agent`. Identity liv
 | Variable | Scope | Required | Purpose |
 |---|---|---|---|
 | `BALENA_DEVICE_UUID` | auto (platform) | — | Reserved. Injected by balena; the registrant reads it and the registrar matches it. |
-| `REGISTRAR_URL` | device | yes | Registrar endpoint the registrant bootstraps against (`REGISTRAR_URL` in the engineering spec). |
+| `REGISTRAR_URL` | device | yes | Registrar endpoint the registrant bootstraps against (`REGISTRAR_URL` in the engineering spec). Since f57.13: `https://<master-hostname>` — the caddy TLS edge. |
+| `VS_CA_CERT_B64` | **fleet** | yes (https) | Single-line base64 of the VS internal CA cert (`vs-ca.crt` from `scripts/gen-vs-ca.sh`). The registrant image's entrypoint shim decodes it into Node's trust store (`NODE_EXTRA_CA_CERTS`); the registrant refuses to boot on an https `REGISTRAR_URL` without it (fail-loud, f57.8 posture). See [tls-runbook.md](tls-runbook.md). |
 | `REGISTRAR_KEY` | device | yes | Per-device bootstrap key; the only secret in platform variables. Shown once at registrar-console key creation. |
 | `LOG_LEVEL` | device or fleet | no | Registrant log level (`info` default). |
 | `CLOCK_GATE_TIMEOUT_MS` | device or fleet | no | Max NTP wait before best-effort proceed (default 600000). |

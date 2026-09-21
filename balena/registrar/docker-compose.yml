@@ -41,6 +41,16 @@ version: "2.4"
 # hardening option, noted in the README). OLLAMA_CLOUD_API_BASE ships as a
 # static structural value here (public endpoint, not a secret); override via
 # dashboard variable only if Ollama Cloud's URL ever changes.
+#
+# f57.13 TLS edge: caddy fronts the composition (registrar :443, litellm
+# :8443, https://TLS_HOSTNAME). Owner-set fleet variables: TLS_HOSTNAME (the
+# Pi-hole record name, e.g. vsigma.lan), TLS_CERT_B64 + TLS_KEY_B64 (base64
+# PEM pair from scripts/gen-vs-ca.sh output — single-line, dashboard-safe;
+# never in image layers). The one-shot certs-init service decodes them into
+# the caddy-certs volume; caddy waits for the pair then serves. Host ports
+# 443/8443 publish to the device LAN; port 80 redirects to TLS. Device
+# REGISTRAR_URL flips to https://<TLS_HOSTNAME> — see the README deploy-
+# sequencing note (the f57.9 hazard class: flip AFTER the release lands).
 
 services:
   postgres:
@@ -83,11 +93,12 @@ services:
       POSTGRES_DB: vsigma
       DB_HOST: postgres
       MIGRATE_ON_START: "true"
-    ports:
-      # Host 80 -> container 3000 (fleet-ops-f57.9): the container keeps
-      # listening on 3000 (PORT env unchanged); the balenaCloud public-URL
-      # feature tunnels to DEVICE port 80 only, so 80 is the host side.
-      - "80:3000"
+    # f57.13: no host publish — caddy fronts the registrar at
+    # https://<TLS_HOSTNAME>:443 (host 80 belongs to caddy's redirect). The
+    # container keeps listening on 3000; devices reach the admin console +
+    # API via REGISTRAR_URL=https://<TLS_HOSTNAME> (TLS bootstrap). Compose-
+    # internal access (deploy/ self-host example, E2E seed) uses
+    # http://registrar:3000 inside the composition network.
     healthcheck:
       test: ["CMD-SHELL", "kill -0 1"]
       interval: 30s
@@ -143,8 +154,12 @@ services:
       # Public structural endpoint (not a secret); owner-set fleet vars:
       # LITELLM_MASTER_KEY, LITELLM_PG_PASSWORD, OLLAMA_CLOUD_API_KEY.
       OLLAMA_CLOUD_API_BASE: https://ollama.com/v1
-    ports:
-      - "4000:4000"
+    # f57.13: no host publish — caddy fronts the gateway at
+    # https://<TLS_HOSTNAME>:8443 (gateway + /ui + /a2a/*). Devices point
+    # GATEWAY_URL / A2A_PUBLIC_URL at https://<TLS_HOSTNAME>:8443. The
+    # balenaCloud public-URL tunnel (device port 80) lands on caddy's TLS
+    # redirect — plain-HTTP gateway access through the tunnel ends here,
+    # which is the TLS posture working as intended (README documents it).
     healthcheck:
       # Process liveness — parity with the registrar service's healthcheck
       # shape (the litellm image ships no curl/wget; /health/liveliness is
@@ -157,5 +172,62 @@ services:
     stop_signal: SIGTERM
     restart: always
 
+  # f57.13: one-shot TLS material provisioning — decodes the TLS_CERT_B64 /
+  # TLS_KEY_B64 fleet variables into the shared caddy-certs volume (PEM
+  # pair). Image-carried script (the litellm-init pattern): identical bytes
+  # on balena (supervisor injects the fleet vars as env) and in deploy/
+  # self-host (${VAR} interpolation). Fail-loud on missing/truncated values;
+  # idempotent + rotation-safe (rewrites the pair every run — rotating the
+  # leaf = update the two fleet vars + restart this service and caddy).
+  certs-init:
+    build:
+      context: .
+      dockerfile: Dockerfile.certs-init
+    environment:
+      # Secrets arrive as fleet variables: TLS_CERT_B64 + TLS_KEY_B64 (no
+      # static values here). CERTS_DIR is structural.
+      CERTS_DIR: /certs
+    volumes:
+      - caddy-certs:/certs
+    restart: "no"
+
+  # f57.13: the TLS edge — caddy fronts the whole composition per the baked
+  # Caddyfile (registrar :443, litellm :8443, 80 -> 308 redirect). TLS_HOSTNAME
+  # is a fleet variable consumed by caddy's own {$VAR:default} substitution
+  # (the supervisor does no interpolation; the Caddyfile stays identical in
+  # deploy/ self-host). The entrypoint shim waits for the certs-init pair so
+  # the concurrent start order can never fail caddy fast.
+  caddy:
+    build:
+      context: .
+      dockerfile: Dockerfile.caddy
+    environment:
+      # Structural (Caddyfile {$TLS_HOSTNAME:vsigma.lan} default mirrors it;
+      # the fleet var wins when set).
+      TLS_HOSTNAME: vsigma.lan
+    ports:
+      # The composition's TLS front door. 443 = registrar (admin + API);
+      # 8443 = the VS gateway (gateway + /ui + /a2a/*). Port 80 serves only
+      # the 308 redirect to https.
+      - "80:80"
+      - "443:443"
+      - "8443:8443"
+    volumes:
+      - caddy-certs:/certs
+    depends_on:
+      - certs-init
+    healthcheck:
+      # Process liveness (the caddy image ships curl but the config load can
+      # fail on a bad cert pair — entrypoint + restart close that gap; the
+      # deploy E2E asserts real TLS reachability externally).
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    stop_grace_period: 60s
+    stop_signal: SIGTERM
+    restart: always
+
 volumes:
   pgdata:
+  caddy-certs:

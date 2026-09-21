@@ -27,9 +27,12 @@ baked into the image), one env contract: only the secret delivery differs
 ```bash
 cp deploy/.env.example deploy/.env
 $EDITOR deploy/.env        # set POSTGRES_PASSWORD, SESSION_SECRET, LITELLM_* (required)
+# TLS material (f57.13): generate with the VS CA script and paste the two
+# single-line values into deploy/.env (TLS_HOSTNAME / TLS_CERT_B64 / TLS_KEY_B64):
+scripts/gen-vs-ca.sh vsigma.lan           # -> ./vs-tls/b64-cert.env
 docker compose -f deploy/compose.yaml up -d --build
-curl http://127.0.0.1:3000/healthz          # → {"status":"ok"}
-curl http://127.0.0.1:4000/health/liveliness # → 200 (the VS gateway)
+curl https://vsigma.lan/healthz --cacert vs-tls/vs-ca.crt          # → {"status":"ok"}
+curl https://vsigma.lan:8443/health/liveliness --cacert vs-tls/vs-ca.crt # → 200 (the VS gateway)
 ```
 
 Notes:
@@ -38,9 +41,13 @@ Notes:
   `docker compose ... config` aborts if `deploy/.env` is missing a value.
 - **Migrations**: the registrar runs drizzle migrations on start
   (`MIGRATE_ON_START=true`); no manual migration step.
-- **Exposure**: the registrar publishes on `127.0.0.1` only. Put your
-  reverse proxy of choice (Caddy/nginx/Tailscale) in front for LAN/TLS
-  exposure; the API and admin console ride the same port.
+- **Exposure (f57.13)**: the caddy edge is the composition's front door —
+  443 (registrar admin + API), 8443 (VS gateway), 80 (redirect). The
+  registrar + gateway containers no longer publish host ports at all;
+  the TLS edge replaces the "loopback + your own proxy" posture with the
+  same Caddyfile + cert contract the balena device ships (one artifact,
+  no twin drift). Resolve the hostname to the host (an /etc/hosts line or
+  your LAN DNS) and trust the CA per [docs/tls-runbook.md](../docs/tls-runbook.md).
 - **Least privilege**: the Postgres container is dedicated to this stack
   (its own role + database). Do not point `DATABASE_URL` at a shared
   superuser-owned instance in production. The gateway follows the same
@@ -48,11 +55,12 @@ Notes:
   ONLY the `litellm` database (and revokes `PUBLIC` CONNECT on the
   registrar's database); the gateway's `DATABASE_URL` is assembled from the
   same parts by the image's entrypoint shim — URL and role cannot disagree.
-- **VS gateway (f57.12)**: `LITELLM_MASTER_KEY` (must start `sk-`),
+- **VS gateway (f57.12 + f57.13)**: `LITELLM_MASTER_KEY` (must start `sk-`),
   `LITELLM_PG_PASSWORD`, and `OLLAMA_CLOUD_API_KEY` are required in
-  `deploy/.env`. The gateway publishes on `127.0.0.1:${LITELLM_PORT:-4000}`
-  (same loopback posture as the registrar — reverse proxy in front for
-  LAN/TLS). Model routes: explicit `ollama-cloud/glm-5.3` + `glm-5.2` groups
+  `deploy/.env`. The gateway rides the caddy edge at
+  `https://${TLS_HOSTNAME}:8443` (same TLS contract as the registrar —
+  one CA, one edge; no separate publish). Model routes: explicit
+  `ollama-cloud/glm-5.3` + `glm-5.2` groups
   with glm↔glm cross-fallbacks and a `*` pass-through wildcard to Ollama
   Cloud (never a fallback target — j9f). See `balena/registrar/README.md`
   for the full gateway runbook (key minting, A2A mesh, failure domain).

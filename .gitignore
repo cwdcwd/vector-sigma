@@ -4,3 +4,7 @@ dist/
 .env
 coverage/
 *.log.github/
+# f57.13: E2E TLS scratch — the throwaway CA + leaf minted at e2e --up
+# (deploy/.env.e2e.tls + material under deploy/.e2e-tls/). Never committed.
+deploy/.env.e2e.tls
+deploy/.e2e-tls/

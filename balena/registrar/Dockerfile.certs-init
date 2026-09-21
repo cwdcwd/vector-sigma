@@ -1,0 +1,15 @@
+# balena/registrar/Dockerfile.certs-init — one-shot TLS material provisioning
+# image (fleet-ops-f57.13).
+#
+# Same pattern as Dockerfile.litellm-init: the script ships in an IMAGE so
+# the balena supervisor (no variable substitution) and plain docker
+# compose (fail-closed ${VAR:?} interpolation) run byte-identical logic —
+# no per-side escaping fork. The base is alpine for base64; nothing here
+# needs node.
+
+FROM alpine:3.20
+
+COPY certs-init.sh /usr/local/bin/certs-init.sh
+RUN chmod +x /usr/local/bin/certs-init.sh
+
+CMD ["/usr/local/bin/certs-init.sh"]

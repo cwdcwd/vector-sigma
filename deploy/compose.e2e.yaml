@@ -1,12 +1,13 @@
 # E2E overlay — compose-simulated device against the local registrar.
 #
 # Run (from the repo root, on a compose-capable host):
-#   docker compose --env-file deploy/.env.e2e \
+#   docker compose --env-file deploy/.env.e2e --env-file deploy/.env.e2e.tls \
 #     -f deploy/compose.yaml -f deploy/compose.e2e.yaml -p vector-sigma-e2e up -d --build
 #   deploy/e2e.sh
 #   deploy/e2e.sh --down   # teardown when done
 #
-# OR simply: deploy/e2e.sh --up   (this script drives the full cycle)
+# OR simply: deploy/e2e.sh --up   (this script drives the full cycle and
+# generates deploy/.env.e2e.tls — the throwaway E2E CA + leaf — on the way)
 #
 # Adds three services to the self-host example:
 #   seed  — provisions the deterministic device + bundle + short-rearm slot,
@@ -15,8 +16,20 @@
 #           simulated device: bootstrap, atomic bundle apply, ready marker,
 #           resident rotation watcher — exactly the balenaOS device shape,
 #           minus the platform env injection (compose provides it).
-# All values interpolate from deploy/.env.e2e (committed, deterministic,
-# simulation-only — no production secrets anywhere in it).
+# All values interpolate from deploy/.env.e2e (+ the generated
+# deploy/.env.e2e.tls) — committed, deterministic, simulation-only — no
+# production secrets anywhere in them.
+#
+# f57.13 TLS: the device bootstraps through the REAL TLS edge —
+# REGISTRAR_URL=https://vsigma.lan (compose network alias -> caddy),
+# trust via the throwaway E2E CA (generated at --up by deploy/e2e.sh with
+# scripts/gen-vs-ca.sh — dogfooding the owner's exact generation path).
+# The CA cert reaches the device via VS_CA_CERT_B64 (the same variable the
+# balena devices fleet uses); the shim decodes it to NODE_EXTRA_CA_CERTS;
+# the registrant's config layer passes because the CA is provisioned (the
+# fail-loud contract exercised on the https path). The caddy service's
+# TLS_CERT_B64/TLS_KEY_B64 arrive from the generated .env.e2e.tls (base64
+# of the throwaway leaf pair, single-line).
 
 services:
   seed:
@@ -48,12 +61,21 @@ services:
     command: ["node", "registrant/dist/index.js"]
     environment:
       BALENA_DEVICE_UUID: ${E2E_DEVICE_UUID:?set in deploy/.env.e2e}
-      REGISTRAR_URL: http://registrar:3000
+      # f57.13: TLS bootstrap — the REAL contract: https://<master-hostname>
+      # with the CA provisioned (the exact path a balena device takes
+      # post-flip). caddy fronts the registrar on 443.
+      REGISTRAR_URL: https://vsigma.lan
       REGISTRAR_KEY: ${E2E_DEVICE_KEY:?set in deploy/.env.e2e}
+      # The throwaway E2E CA cert — same variable the devices fleet uses.
+      # e2e.sh --up generates it (minted fresh per run, never committed);
+      # the ${:?} fails loud if the overlay is driven outside the driver.
+      VS_CA_CERT_B64: ${E2E_CA_CERT_B64:?set by deploy/e2e.sh --up (generated throwaway CA)}
       DATA_DIR: /data/agent
       # Containers have no timesyncd socket: gate expires fast and the
       # boot path proceeds best-effort (this is the no-RTC device behavior
-      # the gate exists for; TLS is the natural guard per the spec).
+      # the gate exists for). Under f57.13 the TLS guard is LIVE: a
+      # wrong-clock device fails the cert validity window — the natural
+      # guard the spec wanted, now enforced by the edge.
       CLOCK_GATE_TIMEOUT_MS: "2000"
       # Long watch interval: the E2E asserts rotation separately via
       # /v1/rotate + rearm; resident polls must not race the assertions.
@@ -71,6 +93,8 @@ services:
   # f57.11: grace-path device — PENDING row, no bundle. The registrant
   # must stay resident on 403 (ACTION REQUIRED + status poll) instead of
   # crash-looping; e2e.sh flips the row active and asserts self-heal.
+  # f57.13: stays on the compose-internal http path (its job is the grace
+  # path, not the TLS path; the TLS contract has its own dedicated AC).
   grace-device:
     build:
       context: ..
@@ -95,6 +119,20 @@ services:
       seed:
         condition: service_completed_successfully
     restart: "no"
+
+  # f57.13: caddy network alias — the compose-simulated equivalent of the
+  # owner's Pi-hole DNS record: the device's REGISTRAR_URL
+  # (https://vsigma.lan) resolves INSIDE the compose network to the caddy
+  # service (defined + built in deploy/compose.yaml with its certs-init;
+  # this overlay only adds the alias).
+  caddy:
+    networks:
+      default:
+        aliases:
+          - vsigma.lan
+
+networks:
+  default: {}
 
 volumes:
   device-data:
