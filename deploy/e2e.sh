@@ -577,10 +577,22 @@ ac10_queue_plane() {
   else
     fail "AC10 bd list" "probe bead not listed"
   fi
-  # bd list renders "<prefix>-<id>" as the first token per row (verified
-  # live against bd 1.2.2).
+  # Probe-ID capture. Run-6 lesson: in CI (CI=true) bd list renders a status
+  # glyph FIRST ('○ <id> <title>'), so $1 is the glyph, not the ID — parsing
+  # the list handed bd close '○' ('resolving ID ○: no issue found'). Two
+  # captures, deterministic first:
+  #   1) bd list --json's array of rows (verified against bd 1.2.2): each has
+  #      an 'id' field; regex the probe's own row — exact, not $1-position.
+  #   2) fallback: the first token on the probe row that matches the
+  #      <prefix>-<id> shape (bd IDs are '<dir-prefix>-<hash>').
   local probe_id
-  probe_id="$(printf '%s' "$listed" | grep 'e2e round-trip probe' | awk '{print $1}' | head -1 || true)"
+  probe_id="$(cd "$workdir" && PATH="$bd_path" BEADS_DOLT_PASSWORD="$dolt_password" "$bd_bin" list --json 2>/dev/null \
+    | tr -d '\n' | grep -o '"id": *"[^"]*"[^}]*"e2e round-trip probe"' \
+    | head -1 | cut -d'"' -f4 || true)"
+  if [ -z "$probe_id" ]; then
+    probe_id="$(printf '%s' "$listed" | grep 'e2e round-trip probe' \
+      | grep -oE '[a-z0-9]+(-[a-z0-9]+)+' | head -1 || true)"
+  fi
   if [ -n "$probe_id" ]; then
     if (cd "$workdir" && PATH="$bd_path" BEADS_DOLT_PASSWORD="$dolt_password" CI=true "$bd_bin" close "$probe_id") >/dev/null 2>"$init_err"; then
       pass "AC10 bd close" "probe bead $probe_id closed"
