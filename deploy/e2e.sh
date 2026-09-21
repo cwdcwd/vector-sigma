@@ -154,7 +154,8 @@ ac3_rearm_redelivers() {
   # so the wiped device's bootstrap call must land inside it. If the window
   # elapsed instead, the 425/Retry-After retry loop was never exercised and
   # AC3 fails loudly rather than passing vacuously.
-  if docker logs "$PROJECT-device-1" 2>&1 | grep -q 'slot not armed yet; retrying'; then
+  if { docker logs "$PROJECT-device-1" > /tmp/e2e-device.log 2>&1 \
+      && grep -q 'slot not armed yet; retrying' /tmp/e2e-device.log; }; then
     pass "AC3 rearm path" "device hit 425, honored Retry-After, re-delivered"
   else
     fail "AC3 rearm path" "window elapsed before device retry — 425 retry loop not exercised (raise SEED_REARM_SECONDS)"
@@ -270,9 +271,17 @@ ac7_console_structured_save() {
   expect "AC7 console login" "$login_code" "303"
   if [ -z "$session_cookie" ]; then fail AC7 "no session cookie after login"; return; fi
   # 2. Structured save on the E2E device: every canonical file gets content.
-  editor_csrf="$(curl -s -H "Cookie: ${csrf}; ${session_cookie}" \
-    "$BASE_URL/admin/devices/$E2E_DEVICE_UUID/bundle" \
-    | grep -o 'name="_csrf" value="[^"]*"' | cut -d'"' -f4)"
+  # Capture the editor page ONCE, then extract the FIRST _csrf input from
+  # the captured body. The page carries TWO _csrf inputs (nav logout form
+  # + editor form, both the same session token): a `grep -o` stream-harvest
+  # glues both matches into "token\ntoken", and the CSRF gate rejects the
+  # corrupted token with 403 (fleet-ops-f57.11 CI red). One awk process
+  # reads the captured file, prints the first match, exits — no pipeline,
+  # no early-exit SIGPIPE hazard under `set -o pipefail`.
+  curl -s -H "Cookie: ${csrf}; ${session_cookie}" \
+    "$BASE_URL/admin/devices/$E2E_DEVICE_UUID/bundle" > /tmp/e2e-editor.html
+  editor_csrf="$(awk 'match($0, /name="_csrf" value="[^"]*"/) { print substr($0, RSTART+20, RLENGTH-21); exit }' \
+    /tmp/e2e-editor.html)"
   if [ -z "$editor_csrf" ]; then fail AC7 "no editor csrf (session cookie rejected?)"; return; fi
   save_code="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
     "$BASE_URL/admin/devices/$E2E_DEVICE_UUID/bundle" \
@@ -361,17 +370,24 @@ ac8_grace_self_heal() {
     return
   fi
   # 2. Resident evidence: the ACTION REQUIRED line, and container NOT restarted.
+  # Capture-then-grep: a `docker logs | grep -q` stream under pipefail is a
+  # producer/consumer race — grep -q exits on the head-of-log match, docker
+  # logs gets SIGPIPE (141), and the pipeline reads as "line absent" while
+  # the line IS present (fleet-ops-f57.11 CI red). Captured-file grep has
+  # no such window, and the capture doubles as the self-diagnosis dump.
+  local grace_log=/tmp/e2e-grace-device.log
   local deadline=$((SECONDS + 30))
-  until docker logs "$PROJECT-grace-device-1" 2>&1 | grep -q 'ACTION REQUIRED'; do
+  until docker logs "$PROJECT-grace-device-1" > "$grace_log" 2>&1 \
+    && grep -q 'ACTION REQUIRED' "$grace_log"; do
     [ $SECONDS -ge $deadline ] && break
     sleep 1
   done
-  if docker logs "$PROJECT-grace-device-1" 2>&1 | grep -q 'ACTION REQUIRED'; then
+  if grep -q 'ACTION REQUIRED' "$grace_log"; then
     pass "AC8 ACTION REQUIRED line" "resident, loud line in logs"
   else
     fail "AC8 ACTION REQUIRED line" "no ACTION REQUIRED in grace-device logs"
     note "grace-device recent logs (self-diagnosis):"
-    docker logs "$PROJECT-grace-device-1" 2>&1 | tail -15 || true
+    tail -15 "$grace_log" || true
   fi
   local restarts running
   restarts="$(docker inspect -f '{{.RestartCount}}' "$PROJECT-grace-device-1" 2>/dev/null || echo '?')"
@@ -404,7 +420,8 @@ ac8_grace_self_heal() {
     pass "AC8 self-heal" "ready.marker present, RestartCount=$restarts (poll healed, no restart)"
   else
     fail "AC8 self-heal" "no marker after fix (RestartCount=$restarts)"
-    docker logs "$PROJECT-grace-device-1" 2>&1 | tail -20
+    docker logs "$PROJECT-grace-device-1" > "$grace_log" 2>&1 || true
+    tail -20 "$grace_log"
   fi
 }
 
