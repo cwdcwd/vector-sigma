@@ -513,7 +513,10 @@ ac10_queue_plane() {
   # 3. bd round-trip against the compose dolt: init (the one-time act —
   # throwaway CI volume, so init IS correct here), create, list, close.
   # The bd binary is the scotty image's (bd 1.2.2 pinned); running it via
-  # compose exec uses the image's own client against the compose-network dolt.
+  # docker run uses the image's own client against the compose-network dolt.
+  # bd 1.2.2 flags verified on the live CLI this session: create takes no
+  # -y (non-interactive auto-detects on CI=true / no tty); list renders
+  # "<prefix>-<id> <title>" rows.
   local workdir=/tmp/vs-queue-e2e
   rm -rf "$workdir"; mkdir -p "$workdir"
   if ! docker run --rm \
@@ -531,15 +534,17 @@ ac10_queue_plane() {
   docker run --rm \
     --network "$PROJECT"_default \
     -e BEADS_DOLT_PASSWORD="$dolt_password" \
+    -e CI=true \
     -v "$workdir":/workspace -w /workspace \
     --entrypoint /usr/local/bin/bd.real \
-    "$PROJECT-scotty" create "e2e round-trip probe" -y >/dev/null 2>&1 \
+    "$PROJECT-scotty" create "e2e round-trip probe" >/dev/null 2>&1 \
     || { fail "AC10 bd create" "bd create failed"; return; }
   pass "AC10 bd create" "probe bead created"
   local listed
   listed="$(docker run --rm \
     --network "$PROJECT"_default \
     -e BEADS_DOLT_PASSWORD="$dolt_password" \
+    -e CI=true \
     -v "$workdir":/workspace -w /workspace \
     --entrypoint /usr/local/bin/bd.real \
     "$PROJECT-scotty" list 2>/dev/null || true)"
@@ -548,12 +553,15 @@ ac10_queue_plane() {
   else
     fail "AC10 bd list" "probe bead not listed"
   fi
+  # bd list renders "<prefix>-<id>" first token per row (verified live); the
+  # CI=true env keeps create/close non-interactive inside docker run.
   local probe_id
-  probe_id="$(printf '%s' "$listed" | grep -oE '[a-z0-9]{3}-[a-zA-Z0-9]+' | head -1 || true)"
+  probe_id="$(printf '%s' "$listed" | grep 'e2e round-trip probe' | awk '{print $1}' | head -1 || true)"
   if [ -n "$probe_id" ]; then
     if docker run --rm \
         --network "$PROJECT"_default \
         -e BEADS_DOLT_PASSWORD="$dolt_password" \
+        -e CI=true \
         -v "$workdir":/workspace -w /workspace \
         --entrypoint /usr/local/bin/bd.real \
         "$PROJECT-scotty" close "$probe_id" >/dev/null 2>&1; then
@@ -561,6 +569,8 @@ ac10_queue_plane() {
     else
       fail "AC10 bd close" "bd close failed for $probe_id"
     fi
+  else
+    fail "AC10 bd close" "could not parse probe id from bd list output"
   fi
 }
 

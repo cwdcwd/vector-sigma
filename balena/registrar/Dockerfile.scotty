@@ -50,6 +50,15 @@ ARG TARGETARCH
 ADD "https://github.com/gastownhall/beads/releases/download/v${BD_VERSION}/beads_${BD_VERSION}_linux_${TARGETARCH}.tar.gz" /tmp/bd.tar.gz
 RUN tar -xzf /tmp/bd.tar.gz -C /tmp && mv /tmp/bd /usr/local/bin/bd.real
 
+# ── Eleventy: self-contained tree for the showcase publisher ─────────────────
+# Upstream shape verbatim: the app locates node_modules/@11ty/eleventy/cmd.cjs
+# by scanning the filesystem (lib/showcase/generate.ts) — never imported, so
+# Next's standalone tracing does NOT include it. Install complete here and
+# copy into the runner below (version kept in sync with upstream package.json).
+FROM node:26.4.0-alpine AS eleventy
+WORKDIR /eleventy
+RUN npm install --no-save @11ty/eleventy@3.1.6
+
 # ── Builder: scotty npm ci + build (upstream shape, 8ea-patched tree) ─────────
 FROM node:26.4.0-alpine AS builder
 WORKDIR /app
@@ -77,10 +86,17 @@ RUN groupadd --system --gid 1001 nodejs \
  && mkdir -p /home/nextjs/.config \
  && chown -R nextjs:nodejs /home/nextjs \
  && chmod 0777 /home/nextjs /home/nextjs/.config
+# Copy the standalone server, static assets, and public files (upstream
+# order). Next's tracing puts a PARTIAL @11ty into the standalone
+# node_modules; it would shadow the complete tree below (eleventyBin()
+# checks cwd first) — drop it, then provide the full eleventy tree.
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+RUN rm -rf ./node_modules/@11ty
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/public ./public
-COPY --from=builder --chown=nextjs:nodejs /app/node_modules/@11ty /node_modules/@11ty
+# Eleventy for the showcase publisher; /node_modules sits on eleventyBin()'s
+# upward search path and never collides with the standalone node_modules.
+COPY --from=eleventy --chown=nextjs:nodejs /eleventy/node_modules /node_modules
 # bd: real binary + the read-only wrapper in its default PATH slot. bd itself
 # is glibc-linked (embedded Dolt, CGO) — slim (not alpine) runner, same as
 # upstream.
