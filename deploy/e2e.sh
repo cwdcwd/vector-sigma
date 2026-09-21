@@ -514,24 +514,31 @@ ac10_queue_plane() {
     return
   fi
 
-  # 3. bd round-trip against the compose dolt: init (the one-time act —
-  # throwaway CI volume, so init IS correct here), create, list, close.
-  # The bd binary is the scotty image's (bd 1.2.2 pinned); running it via
-  # docker run uses the image's own client against the compose-network dolt.
-  # bd 1.2.2 flags verified on the live CLI this session: create takes no
-  # -y (non-interactive auto-detects on CI=true / no tty); list renders
-  # "<prefix>-<id> <title>" rows.
+  # 3. bd round-trip against the compose dolt. The scotty image's bd is a
+  # CLIENT here; the dolt container is the server. bd init --server against
+  # an ALREADY-RUNNING external server needs --external (proven from the
+  # bd 1.2.2 --help: "--server Use external dolt sql-server" but the
+  # server-startup path is the default; --external = "Server is externally
+  # managed (skip server startup); use with --shared-server or --server" —
+  # without it bd tries to START a second dolt on the same port and the
+  # init dies). bd's non-interactive mode auto-detects (CI=true / no tty);
+  # HOME must be writable (bd writes ~/.beads client state) — the image's
+  # nextjs user owns /home/nextjs, and -w /workspace is a mounted tmp dir.
+  # Error output is CAPTURED, never swallowed: a failed init prints its
+  # stderr into the FAIL line so CI-red triage sees the real cause.
   local workdir=/tmp/vs-queue-e2e
   rm -rf "$workdir"; mkdir -p "$workdir"
+  local init_err="/tmp/vs-queue-e2e-init.err"
   if ! docker run --rm \
       --network "$PROJECT"_default \
       -e BEADS_DOLT_PASSWORD="$dolt_password" \
+      -e CI=true \
       -v "$workdir":/workspace -w /workspace \
       --entrypoint /usr/local/bin/bd.real \
-      "$PROJECT-scotty" init --server \
+      "$PROJECT-scotty" init --server --external \
         --server-host dolt --server-port 3306 --server-user vs \
-        --database vs_ops --non-interactive >/dev/null 2>&1; then
-    fail "AC10 bd init" "bd init --server failed against compose dolt"
+        --database vs_ops --non-interactive 2>"$init_err"; then
+    fail "AC10 bd init" "bd init failed: $(tail -3 "$init_err" 2>/dev/null | tr '\n' ' ')"
     return
   fi
   pass "AC10 bd init" "server-mode init minted the project contract"
