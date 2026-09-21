@@ -1,12 +1,13 @@
-# Self-host deploy example — registrar + Postgres
+# Self-host deploy example — registrar + Postgres + the VS gateway (f57.12)
 
 This directory is the reference self-host deployment for the Vector Sigma
-registrar, plus a compose-simulated device E2E (fleet-ops-f57.5):
+registrar **and the VS fleet's own LiteLLM gateway**, plus a
+compose-simulated device E2E (fleet-ops-f57.5, extended by f57.12):
 
 ```
 deploy/
 ├── Dockerfile          # one image: registrar | seed | device entrypoints
-├── compose.yaml        # self-host: postgres + registrar (the example)
+├── compose.yaml        # self-host: postgres + litellm + registrar (the example)
 ├── compose.e2e.yaml    # E2E overlay: + seed + simulated device
 ├── .env.example        # self-host variables (copy to .env, fill secrets)
 ├── .env.e2e            # deterministic E2E values (committed; no secrets)
@@ -15,13 +16,20 @@ deploy/
 └── README.md
 ```
 
+The `litellm` and `litellm-init` services build from
+`./balena/registrar/Dockerfile.litellm{,-init}` — the SAME images the
+balena app ships. One config artifact (`balena/registrar/litellm-config.yaml`,
+baked into the image), one env contract: only the secret delivery differs
+(`.env` here, balenaCloud dashboard variables on the device).
+
 ## Self-host quickstart
 
 ```bash
 cp deploy/.env.example deploy/.env
-$EDITOR deploy/.env        # set POSTGRES_PASSWORD, SESSION_SECRET (required)
+$EDITOR deploy/.env        # set POSTGRES_PASSWORD, SESSION_SECRET, LITELLM_* (required)
 docker compose -f deploy/compose.yaml up -d --build
-curl http://127.0.0.1:3000/healthz   # → {"status":"ok"}
+curl http://127.0.0.1:3000/healthz          # → {"status":"ok"}
+curl http://127.0.0.1:4000/health/liveliness # → 200 (the VS gateway)
 ```
 
 Notes:
@@ -35,7 +43,19 @@ Notes:
   exposure; the API and admin console ride the same port.
 - **Least privilege**: the Postgres container is dedicated to this stack
   (its own role + database). Do not point `DATABASE_URL` at a shared
-  superuser-owned instance in production.
+  superuser-owned instance in production. The gateway follows the same
+  discipline: `litellm-init` provisions a dedicated `litellm` role that owns
+  ONLY the `litellm` database (and revokes `PUBLIC` CONNECT on the
+  registrar's database); the gateway's `DATABASE_URL` is assembled from the
+  same parts by the image's entrypoint shim — URL and role cannot disagree.
+- **VS gateway (f57.12)**: `LITELLM_MASTER_KEY` (must start `sk-`),
+  `LITELLM_PG_PASSWORD`, and `OLLAMA_CLOUD_API_KEY` are required in
+  `deploy/.env`. The gateway publishes on `127.0.0.1:${LITELLM_PORT:-4000}`
+  (same loopback posture as the registrar — reverse proxy in front for
+  LAN/TLS). Model routes: explicit `ollama-cloud/glm-5.3` + `glm-5.2` groups
+  with glm↔glm cross-fallbacks and a `*` pass-through wildcard to Ollama
+  Cloud (never a fallback target — j9f). See `balena/registrar/README.md`
+  for the full gateway runbook (key minting, A2A mesh, failure domain).
 
 ## Postgres on an existing host (optional variant)
 
@@ -83,6 +103,11 @@ What the E2E proves, in order (the bead's acceptance criteria):
    (no crash loop, `ACTION REQUIRED` line in logs); after the console fix
    (activate + bundle) the resident `/v1/status` poll self-heals —
    `ready.marker` appears without a container restart.
+9. **VS gateway smoke (f57.12)**: the compose stack brings up the REAL
+   LiteLLM gateway (same images as the balena app); `/health/liveliness`
+   returns 200 and `/v1/models` (master-key auth) serves the explicit
+   `glm-5.3`/`glm-5.2` groups — j9f's fallback-capable groups, verified
+   against the live gateway, no upstream completion traffic.
 
 The device service runs the real registrant image (`registrant/dist/index.js`)
 — the same container shape the balenaOS device app uses (f57.6), with

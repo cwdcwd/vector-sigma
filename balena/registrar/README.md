@@ -1,5 +1,14 @@
 # balena/registrar — registrar-fleet app
 
+Registrar + Postgres + the VS fleet's own LiteLLM gateway (f57.12), on
+balenaOS. The app runs on the `registrar` balena fleet (1 device: Raspberry
+Pi 5, aarch64) — the vector-sigma master device. Per the owner ruling
+(2026-09-20, "option 1"): the VS fleet runs identity AND gateway AND mesh
+on its own hardware; it never couples to the Cabal's ai.lan (clean-start
+principle). The gateway serves the models front door, virtual keys, and the
+/a2a/* agent mesh — devices point `GATEWAY_URL` and `A2A_PUBLIC_URL` at
+`http://<this-device-LAN-IP>:4000`.
+
 The balena multi-container app for the **registrar fleet**: the Vector
 Sigma registrar API + admin console, backed by its own Postgres, on one
 dedicated balenaOS device (Raspberry Pi 5). Built by balena remote
@@ -60,6 +69,9 @@ env).
 |---|---|---|---|
 | `POSTGRES_PASSWORD` | **fleet-wide** | **yes — no default** | Postgres role password. Fleet-scoped: both the postgres service (role creation) and the registrar service (URL part) must see the same value. **No secrets in compose or image layers.** |
 | `SESSION_SECRET` | registrar | **yes — no default** | Admin-console HMAC session secret (≥16 chars). **The registrar refuses to boot without it** — missing or short fails startup with the variable name; there is no fallback secret. Set it on the fleet before the first `registrar-v*` release ships. |
+| `LITELLM_MASTER_KEY` | **fleet-wide** | **yes — no default** (f57.12) | LiteLLM gateway master key — mints virtual keys, unlocks the Admin UI (`http://<device-LAN-IP>:4000/ui`). **Must start with `sk-`** (LiteLLM requirement). 600-equivalent custody: it IS the gateway; never in image layers, compose, chat, or the database. Fleet scope per the bead's variable contract (service scope would be a hardening option — see "Gateway variable scoping" below). |
+| `LITELLM_PG_PASSWORD` | **fleet-wide** | **yes — no default** (f57.12) | Password for the gateway's dedicated least-privilege postgres role. The `litellm-init` service provisions the `litellm` role + `litellm` database on every boot and re-asserts this value (ALTER ROLE) — rotating it needs no manual psql step, just a release re-deploy or service restart. |
+| `OLLAMA_CLOUD_API_KEY` | **fleet-wide** | **yes — no default** (f57.12) | Ollama Cloud credential — the gateway's model upstream (OpenAI-compatible `https://ollama.com/v1`). Held only by the gateway container; devices never see it. |
 
 ### Static in compose (override only if you know why)
 
@@ -174,6 +186,112 @@ the balena named volume `pgdata` — survives container updates and host
 OS updates. balenaOS host recovery does NOT preserve `pgdata` in every
 disaster scenario: the registrar runbook covers a Postgres dump
 cadence as an owner step.
+
+The f57.12 gateway widens this failure domain by owner-accepted design
+(SPOF accepted: master Pi carries identity + gateway + mesh — mirrors the
+existing devpi05 posture): if the gateway is down, devices keep their
+identities and cached bundles but cannot mint/renew keys, call models, or
+mesh A2A until it returns. Gateway state (virtual keys, spend logs, A2A
+registry) lives in the `litellm` database **inside the same `pgdata`
+volume** — it shares the registrar's dump cadence and its recovery story.
+Virtual keys can be re-minted from the master key at any time; the master
+key itself is the crown jewel (see "Key minting & the re-mint runbook").
+
+## The VS gateway (LiteLLM) — f57.12
+
+The `litellm` service is the VS fleet's own AI gateway, baked from
+`Dockerfile.litellm` (pinned `ghcr.io/berriai/litellm:1.100.1` + the
+in-repo `litellm-config.yaml` — the balena supervisor cannot bind-mount,
+so the config ships in the image; deploy/ self-host builds the same image,
+so there is exactly one config artifact, no twin drift). Model routes per
+the config: explicit `ollama-cloud/glm-5.3` + `ollama-cloud/glm-5.2`
+groups with glm↔glm cross-fallbacks, a `*` pass-through wildcard to
+Ollama Cloud (routes, never a fallback target — j9f lesson verbatim), and
+a commented future `gw-sonnet` anthropic lane. Port 4000 publishes to the
+device LAN; `http://<device-LAN-IP>:4000/ui` is the Admin UI.
+
+### First-boot sequence
+
+Release lands → `litellm-init` (one-shot, `restart: "no"` — a supported
+supervisor restart policy) waits for postgres, then idempotently
+provisions `CREATE ROLE litellm LOGIN` + `CREATE DATABASE litellm OWNER
+litellm`, re-asserts the role password (ALTER ROLE every boot — kills the
+pgdata password trap for this role), and revokes `PUBLIC` CONNECT on the
+registrar's database (least privilege: the gateway role can reach ONLY
+its own database). → `litellm` boots, its entrypoint shim assembles
+`DATABASE_URL` from the same parts (URL and role can never disagree — the
+f57.8 trap closed by construction), prisma migrates the fresh `litellm`
+database (tens of seconds), then serves. If the gateway container
+crash-loops in that window, `restart: always` closes the gap — logs name
+the missing variable if a fleet var is absent (fail-loud).
+
+**Live-volume note:** the master device's pgdata already holds device
+bundles — a fresh initdb cannot run there and MUST NOT; `litellm-init`
+operates on the live volume (idempotent SQL, no data touched outside the
+new role/database), which is precisely why the init service exists rather
+than initdb.d magic.
+
+### Gateway variable scoping (hardening option)
+
+The bead's variable contract puts the gateway secrets at fleet scope
+(POSTGRES_PASSWORD precedent: shared by two services — init needs the
+superuser credential, litellm needs the role password). Trade-off: fleet
+scope means the registrar and postgres containers also carry
+`LITELLM_MASTER_KEY` in their environment. If that ever bothers you,
+re-scope `LITELLM_MASTER_KEY` and `OLLAMA_CLOUD_API_KEY` to the
+`litellm` service only (dashboard: service scope) — no compose change
+needed; the service reads them the same way.
+
+### A2A mesh through the gateway
+
+The gateway serves `/a2a/*` pass-through natively (same pattern ai.lan
+serves the Cabal): each VS device's Hermes points `A2A_PUBLIC_URL` at
+`http://<master-LAN-IP>:4000`, and its agent card is served by the VS
+gateway — peer traffic rides the master device, never ai.lan. The
+structured bundle editor's A2A fields (`a2a_identity_key`,
+`a2a_trusted_peers`) document this in their hints; full mesh wiring
+(peer token staging, card registration) is the follow-up bead's lane,
+provisioned once the gateway serves. No `PROXY_BASE_URL` is set: with no
+reverse proxy in front, LiteLLM derives card URLs from the request Host
+header — correct on a plain-HTTP LAN; set it as a dashboard variable
+only if a proxy ever fronts the gateway.
+
+### Key minting & the re-mint runbook
+
+The gateway's virtual keys (device keys like `vs-optimus-prime`, A2A
+keys) are minted with the master key against THIS gateway — the
+ai.lan-minted `vs-optimus-prime` alias is obsolete by design (owner
+ruling: re-mint on the new gateway post-deploy; delete the ai.lan alias
+once the new one exists).
+
+1. Set the three fleet vars (`LITELLM_MASTER_KEY`,
+   `LITELLM_PG_PASSWORD`, `OLLAMA_CLOUD_API_KEY`) on the balenaCloud
+   dashboard BEFORE tagging the first release carrying f57.12 — the
+   gateway fail-louds without them.
+2. Tag the release (owner action, e.g. `registrar-v1.1.0`); wait for the
+   device to pull it and the gateway to come up (`/health/liveliness`
+   at `http://<device-LAN-IP>:4000/health/liveliness` → 200).
+3. Mint `vs-optimus-prime` (gateway key) and `vs-optimus-prime-a2a`
+   (A2A identity key) against the new gateway — LiteLLM Admin UI
+   (`/ui`, login with the master key) or `POST /key/generate` with
+   `Authorization: Bearer <LITELLM_MASTER_KEY>`. Record nothing
+   plaintext beyond the owner's password-manager entry.
+4. Delete the obsolete ai.lan `vs-optimus-prime` alias (owner action,
+   ai.lan side).
+5. Point the device bundle at the new gateway: registrar bundle
+   `config/agent.env` gains `GATEWAY_URL=http://<master-LAN-IP>:4000`
+   and `config/a2a.json` documents `A2A_PUBLIC_URL` per the editor hints;
+   full device-side wiring rides the follow-up bead.
+
+### Gateway health
+
+Healthcheck parity with the registrar service (`kill -0 1` process
+liveness — the stock litellm image ships no curl); real HTTP liveliness
+is asserted externally: the deploy E2E smoke (AC9) polls
+`/health/liveliness` for 200 and asserts the explicit model groups in
+`/v1/models`. On-device spot check: `curl -s
+http://<device-LAN-IP>:4000/health/liveliness` from any LAN host (or
+the balenaCloud public URL path if the owner enables it).
 
 ## First flash
 

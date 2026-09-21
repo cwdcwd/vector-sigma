@@ -1,0 +1,20 @@
+# balena/registrar/Dockerfile.litellm — the VS fleet's own LiteLLM gateway
+# image (fleet-ops-f57.12).
+#
+# The balena supervisor cannot bind-mount files into services, so the config is
+# baked. deploy/ self-host builds the SAME image (deploy/compose.yaml) — one
+# artifact, one env contract, no twin drift.
+#
+# Tag scheme note: LiteLLM moved to plain-semver content tags in July 2026
+# ("main-stable" is legacy but still advances); v1.100.1 is the current stable
+# release. The stock image ENTRYPOINT is docker/prod_entrypoint.sh (execs
+# `litellm "$@"`), which our entrypoint shim re-execs after assembling
+# DATABASE_URL from parts.
+
+FROM ghcr.io/berriai/litellm:1.100.1
+
+COPY litellm-config.yaml /app/config.yaml
+COPY litellm-entrypoint.sh /app/litellm-entrypoint.sh
+
+ENTRYPOINT ["/app/litellm-entrypoint.sh"]
+CMD ["--config", "/app/config.yaml", "--port", "4000"]

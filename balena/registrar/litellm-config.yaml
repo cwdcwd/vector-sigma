@@ -1,0 +1,71 @@
+# balena/registrar/litellm-config.yaml — the vector-sigma fleet's OWN LiteLLM
+# gateway config (fleet-ops-f57.12, owner ruling 2026-09-20 "option 1": the VS
+# master device runs identity + gateway + mesh on its own hardware; the VS
+# fleet never couples to the Cabal's ai.lan — clean-start principle).
+#
+# STRUCTURAL config only — no secrets in this file or in any image layer (VS
+# security model). Every secret below is read from the environment at boot:
+#   LITELLM_MASTER_KEY    balenaCloud fleet var (owner-minted, 600-equivalent
+#                        custody; must start with "sk-" per LiteLLM)
+#   DATABASE_URL         assembled by litellm-entrypoint.sh from LITELLM_PG_*
+#                        parts + the LITELLM_PG_PASSWORD fleet var
+#   OLLAMA_CLOUD_API_KEY balenaCloud fleet var
+#   OLLAMA_CLOUD_API_BASE fleet var override; public default in the compose
+#
+# DATABASE DECISION (AC 2, builder rationale): dedicated `litellm` database +
+# least-privilege role on the SHARED postgres service — not a sqlite volume.
+# LiteLLM virtual keys (the whole vs-optimus-prime re-mint story) and the A2A
+# agent registry are POSTGRES-ONLY features; sqlite would silently forfeit
+# both. The `litellm` role owns ONLY the `litellm` database and holds no
+# grants on the registrar's database (which additionally gets CONNECT revoked
+# from PUBLIC by the litellm-init service). Provisioning is done by the
+# litellm-init one-shot service in both compose files — see README "The VS
+# gateway (LiteLLM)".
+#
+# This file is baked to /app/config.yaml by Dockerfile.litellm (the balena
+# supervisor cannot bind-mount files into services). deploy/ self-host builds
+# the SAME image from the SAME Dockerfile — one source of truth, no twin
+# drift possible.
+
+model_list:
+  # Explicit entries — j9f lesson applied verbatim: the wildcard can NEVER
+  # serve as a fallback target, so every fallback endpoint (below) must be a
+  # real, explicitly-listed model group.
+  - model_name: ollama-cloud/glm-5.3
+    litellm_params:
+      model: openai/glm-5.3
+      api_base: os.environ/OLLAMA_CLOUD_API_BASE
+      api_key: os.environ/OLLAMA_CLOUD_API_KEY
+  - model_name: ollama-cloud/glm-5.2
+    litellm_params:
+      model: openai/glm-5.2
+      api_base: os.environ/OLLAMA_CLOUD_API_BASE
+      api_key: os.environ/OLLAMA_CLOUD_API_KEY
+  # Wildcard pass-through (mirrors the Cabal's ai.lan shape): routes any other
+  # model name to Ollama Cloud's OpenAI-compatible /v1 endpoint. It ROUTES but
+  # cannot failover — never list "*" as a fallback target (j9f).
+  - model_name: "*"
+    litellm_params:
+      model: openai/*
+      api_base: os.environ/OLLAMA_CLOUD_API_BASE
+      api_key: os.environ/OLLAMA_CLOUD_API_KEY
+  # Future anthropic lane — uncomment when ANTHROPIC_API_KEY joins the
+  # variable contract. Deliberately NO "claude"/"anthropic" substring in the
+  # alias (ai.lan lesson: clients that name-sniff those substrings route
+  # natively and bypass gateway auth):
+  # - model_name: gw-sonnet
+  #   litellm_params:
+  #     model: anthropic/claude-sonnet-5
+  #     api_key: os.environ/ANTHROPIC_API_KEY
+
+router_settings:
+  fallbacks:
+    # glm <-> glm cross-failover between the two explicit groups above.
+    - ollama-cloud/glm-5.3: ["ollama-cloud/glm-5.2"]
+    - ollama-cloud/glm-5.2: ["ollama-cloud/glm-5.3"]
+    # Future (add with the gw-sonnet lane above):
+    # - ollama-cloud/glm-5.3: ["ollama-cloud/glm-5.2", "gw-sonnet"]
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
