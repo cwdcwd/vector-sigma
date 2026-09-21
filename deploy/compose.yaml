@@ -27,13 +27,14 @@ services:
   # f57.12: one-shot provisioning of the gateway's database — idempotent,
   # safe on every boot and on existing volumes. Same image the balena app
   # builds; the script reads interpolated env (PGPASSWORD from .env) here.
-  # Build context is the REPO ROOT (compose `context:` is relative to the
-  # compose file, and deploy/ sits one level down) — same shape as the
-  # registrar build below.
+  # Build context = balena/registrar (relative to THIS compose file) — the
+  # same context root the balena app uses, so the Dockerfile's COPY paths
+  # resolve identically on both sides (balena remote builders receive only
+  # the app dir, so the context cannot be broader).
   litellm-init:
     build:
-      context: ..
-      dockerfile: balena/registrar/Dockerfile.litellm-init
+      context: ../balena/registrar
+      dockerfile: Dockerfile.litellm-init
     environment:
       PGHOST: postgres
       PGUSER: ${POSTGRES_USER:?set in deploy/.env}
@@ -49,12 +50,12 @@ services:
   # (config baked by Dockerfile.litellm), same env contract (passwords via
   # .env here, balenaCloud fleet variables on the device). DATABASE_URL is
   # assembled by the image's entrypoint shim from the parts below. Build
-  # context is the repo root (compose `context:` is relative to the compose
-  # file); the Dockerfile's COPYs resolve inside balena/registrar/.
+  # context = balena/registrar (relative to this compose file) — same context
+  # root as the balena app build, so the Dockerfile bytes never fork.
   litellm:
     build:
-      context: ..
-      dockerfile: balena/registrar/Dockerfile.litellm
+      context: ../balena/registrar
+      dockerfile: Dockerfile.litellm
     environment:
       LITELLM_PG_USER: litellm
       LITELLM_PG_HOST: postgres
