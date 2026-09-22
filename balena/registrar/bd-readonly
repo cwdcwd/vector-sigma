@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# balena/registrar/bd-readonly — BD_BIN wrapper for the scotty service
+# (fleet-ops-f57.15). Second layer of the two-layer read-only posture:
+#   layer 1: SCOTTY_READ_ONLY=1 — scotty refuses project writes server-side
+#            (upstream-native, verified at cc55734: lib/config.ts isReadOnly()
+#            + the rw() gate in lib/bd.ts refuses every mutating call)
+#   layer 2: THIS wrapper — the only bd binary scotty can exec; it allowlists
+#            the read surface and exits 77 on anything else. Defense in depth:
+#            a UI regression or an env slip cannot turn the dashboard into a
+#            write path into the queue.
+#
+# Read surface (verified against scotty @ cc55734, lib/bd.ts):
+#   bd export --json        — list()/project hydration (runBdRaw, ro)
+#   bd show <id> --json     — detail drawer (runBdJson, ro)
+#   bd --version            — doctor/preflight (multiple sites, ro)
+# bd itself rewrites the store on any invocation, so the wrapper also keeps the
+# binary path fixed (argv[0] discipline) — scotty passes no PATH-dependent name.
+#
+# Mirrors the Cabal dashboard posture (fleet-ops-8ea runbook: BD_BIN read-only
+# wrapper + SCOTTY_READ_ONLY=1; scotty v0.3.0 cc55734 + 8ea deep-link patch).
+
+set -u
+
+REAL_BD="${BD_REAL_BIN:-/usr/local/bin/bd.real}"
+
+if [ $# -eq 0 ]; then
+  echo "bd-readonly: no args" >&2
+  exit 77
+fi
+
+case "$1" in
+  --version)
+    exec "$REAL_BD" "$@"
+    ;;
+  export)
+    # bd export --json — the ONLY list surface; --json is appended by runBdRaw
+    # for JSON callers but bd accepts it positionally too. Allow exactly the
+    # read shape.
+    shift
+    if [ "$1" = "--json" ] && [ $# -eq 1 ]; then
+      exec "$REAL_BD" export --json
+    fi
+    echo "bd-readonly: refused 'export' args: $*" >&2
+    exit 77
+    ;;
+  show)
+    # bd show <id> --json — id must be non-empty and not start with '-'
+    shift
+    if [ $# -ge 1 ] && [ $# -le 2 ] && [ -n "${1:-}" ] && [ "${1#-}" = "$1" ]; then
+      exec "$REAL_BD" show "$1" ${2:+--json}
+    fi
+    echo "bd-readonly: refused 'show' args: $*" >&2
+    exit 77
+    ;;
+  *)
+    echo "bd-readonly: write-path command refused: $1" >&2
+    exit 77
+    ;;
+esac

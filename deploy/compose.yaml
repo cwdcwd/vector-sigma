@@ -161,9 +161,71 @@ services:
       start_period: 5s
     restart: unless-stopped
 
-# f57.13: shared TLS material (PEM pair decoded from TLS_CERT_B64 /
-# TLS_KEY_B64 by certs-init; caddy serves it). Same volume name on the
-# balena side (caddy-certs).
+  # ── f57.15 BEGIN: the VS queue plane (dolt + scotty), deploy parity ─────────
+  # Byte-identical shape to balena/registrar/docker-compose.yml (same image
+  # pins, same healthchecks, same read-only posture). Interpolation is
+  # fail-closed here (deploy's ${VAR:?} pattern): DOLT_PASSWORD +
+  # DOLT_ROOT_PASSWORD + BEADS_DOLT_PASSWORD must exist in deploy/.env.
+  dolt:
+    image: dolthub/dolt-sql-server:2.3.5
+    environment:
+      DOLT_DATABASE: vs_ops
+      DOLT_USER: vs
+      DOLT_PASSWORD: ${DOLT_PASSWORD:?set in deploy/.env}
+      DOLT_ROOT_PASSWORD: ${DOLT_ROOT_PASSWORD:?set in deploy/.env}
+      DOLT_USER_HOST: "%"
+    volumes:
+      - doltdata:/var/lib/dolt
+    ports:
+      # Self-host: LAN queue access mirrors the balena posture (host 3326 ->
+      # container 3306). Operators wanting it loopback-only can drop the
+      # publish — devices then cannot bd-join, which defeats the queue
+      # contract; documented in scripts/vs-queue-bootstrap.md.
+      - "3326:3306"
+    healthcheck:
+      # Same authenticated liveness probe as the balena side, with the
+      # dolt client flags as GLOBAL flags BEFORE the sql subcommand (the
+      # CLI rejects them after the subcommand — proven live against dolt
+      # 2.3.5) and app-user auth (root is passworded via
+      # DOLT_ROOT_PASSWORD; a passwordless root probe is Access-denied).
+      # `$$` defers expansion to the in-container shell: compose config-time
+      # interpolation would bake the secret into `docker inspect` output;
+      # runtime expansion reads the service's own environment.
+      test: ["CMD-SHELL", "dolt --host 127.0.0.1 --port 3306 --no-tls -u vs -p \"$$DOLT_PASSWORD\" sql -q 'select current_timestamp();'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    restart: unless-stopped
+
+  scotty:
+    # Self-host builds the same patched image; build context is repo-root
+    # relative to THIS compose file (context: ../balena/registrar — the
+    # f57.12 e5b6905 lesson: compose build contexts resolve against the
+    # compose file's dir).
+    build:
+      context: ../balena/registrar
+      dockerfile: Dockerfile.scotty
+    environment:
+      SCOTTY_READ_ONLY: "1"
+      BEADS_REPO: /queue-join
+      BEADS_DOLT_PASSWORD: ${BEADS_DOLT_PASSWORD:?set in deploy/.env}
+    depends_on:
+      dolt:
+        condition: service_healthy
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3306/api/projects').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+  # ── f57.15 END ──────────────────────────────────────────────────────────────
+
 volumes:
   pgdata:
   caddy-certs:
+  # f57.15: the VS queue's Dolt state volume.
+  doltdata:

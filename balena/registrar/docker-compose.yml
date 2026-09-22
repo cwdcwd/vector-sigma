@@ -166,6 +166,99 @@ services:
     stop_signal: SIGTERM
     restart: always
 
+  # ── f57.15 BEGIN: the VS fleet's own queue plane (dolt + scotty) ────────────
+  # Provenance: mirrors the Cabal's central-Dolt + Scotty stack (fleet proven:
+  # central Dolt :3326, scotty v0.3.0 cc55734 + the 8ea deep-link patch, bd
+  # pinned at 1.2.2, BD_BIN read-only wrapper + SCOTTY_READ_ONLY=1 two-layer
+  # posture). Owner ruling: VS queue is fully self-contained — VS devices run
+  # bd clients against THIS dolt; cross-fleet coordination (primus <->
+  # ultronbot) is A2A only, never shared-queue writes.
+  dolt:
+    image: dolthub/dolt-sql-server:2.3.5
+    environment:
+      # Structural (public values): the database VS bd clients join. Secrets
+      # are balenaCloud fleet variables ONLY (f57.8 pattern — they do not
+      # appear in this file at all, not even as empty stubs): DOLT_PASSWORD
+      # (the VS queue's Dolt auth — owner-minted, 600-equivalent custody,
+      # never in image layers) + DOLT_ROOT_PASSWORD (superuser; the image
+      # needs it to create the app user, and root stays localhost-only by
+      # image default — the queue never logs in as root over the LAN).
+      DOLT_DATABASE: vs_ops
+      DOLT_USER: vs
+      DOLT_USER_HOST: "%"
+    volumes:
+      - doltdata:/var/lib/dolt
+    ports:
+      # Published to the device LAN: VS device bd clients reach the master
+      # over the LAN exactly like REGISTRAR_URL (owner ruling: devices run bd
+      # clients against it). Not reachable off-LAN: the balenaCloud public-URL
+      # feature tunnels device port 80 ONLY (f57.9). Cabal precedent: central
+      # Dolt :3326 serving every fleet client.
+      - "3326:3306"
+    healthcheck:
+      # Dolt's documented liveness query, AUTHENTICATED, with the client
+      # flags in the right position: dolt's connection flags are GLOBAL flags
+      # — they must PRECEDE the subcommand (`dolt --host ... sql -q ...`);
+      # placed after `sql` the CLI rejects them ("unknown option `host'",
+      # proven live against dolt 2.3.5 — CI run-3's red). And the probe
+      # must authenticate as the app user: once DOLT_ROOT_PASSWORD is set,
+      # a root probe without a password is Access-denied (dolthub issue
+      # #7428's symptom — CI run-2's red). The entrypoint creates
+      # DOLT_USER/DOLT_PASSWORD before serving; the in-container shell
+      # expands the password from the fleet variable at probe time (the
+      # supervisor does no interpolation). Fail-closed: a missing fleet
+      # variable fails the healthcheck rather than probing blind.
+      test: ["CMD-SHELL", "dolt --host 127.0.0.1 --port 3306 --no-tls -u vs -p \"$DOLT_PASSWORD\" sql -q 'select current_timestamp();'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    stop_grace_period: 60s
+    stop_signal: SIGTERM
+    restart: always
+
+  scotty:
+    build:
+      context: .
+      dockerfile: Dockerfile.scotty
+    environment:
+      # Two-layer read-only posture (Cabal runbook, fleet-ops-8ea):
+      #   layer 1: SCOTTY_READ_ONLY=1 — scotty refuses project writes
+      #   layer 2: BD_BIN wrapper (baked into the image; see bd-readonly)
+      SCOTTY_READ_ONLY: "1"
+      # BEADS_REPO must point at a .beads workspace. On the master device the
+      # queue lives in the dolt container; scotty's bd bridge shells out to the
+      # IN-IMAGE bd (wrapped read-only), which connects to the dolt service
+      # over the compose network. The workspace it reads is a join-config
+      # directory baked alongside (queue-join/), so no bind mount exists to
+      # drift — balena supervisor allows none anyway (f57.12 precedent).
+      BEADS_REPO: /queue-join
+      # Dolt connection for the in-image bd (server mode): host = the compose
+      # service name; the password arrives as the BEADS_DOLT_PASSWORD service
+      # variable (same secret value as the dolt service's DOLT_PASSWORD — one
+      # owner-minted secret, two variable names because bd and the dolt image
+      # read different env keys). NEVER baked into the image (f57.8).
+    depends_on:
+      - dolt
+    ports:
+      # LAN dashboard (the queue UI): devices/owner reach it at
+      # http://<master-LAN-IP>:3306 — the Cabal dashboard's port posture.
+      - "3306:3306"
+    healthcheck:
+      # HTTP liveness: scotty serves /api/projects (the project picker's data
+      # route — verified present at cc55734; there is no /api/doctor route)
+      # once Next is up. bd errors surface as 5xx on project routes, so this
+      # also catches a wedged bd bridge.
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3306/api/projects').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    stop_grace_period: 60s
+    stop_signal: SIGTERM
+    restart: always
+  # ── f57.15 END ──────────────────────────────────────────────────────────────
+
   # f57.13: one-shot TLS material provisioning — decodes the TLS_CERT_B64 /
   # TLS_KEY_B64 fleet variables into the shared caddy-certs volume (PEM
   # pair). Image-carried script (the litellm-init pattern): identical bytes
@@ -231,3 +324,5 @@ services:
 volumes:
   pgdata:
   caddy-certs:
+  # f57.15: the VS queue's Dolt state volume.
+  doltdata:

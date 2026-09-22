@@ -509,7 +509,141 @@ ac9_litellm_smoke() {
   fi
 }
 
-# AC10 (f57.13): the TLS edge contract, asserted from the host through the
+# ---- AC10 (f57.15): the VS queue plane — dolt health, scotty serving,
+# bd client round-trip against the compose dolt ------------------------------
+
+ac10_queue_plane() {
+  note "AC10: VS queue plane — dolt + scotty + bd round-trip (f57.15)"
+  local dolt_password
+  dolt_password="$(grep -E '^DOLT_PASSWORD=' "$ENV_FILE" | cut -d= -f2-)"
+  if [ -z "$dolt_password" ]; then
+    fail AC10 "DOLT_PASSWORD missing from $ENV_FILE"
+    return
+  fi
+
+  # 1. Dolt container healthy: the documented liveness query, AUTHENTICATED
+  # as the app user, with dolt's client flags as GLOBAL flags BEFORE the
+  # sql subcommand (the CLI rejects them after the subcommand — proven live
+  # against dolt 2.3.5; a root probe without a password is Access-denied
+  # once DOLT_ROOT_PASSWORD is set — dolthub issue #7428; both were this
+  # lane's CI run-2/run-3 reds). The healthcheck asserts the in-container
+  # shape; this asserts the same query lands from the compose network.
+  local q
+  if q="$($COMPOSE exec -T dolt dolt --host 127.0.0.1 --port 3306 --no-tls -u vs -p "$dolt_password" sql -q 'select current_timestamp();' 2>/dev/null)" \
+    && [ -n "$q" ]; then
+    pass "AC10 dolt healthy" "current_timestamp() answered as app user: $(printf '%s' "$q" | tail -1)"
+  else
+    fail "AC10 dolt healthy" "no answer to select current_timestamp() as app user"
+  fi
+
+  # 2. Scotty serves: /api/projects must 200 (the picker data route; verified
+  # present at cc55734). Poll: the patched image build is cold on CI runners.
+  local deadline=$((SECONDS + 240)) code=""
+  until code="$(curl -s -o /dev/null -w '%{http_code}' -m 5 http://127.0.0.1:3306/api/projects 2>/dev/null)" \
+    && [ "$code" = "200" ]; do
+    [ $SECONDS -ge $deadline ] && break
+    sleep 3
+  done
+  if [ "$code" = "200" ]; then
+    pass "AC10 scotty serves" "http://127.0.0.1:3306/api/projects -> 200"
+  else
+    fail "AC10 scotty serves" "last code: ${code:-none} (deadline 240s)"
+    note "scotty container recent logs (self-diagnosis):"
+    docker logs "$PROJECT-scotty-1" 2>&1 | tail -25 || true
+    return
+  fi
+
+  # 3. bd round-trip against the compose dolt from the HOST, with a pinned
+  # bd 1.2.2 client downloaded fresh (the same release the scotty image
+  # bakes). Why host-side: bd init inits a git repository in the workspace
+  # for the sync protocol, and the scotty image deliberately ships WITHOUT
+  # git (upstream README documents it); more importantly this mirrors the
+  # real device story — VS devices run their OWN bd clients against the
+  # LAN dolt (deploy compose publishes 3326), not through the scotty
+  # container. The runner provides git + writable HOME; CI=true keeps bd
+  # non-interactive. --external: the compose dolt is already running
+  # (without it bd starts its OWN server on the port and dies — run-4's
+  # lesson). --database vs_ops: use the database the dolt image already
+  # created (bd --help: for when an external tool has already created the
+  # database) — the vs user holds privileges on vs_ops only.
+  # Error output is CAPTURED, never swallowed.
+  local workdir=/tmp/vs-queue-e2e
+  rm -rf "$workdir"; mkdir -p "$workdir"
+  local init_err="/tmp/vs-queue-e2e-init.err"
+  local arch="amd64"
+  case "$(uname -m)" in aarch64|arm64) arch="arm64" ;; esac
+  local bd_bin="$workdir/bd"
+  if ! curl -sL "https://github.com/gastownhall/beads/releases/download/v1.2.2/beads_1.2.2_linux_${arch}.tar.gz" \
+      -o "$workdir/bd.tgz" 2>"$init_err" \
+    || ! tar -xzf "$workdir/bd.tgz" -C "$workdir" bd 2>>"$init_err" \
+    || ! chmod +x "$bd_bin" 2>>"$init_err"; then
+    fail "AC10 bd client" "download/extract failed: $(tail -2 "$init_err" 2>/dev/null | tr '\n' ' ')"
+    return
+  fi
+  # bd execs `git` for its workspace init (Go exec.LookPath inside bd's own
+  # process env). Run-5 lesson: bd died with 'exec: "git": executable file
+  # not found in $PATH' on a runner where /usr/bin/git verifiably exists
+  # (teardown ran it seconds later), while the same pinned bd 1.2.2 passes
+  # git-init locally with a normal PATH. Hardening, two layers:
+  #   1) loud guard — if the e2e host shell can't see git, FAIL naming PATH;
+  #   2) every bd invocation gets an explicit absolute PATH so bd's
+  #      LookPath cannot miss /usr/bin whatever the step env inherited.
+  # If it fails again, the FAIL lines now carry the host PATH — no more
+  # swallowed environment.
+  if ! command -v git >/dev/null 2>&1; then
+    fail "AC10 bd client" "git not found on e2e host — PATH=[$PATH] command -v git: $(command -v git 2>&1 || echo none)"
+    return
+  fi
+  local bd_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  # The compose dolt publishes host 3326 (the queue contract — device bd
+  # clients reach it exactly this way); the host-side client connects there.
+  if ! (cd "$workdir" && PATH="$bd_path" BEADS_DOLT_PASSWORD="$dolt_password" CI=true "$bd_bin" init --server --external \
+        --server-host 127.0.0.1 --server-port 3326 --server-user vs \
+        --database vs_ops --non-interactive) 2>"$init_err"; then
+    fail "AC10 bd init" "bd init failed: $(tail -3 "$init_err" 2>/dev/null | tr '\n' ' ') [host PATH=$PATH, git=$(command -v git || echo none)]"
+    return
+  fi
+  pass "AC10 bd init" "server-mode init minted the project contract"
+  if ! (cd "$workdir" && PATH="$bd_path" BEADS_DOLT_PASSWORD="$dolt_password" CI=true "$bd_bin" create "e2e round-trip probe") >/dev/null 2>"$init_err"; then
+    fail "AC10 bd create" "bd create failed: $(tail -2 "$init_err" 2>/dev/null | tr '\n' ' ')"
+    return
+  fi
+  pass "AC10 bd create" "probe bead created"
+  local listed
+  listed="$(cd "$workdir" && PATH="$bd_path" BEADS_DOLT_PASSWORD="$dolt_password" "$bd_bin" list 2>/dev/null || true)"
+  if printf '%s' "$listed" | grep -q 'e2e round-trip probe'; then
+    pass "AC10 bd list" "probe bead visible in bd list"
+  else
+    fail "AC10 bd list" "probe bead not listed"
+  fi
+  # Probe-ID capture. Run-6 lesson: in CI (CI=true) bd list renders a status
+  # glyph FIRST ('○ <id> <title>'), so $1 is the glyph, not the ID — parsing
+  # the list handed bd close '○' ('resolving ID ○: no issue found'). Two
+  # captures, deterministic first:
+  #   1) bd list --json's array of rows (verified against bd 1.2.2): each has
+  #      an 'id' field; regex the probe's own row — exact, not $1-position.
+  #   2) fallback: the first token on the probe row that matches the
+  #      <prefix>-<id> shape (bd IDs are '<dir-prefix>-<hash>').
+  local probe_id
+  probe_id="$(cd "$workdir" && PATH="$bd_path" BEADS_DOLT_PASSWORD="$dolt_password" "$bd_bin" list --json 2>/dev/null \
+    | tr -d '\n' | grep -o '"id": *"[^"]*"[^}]*"e2e round-trip probe"' \
+    | head -1 | cut -d'"' -f4 || true)"
+  if [ -z "$probe_id" ]; then
+    probe_id="$(printf '%s' "$listed" | grep 'e2e round-trip probe' \
+      | grep -oE '[a-z0-9]+(-[a-z0-9]+)+' | head -1 || true)"
+  fi
+  if [ -n "$probe_id" ]; then
+    if (cd "$workdir" && PATH="$bd_path" BEADS_DOLT_PASSWORD="$dolt_password" CI=true "$bd_bin" close "$probe_id") >/dev/null 2>"$init_err"; then
+      pass "AC10 bd close" "probe bead $probe_id closed"
+    else
+      fail "AC10 bd close" "bd close failed for $probe_id: $(tail -2 "$init_err" 2>/dev/null | tr '\n' ' ')"
+    fi
+  else
+    fail "AC10 bd close" "could not parse probe id from bd list output"
+  fi
+}
+
+# AC11 (f57.13): the TLS edge contract, asserted from the host through the
 # REAL front door:
 #   1. port 80 redirects to https (308)
 #   2. plain https WITHOUT the CA fails (TLS is ENFORCED, not optional)
@@ -520,25 +654,25 @@ ac9_litellm_smoke() {
 #      https://vsigma.lan and the ready marker exists (AC1's cold boot is
 #      the TLS path itself; this makes the attribution explicit)
 ac10_tls_edge() {
-  note "AC10: TLS edge contract — redirect, enforcement, cert, device path (f57.13)"
+  note "AC11: TLS edge contract — redirect, enforcement, cert, device path (f57.13)"
   local code sans issuer
 
   # 1. port 80 -> 308 redirect to https
   code="$(curl -s -o /dev/null -w '%{http_code}' --resolve "$TLS_HOSTNAME:80:127.0.0.1" \
     "http://$TLS_HOSTNAME/" 2>/dev/null || true)"
-  expect "AC10 port 80 redirect" "$code" "308"
+  expect "AC11 port 80 redirect" "$code" "308"
 
   # 2. TLS enforced: same call WITHOUT the CA must FAIL (self-signed rejection)
   if curl -s -o /dev/null --resolve "$TLS_HOSTNAME:443:127.0.0.1" \
     "https://$TLS_HOSTNAME/healthz" 2>/dev/null; then
-    fail "AC10 TLS enforced" "untrusted client SUCCEEDED — TLS not enforced"
+    fail "AC11 TLS enforced" "untrusted client SUCCEEDED — TLS not enforced"
   else
-    pass "AC10 TLS enforced" "untrusted client rejected (self-signed CA not in store)"
+    pass "AC11 TLS enforced" "untrusted client rejected (self-signed CA not in store)"
   fi
 
   # 3. trusted path: healthz 200 over the edge
   code="$(tls_curl -o /dev/null -w '%{http_code}' "$BASE_URL/healthz")"
-  expect "AC10 registrar healthz over TLS" "$code" "200"
+  expect "AC11 registrar healthz over TLS" "$code" "200"
 
   # 4. served cert identity: SAN + issuer from the throwaway E2E material
   sans="$(openssl s_client -connect "127.0.0.1:443" -servername "$TLS_HOSTNAME" </dev/null 2>/dev/null \
@@ -546,23 +680,23 @@ ac10_tls_edge() {
   issuer="$(openssl s_client -connect "127.0.0.1:443" -servername "$TLS_HOSTNAME" </dev/null 2>/dev/null \
     | openssl x509 -noout -issuer 2>/dev/null || true)"
   if printf '%s' "$sans" | grep -q "DNS:$TLS_HOSTNAME"; then
-    pass "AC10 cert SAN" "$sans"
+    pass "AC11 cert SAN" "$sans"
   else
-    fail "AC10 cert SAN" "got: $sans"
+    fail "AC11 cert SAN" "got: $sans"
   fi
   if printf '%s' "$issuer" | grep -q 'Vector Sigma Internal CA'; then
-    pass "AC10 cert issuer" "VS internal CA (gen-vs-ca.sh material)"
+    pass "AC11 cert issuer" "VS internal CA (gen-vs-ca.sh material)"
   else
-    fail "AC10 cert issuer" "got: $issuer"
+    fail "AC11 cert issuer" "got: $issuer"
   fi
 
   # 5. the device's own path was TLS: ready marker present (bootstrap went
   #    through https://vsigma.lan — the overlay's REGISTRAR_URL) and the
   #    audit rows carry the edge as source.
   if docker exec "$PROJECT-device-1" test -f /data/agent/ready.marker 2>/dev/null; then
-    pass "AC10 device bootstrapped via TLS" "ready.marker present (REGISTRAR_URL=https://$TLS_HOSTNAME)"
+    pass "AC11 device bootstrapped via TLS" "ready.marker present (REGISTRAR_URL=https://$TLS_HOSTNAME)"
   else
-    fail "AC10 device bootstrapped via TLS" "no ready.marker — device never completed TLS bootstrap"
+    fail "AC11 device bootstrapped via TLS" "no ready.marker — device never completed TLS bootstrap"
   fi
 }
 
@@ -587,8 +721,8 @@ ac6_volume_state
 ac7_console_structured_save
 ac8_grace_self_heal
 ac9_litellm_smoke
+ac10_queue_plane
 ac10_tls_edge
-
 echo
 echo "[e2e] ===== RESULT: $PASS passed, $FAIL failed ====="
 [ "$FAIL" -eq 0 ]

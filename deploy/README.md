@@ -64,6 +64,15 @@ Notes:
   with glm↔glm cross-fallbacks and a `*` pass-through wildcard to Ollama
   Cloud (never a fallback target — j9f). See `balena/registrar/README.md`
   for the full gateway runbook (key minting, A2A mesh, failure domain).
+- **VS queue plane (f57.15)**: `DOLT_PASSWORD`, `DOLT_ROOT_PASSWORD`, and
+  `BEADS_DOLT_PASSWORD` (same value as `DOLT_PASSWORD`) are required in
+  `deploy/.env`. The `dolt` service (Dolt SQL server, `vs_ops` database)
+  publishes :3326 for device bd clients (the queue contract — drop the
+  publish only if you accept a queue nobody can join); `scotty` (the
+  patched pinned dashboard) publishes :3306 and serves the queue
+  READ-ONLY (two layers: `SCOTTY_READ_ONLY=1` + the `bd-readonly` BD_BIN
+  wrapper). One-time `bd init --server` + device joins: see
+  `scripts/vs-queue-bootstrap.md`; conventions: `docs/queue-conventions.md`.
 
 ## Postgres on an existing host (optional variant)
 
@@ -116,6 +125,11 @@ What the E2E proves, in order (the bead's acceptance criteria):
    returns 200 and `/v1/models` (master-key auth) serves the explicit
    `glm-5.3`/`glm-5.2` groups — j9f's fallback-capable groups, verified
    against the live gateway, no upstream completion traffic.
+10. **VS queue plane smoke (f57.15)**: the compose stack brings up the REAL
+   dolt server + the patched scotty image; the dolt liveness query answers,
+   `scotty` serves `/api/projects` 200, and a real bd 1.2.2 client
+   round-trips init → create → list → close against the compose dolt
+   (throwaway volume — the CI init IS the one-time act by construction).
 
 The device service runs the real registrant image (`registrant/dist/index.js`)
 — the same container shape the balenaOS device app uses (f57.6), with

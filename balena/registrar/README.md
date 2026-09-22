@@ -72,10 +72,12 @@ env).
 | `LITELLM_MASTER_KEY` | **fleet-wide** | **yes — no default** (f57.12) | LiteLLM gateway master key — mints virtual keys, unlocks the Admin UI (`https://<TLS_HOSTNAME>:8443/ui`). **Must start with `sk-`** (LiteLLM requirement). 600-equivalent custody: it IS the gateway; never in image layers, compose, chat, or the database. Fleet scope per the bead's variable contract (service scope would be a hardening option — see "Gateway variable scoping" below). |
 | `LITELLM_PG_PASSWORD` | **fleet-wide** | **yes — no default** (f57.12) | Password for the gateway's dedicated least-privilege postgres role. The `litellm-init` service provisions the `litellm` role + `litellm` database on every boot and re-asserts this value (ALTER ROLE) — rotating it needs no manual psql step, just a release re-deploy or service restart. |
 | `OLLAMA_CLOUD_API_KEY` | **fleet-wide** | **yes — no default** (f57.12) | Ollama Cloud credential — the gateway's model upstream (OpenAI-compatible `https://ollama.com/v1`). Held only by the gateway container; devices never see it. |
+| `DOLT_PASSWORD` | dolt + scotty | **yes — no default** (f57.15) | Dolt auth for the VS queue's app user `vs` (database `vs_ops`). The dolt image creates the user at first boot of the `doltdata` volume; VS device bd clients join with the SAME value. 600-equivalent custody. |
+| `DOLT_ROOT_PASSWORD` | dolt | **yes — no default** (f57.15) | Dolt superuser password (the image requires it to bootstrap; root stays localhost-only by image default — never a LAN login). |
+| `BEADS_DOLT_PASSWORD` | scotty | **yes — no default** (f57.15) | SAME secret value as `DOLT_PASSWORD`, under the env key bd reads (bd and the dolt image read different keys). Lets the scotty container's in-image bd join the queue read-only. |
 | `TLS_HOSTNAME` | **fleet-wide** | **yes — no default** (f57.13) | The master device hostname the caddy edge serves (must match the Pi-hole DNS record — see [docs/tls-runbook.md](../../docs/tls-runbook.md)). Feeds the Caddyfile's `{$TLS_HOSTNAME:vsigma.lan}` substitution. |
 | `TLS_CERT_B64` | **fleet-wide** | **yes — no default** (f57.13) | Base64 (single line, `-w0`) of the leaf cert PEM from `scripts/gen-vs-ca.sh` output. The one-shot `certs-init` service decodes it into the caddy-certs volume; rotation = re-run the script, re-paste, restart `certs-init` + `caddy`. |
 | `TLS_KEY_B64` | **fleet-wide** | **yes — no default** (f57.13) | Base64 of the leaf KEY PEM — same paste source (`vs-tls/b64-cert.env`), same rotation path. The CA key itself is NEVER a variable (owner-custodied). |
-
 ### Static in compose (override only if you know why)
 
 | Variable | Service | Value | Purpose |
@@ -308,6 +310,33 @@ is asserted externally: the deploy E2E smoke (AC9) polls
 `/v1/models`. On-device spot check: `curl -s
 https://<TLS_HOSTNAME>:8443/health/liveliness` from any LAN host (or
 the balenaCloud public URL path if the owner enables it).
+
+## The VS queue (dolt + scotty) — f57.15
+
+The master composition also carries the VS fleet's own work queue:
+the `dolt` service (Dolt SQL server, database `vs_ops`, LAN :3326)
+and the `scotty` dashboard (Bead Me Up Scotty v0.3.0 `cc55734` + the
+fleet's 8ea deep-link patch + bd pinned at 1.2.2 + the `bd-readonly`
+wrapper, LAN :3306). VS devices run bd clients against the dolt
+server; the dashboard serves the queue READ-ONLY (two layers:
+`SCOTTY_READ_ONLY=1` server-side + the `bd-readonly` BD_BIN wrapper
+allowlisting `export --json` / `show <id> --json` / `--version` only).
+
+One-time bring-up, device joins, and the `bd init --server` landmine
+(a second init rewrites the shared project_id and locks every other
+client out — the 2026-09-09 fleet lockout) are documented in
+[scripts/vs-queue-bootstrap.md](../../scripts/vs-queue-bootstrap.md);
+queue conventions (epic-per-project, claim discipline, the
+cross-fleet A2A-only rule) in
+[docs/queue-conventions.md](../../docs/queue-conventions.md).
+
+### Queue health
+
+The dolt healthcheck runs Dolt's documented liveness query
+(`dolt sql -q "select current_timestamp();"`); the scotty healthcheck
+polls `/api/projects` for HTTP 200. The deploy E2E (AC10) additionally
+round-trips a real bd client against the compose dolt: init → create
+→ list → close on a throwaway volume.
 
 ## First flash
 
