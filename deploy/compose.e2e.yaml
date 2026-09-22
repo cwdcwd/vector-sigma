@@ -60,9 +60,8 @@ services:
   # while caddy was still waiting on certs-init. This one-shot service
   # polls the REAL edge (https, CA-trusted, healthz 200) and the device
   # waits for its completion — TLS readiness gates the device by
-  # construction, not by timing luck. Network alias: the device talks to
-  # https://vsigma.lan; the overlay maps that hostname to caddy (see the
-  # networks block below).
+  # construction, not by timing luck. No --resolve needed: the network
+  # alias below maps vsigma.lan -> caddy inside the compose network.
   tls-gate:
     image: curlimages/curl:8.10.1
     depends_on:
@@ -75,8 +74,7 @@ services:
         set -eu
         echo "$E2E_CA_CERT_B64" | base64 -d > /tmp/e2e-ca.crt
         i=0
-        until curl -fs --resolve "$${TLS_HOSTNAME:-vsigma.lan}:443:caddy" \
-            --cacert /tmp/e2e-ca.crt \
+        until curl -fs --cacert /tmp/e2e-ca.crt \
             "https://$${TLS_HOSTNAME:-vsigma.lan}/healthz" >/dev/null 2>&1; do
           i=$$((i + 1))
           if [ "$$i" -ge 120 ]; then
