@@ -209,6 +209,19 @@ services:
       LOG_LEVEL: info
     volumes:
       - primus-data:/data/agent
+    healthcheck:
+      # THE gate hermes waits on (run-2 lesson: depends_on service_healthy
+      # is unsatisfiable without a healthcheck). Marker-based, not process
+      # liveness: healthy == the bootstrap chain completed and identity
+      # exists on the shared volume — hermes starts only then (its own
+      # entrypoint re-gates on the same marker structurally). A failed
+      # bootstrap (grace-poll resident, no marker) keeps this red and
+      # fails compose up loudly.
+      test: ["CMD-SHELL", "test -f /data/agent/ready.marker"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
     depends_on:
       registrar:
         condition: service_healthy
