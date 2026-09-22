@@ -182,6 +182,8 @@ services:
       # absent; a fresh volume per run keeps the boot identical.
       HERMES_HOME: /data/primus
       HERMES_GATEWAY_BOOTSTRAP_STATE: running
+    # Long-run form (the base compose carries `command: gateway run`; the
+    # overlay inherits it — no override needed).
     volumes:
       - primus-data:/data/primus
     depends_on:

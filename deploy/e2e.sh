@@ -745,7 +745,7 @@ ac12_primus_self_bootstrap() {
   expect_file "config/agent.env" "GATEWAY_API_KEY=" "agent.env GATEWAY_API_KEY"
   expect_file "config/agent.env" "GATEWAY_URL=http://litellm:4000" "agent.env GATEWAY_URL (the composition's litellm)"
   expect_file "config/secrets.env" "SLACK_BOT_TOKEN=" "secrets.env SLACK_BOT_TOKEN"
-  expect_file "SOUL.md" "VS fleet coordinator" "SOUL.md coordinator clause"
+  expect_file "SOUL.md" "Vector Sigma fleet coordinator" "SOUL.md coordinator clause"
   expect_file "SOUL.md" "A2A-only" "SOUL.md cross-fleet clause"
   expect_file "config/a2a.json" "identity_key" "a2a.json identity key"
   expect_file "config/github-app.pem" "sim-e2e-pem-placeholder" "github-app.pem (owner-side custody shape)"
@@ -757,19 +757,27 @@ ac12_primus_self_bootstrap() {
   #    the gate, not just started.
   local hcontainer="$PROJECT-hermes-1"
   local hdeadline=$((SECONDS + 180))
-  until docker exec "$hcontainer" test -f /data/primus/ready.marker 2>/dev/null; do
+  until docker exec "$hcontainer" sh -c "test -f /data/primus/state.db || test -f /data/primus/config.yaml" 2>/dev/null; do
     [ $SECONDS -ge $hdeadline ] && {
-      fail "AC12 hermes gate" "hermes never saw the ready marker (entrypoint still blocked?)"
+      fail "AC12 hermes boot" "no stage2/gateway artifacts under /data/primus after 180s — hermes never booted against the volume"
       docker logs "$hcontainer" 2>&1 | tail -15
       return
     }
     sleep 3
   done
-  pass "AC12 hermes gate" "official image's entrypoint passed the marker gate (HERMES_HOME=/data/primus)"
   if docker exec "$hcontainer" test -f /data/primus/config.yaml 2>/dev/null; then
-    pass "AC12 hermes stage2 boot" "stage2 seeded config.yaml — the supervised boot ran against the volume"
+    pass "AC12 hermes stage2 boot" "config.yaml seeded under HERMES_HOME — stage2 ran against the volume"
   else
     fail "AC12 hermes stage2 boot" "no config.yaml under HERMES_HOME — stage2 never ran"
+  fi
+  # The bundle from HERMES_HOME's view: the registrant's DATA_DIR (/data/agent
+  # on the SAME volume) appears as agent/ under HERMES_HOME — the shared-volume
+  # contract, and the structural gate was the registrant's marker healthcheck
+  # (hermes started only after identity existed).
+  if docker exec "$hcontainer" sh -c "grep -q 'primus' /data/primus/agent/SOUL.md" 2>/dev/null; then
+    pass "AC12 hermes sees the bundle" "agent/SOUL.md readable from HERMES_HOME (the shared-volume view)"
+  else
+    fail "AC12 hermes sees the bundle" "agent/SOUL.md not readable under /data/primus — volume sharing broken"
   fi
 }
 
