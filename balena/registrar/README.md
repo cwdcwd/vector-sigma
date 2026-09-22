@@ -75,6 +75,7 @@ env).
 | `DOLT_PASSWORD` | dolt + scotty | **yes — no default** (f57.15) | Dolt auth for the VS queue's app user `vs` (database `vs_ops`). The dolt image creates the user at first boot of the `doltdata` volume; VS device bd clients join with the SAME value. 600-equivalent custody. |
 | `DOLT_ROOT_PASSWORD` | dolt | **yes — no default** (f57.15) | Dolt superuser password (the image requires it to bootstrap; root stays localhost-only by image default — never a LAN login). |
 | `BEADS_DOLT_PASSWORD` | scotty | **yes — no default** (f57.15) | SAME secret value as `DOLT_PASSWORD`, under the env key bd reads (bd and the dolt image read different keys). Lets the scotty container's in-image bd join the queue read-only. |
+| `PRIMUS_REGISTRAR_KEY` | registrant-own | **yes — no default** (f57.14) | The registrar key for the master device's own row (agent_name=primus). Mint/insert per the device-key flow; never reuse another row's key. |
 | `TLS_HOSTNAME` | **fleet-wide** | **yes — no default** (f57.13) | The master device hostname the caddy edge serves (must match the Pi-hole DNS record — see [docs/tls-runbook.md](../../docs/tls-runbook.md)). Feeds the Caddyfile's `{$TLS_HOSTNAME:vsigma.lan}` substitution. |
 | `TLS_CERT_B64` | **fleet-wide** | **yes — no default** (f57.13) | Base64 (single line, `-w0`) of the leaf cert PEM from `scripts/gen-vs-ca.sh` output. The one-shot `certs-init` service decodes it into the caddy-certs volume; rotation = re-run the script, re-paste, restart `certs-init` + `caddy`. |
 | `TLS_KEY_B64` | **fleet-wide** | **yes — no default** (f57.13) | Base64 of the leaf KEY PEM — same paste source (`vs-tls/b64-cert.env`), same rotation path. The CA key itself is NEVER a variable (owner-custodied). |
@@ -337,6 +338,71 @@ The dolt healthcheck runs Dolt's documented liveness query
 polls `/api/projects` for HTTP 200. The deploy E2E (AC10) additionally
 round-trips a real bd client against the compose dolt: init → create
 → list → close on a throwaway volume.
+
+## primus — the VS coordinator Hermes (f57.14)
+
+The master device runs its own agent: **primus**, the Vector Sigma fleet
+coordinator. This is the dogfood proof at the heart of the architecture —
+the coordinator bootstraps through the SAME chain every device uses:
+
+```
+registrar (healthy) → registrant-own (fetch + apply bundle) → hermes (ready-marker gate)
+```
+
+- **`registrant-own`** — a vendored twin of the devices app's registrant
+  (byte-pinned by `registrant/test/vendored-drift.test.ts`). It polls the
+  compose-internal registrar (`http://registrar:3000` — pre-TLS by the
+  bead's contract; the https flip rides the same sequencing as the
+  devices fleet) and applies the primus bundle to the shared
+  `primus-data` volume, writing `ready.marker` last.
+- **`hermes`** — the official `nousresearch/hermes-agent` image
+  (version-tagged, arm64-published), `HERMES_HOME=/data/primus` on the
+  same volume. The image's entrypoint gates on the ready marker: no
+  identity, no gateway. `HERMES_GATEWAY_BOOTSTRAP_STATE=running` starts
+  the supervised gateway on first boot (the image's first-boot-only seed
+  contract); the persisted state wins on every later boot.
+
+### Hermes config contract (AC4)
+
+The bundle IS the config delivery:
+
+| Bundle file | Hermes consumer |
+|---|---|
+| `config/agent.env` | `AGENT_NAME=primus`, `MODEL_ROUTE`, `GATEWAY_API_KEY`, + `GATEWAY_URL` pointing at the composition's litellm (`http://litellm:4000` compose-internal today; `https://<TLS_HOSTNAME>:8443` after the TLS flip — same sequencing as the devices fleet) |
+| `config/secrets.env` | `SLACK_BOT_TOKEN` etc. (owner-side custody, per the Cabal pattern) |
+| `SOUL.md` | The VS coordinator SOUL: queue curator (docs/queue-conventions.md), cross-fleet contact A2A-only, credential/install/self-config mutations owner-gated (the ADR-0001 clause mirror) |
+| `config/a2a.json` | `identity_key` + `trusted_peers` (the mesh; peer token staging rides the follow-up bead) |
+| `config/github-app.pem` | GitHub App credential (owner-side custody) |
+
+The image's stage2 hook seeds `config.yaml` / `.env` / `SOUL.md` only
+when absent — operator-provided values win, so the bundle's files are
+never clobbered by a container update.
+
+### Owner steps (before the f57.14 release)
+
+1. **Pre-create the row** in the admin console: device UUID = the
+   master's own `BALENA_DEVICE_UUID` (device page → UUID),
+   `agent_name=primus`, status active, `PRIMUS_REGISTRAR_KEY` minted and
+   inserted as its key hash.
+2. **Fill the bundle** via the structured editor: gateway key
+   (`vs-primus`, minted on the new gateway per the f57.12 runbook),
+   `MODEL_ROUTE`, the SOUL contents (the coordinator clauses above),
+   A2A identity key (`vs-primus-a2a`, sentinel-gated), Slack + GitHub
+   App credentials (owner-side custody).
+3. **Set the device variables**: `BALENA_DEVICE_UUID` +
+   `PRIMUS_REGISTRAR_KEY` on the registrar fleet (device scope for the
+   key — f57.8 pattern).
+4. Tag the release; the chain self-bootstraps. The deploy E2E (AC12)
+   proves the chain end-to-end in CI: the REAL official image + the REAL
+   vendored registrant + the seeded full bundle.
+
+### primus health
+
+Process liveness (`kill -0 1`) — the identity gate is structural: an
+unprovisioned primus shows `hermes` **Exited** in the dashboard (the
+entrypoint's marker gate), not "Running" with nothing inside. The
+ready-marker + bundle artifacts + stage2 boot are asserted by the
+deploy E2E (AC12) in CI on every push.
 
 ## First flash
 

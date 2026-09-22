@@ -73,6 +73,13 @@ Notes:
   READ-ONLY (two layers: `SCOTTY_READ_ONLY=1` + the `bd-readonly` BD_BIN
   wrapper). One-time `bd init --server` + device joins: see
   `scripts/vs-queue-bootstrap.md`; conventions: `docs/queue-conventions.md`.
+- **primus, the coordinator (f57.14)**: `PRIMUS_DEVICE_UUID` (the
+  master's UUID) and `PRIMUS_REGISTRAR_KEY` (its row's registrar key) are
+  required in `deploy/.env`. The `registrant-own` service bootstraps the
+  primus bundle from the registrar and gates the `hermes` service
+  (official `nousresearch/hermes-agent` image, `HERMES_HOME=/data/primus`)
+  on the ready marker — the same chain every device uses, on the master.
+  The E2E (AC12) proves it in CI against the REAL image.
 
 ## Postgres on an existing host (optional variant)
 
@@ -126,10 +133,19 @@ What the E2E proves, in order (the bead's acceptance criteria):
    `glm-5.3`/`glm-5.2` groups — j9f's fallback-capable groups, verified
    against the live gateway, no upstream completion traffic.
 10. **VS queue plane smoke (f57.15)**: the compose stack brings up the REAL
-   dolt server + the patched scotty image; the dolt liveness query answers,
-   `scotty` serves `/api/projects` 200, and a real bd 1.2.2 client
-   round-trips init → create → list → close against the compose dolt
-   (throwaway volume — the CI init IS the one-time act by construction).
+    dolt server + the patched scotty image; the dolt liveness query answers,
+    `scotty` serves `/api/projects` 200, and a real bd 1.2.2 client
+    round-trips init → create → list → close against the compose dolt
+    (throwaway volume — the CI init IS the one-time act by construction).
+11. **TLS edge (f57.13)**: port 80 → 308, untrusted clients rejected,
+    healthz over TLS with the E2E CA, served cert SAN/issuer match the
+    gen-vs-ca.sh material, and the device bootstrapped through the edge.
+12. **primus self-bootstrap (f57.14)**: the REAL official Hermes image +
+    the REAL vendored registrant bootstrap the coordinator's identity
+    through the same chain every device uses — ready marker, every
+    structured canonical on the volume (merged agent.env, secrets.env,
+    verbatim SOUL.md, a2a.json, github-app.pem), and the hermes
+    container's stage2 boot artifacts prove the gated gateway launched.
 
 The device service runs the real registrant image (`registrant/dist/index.js`)
 — the same container shape the balenaOS device app uses (f57.6), with

@@ -700,6 +700,79 @@ ac10_tls_edge() {
   fi
 }
 
+# AC12 (f57.14): the primus dogfood — the coordinator self-bootstraps through
+# the SAME chain every device uses. The overlay's primus-registrant (the REAL
+# vendored registrant) fetches the seeded primus bundle from the REAL
+# registrar over compose-internal http and applies it to the shared
+# primus-data volume; the REAL official Hermes image's entrypoint gates on
+# the ready marker. Assertions:
+#   1. the primus ready marker exists (the registrant-own chain completed)
+#   2. every structured canonical landed on the volume: merged
+#      config/agent.env (AGENT_NAME=primus + MODEL_ROUTE + GATEWAY_API_KEY +
+#      GATEWAY_URL), config/secrets.env, verbatim SOUL.md (coordinator
+#      clauses), config/a2a.json, config/github-app.pem
+#   3. the hermes container started past the gate (its HERMES_HOME carries
+#      the boot artifacts — the image's stage2 seeds config.yaml when
+#      absent, proving the gateway process launched against the volume)
+ac12_primus_self_bootstrap() {
+  note "AC12: primus self-bootstrap — the dogfood chain (f57.14)"
+  local container="$PROJECT-primus-registrant-1"
+  local deadline=$((SECONDS + 300))
+
+  # 1. the primus registrant delivered: ready marker on the shared volume.
+  until docker exec "$container" test -f /data/agent/ready.marker 2>/dev/null; do
+    [ $SECONDS -ge $deadline ] && {
+      fail "AC12 primus ready marker" "no ready.marker after 300s — registrant-own never delivered"
+      docker logs "$container" 2>&1 | tail -20
+      return
+    }
+    sleep 2
+  done
+  pass "AC12 primus ready marker" "registrant-own delivered the bundle (the device chain, localhost registrar)"
+
+  # 2. every structured canonical landed (0600, expected content).
+  expect_file() { # expect_file <rel> <needle> <label>
+    local got
+    got="$(docker exec "$container" sh -c "cat /data/agent/$1 2>/dev/null" || true)"
+    if printf '%s' "$got" | grep -q "$2"; then
+      pass "AC12 $3" "$1 carries $2"
+    else
+      fail "AC12 $3" "$1 missing/!~ '$2' (got: $(printf '%s' "$got" | head -c 120))"
+    fi
+  }
+  expect_file "config/agent.env" "AGENT_NAME=primus" "agent.env AGENT_NAME"
+  expect_file "config/agent.env" "MODEL_ROUTE=ollama-cloud/glm-5.3" "agent.env MODEL_ROUTE"
+  expect_file "config/agent.env" "GATEWAY_API_KEY=" "agent.env GATEWAY_API_KEY"
+  expect_file "config/agent.env" "GATEWAY_URL=http://litellm:4000" "agent.env GATEWAY_URL (the composition's litellm)"
+  expect_file "config/secrets.env" "SLACK_BOT_TOKEN=" "secrets.env SLACK_BOT_TOKEN"
+  expect_file "SOUL.md" "VS fleet coordinator" "SOUL.md coordinator clause"
+  expect_file "SOUL.md" "A2A-only" "SOUL.md cross-fleet clause"
+  expect_file "config/a2a.json" "identity_key" "a2a.json identity key"
+  expect_file "config/github-app.pem" "sim-e2e-pem-placeholder" "github-app.pem (owner-side custody shape)"
+
+  # 3. the hermes container consumed the gated volume: its HERMES_HOME
+  #    (/data/primus) shows the stage2 boot artifacts — the gateway process
+  #    launched. The entrypoint blocks until the marker exists; the seed
+  #    files (config.yaml from the image's example) prove it ran PAST
+  #    the gate, not just started.
+  local hcontainer="$PROJECT-hermes-1"
+  local hdeadline=$((SECONDS + 180))
+  until docker exec "$hcontainer" test -f /data/primus/ready.marker 2>/dev/null; do
+    [ $SECONDS -ge $hdeadline ] && {
+      fail "AC12 hermes gate" "hermes never saw the ready marker (entrypoint still blocked?)"
+      docker logs "$hcontainer" 2>&1 | tail -15
+      return
+    }
+    sleep 3
+  done
+  pass "AC12 hermes gate" "official image's entrypoint passed the marker gate (HERMES_HOME=/data/primus)"
+  if docker exec "$hcontainer" test -f /data/primus/config.yaml 2>/dev/null; then
+    pass "AC12 hermes stage2 boot" "stage2 seeded config.yaml — the supervised boot ran against the volume"
+  else
+    fail "AC12 hermes stage2 boot" "no config.yaml under HERMES_HOME — stage2 never ran"
+  fi
+}
+
 # ---- main ---------------------------------------------------------------------
 
 # f57.13: the TLS env file is (re)generated on --up; ensure it exists for
@@ -723,6 +796,7 @@ ac8_grace_self_heal
 ac9_litellm_smoke
 ac10_queue_plane
 ac10_tls_edge
+ac12_primus_self_bootstrap
 echo
 echo "[e2e] ===== RESULT: $PASS passed, $FAIL failed ====="
 [ "$FAIL" -eq 0 ]

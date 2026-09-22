@@ -34,6 +34,18 @@ const vendoredFiles = [
   ['registrant/tsconfig.json', 'balena/devices/registrant/tsconfig.json'],
   ['shared/src/index.ts', 'balena/devices/registrant/shared/src/index.ts'],
   ['shared/tsconfig.json', 'balena/devices/registrant/shared/tsconfig.json'],
+  // f57.14: the registrar app's OWN registrant (primus bootstrap) vendors
+  // the same registrant + shared sources — byte-pinned like the devices copy.
+  ['registrant/src/client.ts', 'balena/registrar/registrant-own/src/client.ts'],
+  ['registrant/src/clock-gate.ts', 'balena/registrar/registrant-own/src/clock-gate.ts'],
+  ['registrant/src/config.ts', 'balena/registrar/registrant-own/src/config.ts'],
+  ['registrant/src/identity-store.ts', 'balena/registrar/registrant-own/src/identity-store.ts'],
+  ['registrant/src/index.ts', 'balena/registrar/registrant-own/src/index.ts'],
+  ['registrant/src/run.ts', 'balena/registrar/registrant-own/src/run.ts'],
+  ['registrant/tsconfig.json', 'balena/registrar/registrant-own/tsconfig.json'],
+  ['shared/src/index.ts', 'balena/registrar/registrant-own/shared/src/index.ts'],
+  ['shared/tsconfig.json', 'balena/registrar/registrant-own/shared/tsconfig.json'],
+  ['balena/devices/registrant/vs-entrypoint.sh', 'balena/registrar/registrant-own/vs-entrypoint.sh'],
   // registrar app: registrar sources + shared + migrations
   ['registrar/src/admin-auth.ts', 'balena/registrar/registrar/src/admin-auth.ts'],
   ['registrar/src/admin-html.ts', 'balena/registrar/registrar/src/admin-html.ts'],

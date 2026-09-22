@@ -259,6 +259,85 @@ services:
     restart: always
   # ── f57.15 END ──────────────────────────────────────────────────────────────
 
+  # ── f57.14 BEGIN: primus — the VS coordinator Hermes, self-bootstrapped ────
+  # The dogfood proof: the master device's own agent bootstraps through the
+  # SAME chain every device uses — the registrant-own service fetches the
+  # owner-prepared primus bundle from the registrar (device row pre-created
+  # in the console, agent_name=primus) and applies it to the shared
+  # primus-data volume; the official Hermes image's entrypoint blocks on
+  # the ready marker before its gateway starts. Ordering: registrar
+  # healthy -> registrant-own (bootstrap) -> hermes (ready-marker gate).
+  #
+  # Hermes contract (AC1): state on the primus-data volume via
+  # HERMES_HOME=/data/primus (the image's stage2 hook seeds config.yaml /
+  # .env / SOUL.md only when absent — the bundle's own SOUL.md and
+  # config/secrets.env land via the registrant; operator-provided values
+  # win, so the FIRST boot with a bundle-present volume serves primus's
+  # SOUL and credentials, and the seed never clobbers them later).
+  # HERMES_GATEWAY_BOOTSTRAP_STATE=running starts the supervised gateway
+  # on first boot (the image contract — only seeds when no state exists).
+  hermes:
+    # Official image, version-tagged (fleet pin discipline; `latest`/`main`
+    # are moving targets — the tag is the auditable lineage and arm64 is
+    # published for every tag).
+    image: nousresearch/hermes-agent:v2026.9.21
+    environment:
+      # State on the shared agent-data volume pattern (AC1: /data/primus).
+      HERMES_HOME: /data/primus
+      # The gateway comes up on first boot (the image's first-boot-only
+      # seed contract; the persisted state wins on every later boot).
+      HERMES_GATEWAY_BOOTSTRAP_STATE: running
+    volumes:
+      - primus-data:/data/primus
+    depends_on:
+      registrant-own:
+        condition: service_healthy
+    healthcheck:
+      # Process liveness only: the identity gate is structural (the
+      # entrypoint-dispatch blocks until the ready marker exists), so an
+      # unprovisioned primus shows hermes Exited in the dashboard, not
+      # "Running" with nothing inside — the same posture as the devices
+      # app's agent gate.
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    stop_grace_period: 60s
+    stop_signal: SIGTERM
+    restart: always
+
+  # f57.14: the master device's OWN registrant (vendored twin of the
+  # devices app's registrant — same sources, same image shape). Polls the
+  # compose-internal registrar over http (pre-TLS per the bead's contract:
+  # never leaves the composition network) and applies the primus bundle to
+  # the shared primus-data volume, writing /data/primus/ready.marker last
+  # — the hermes service's gate.
+  registrant-own:
+    build:
+      context: ./registrant-own
+      dockerfile: Dockerfile
+    environment:
+      # The master's own balena device UUID (BALENA_DEVICE_UUID) and the
+      # REGISTRAR_KEY for the primus row are balenaCloud DEVICE variables
+      # (f57.8 pattern — no secrets in this file). REGISTRAR_URL is
+      # structural: compose-internal http; the TLS flip (https://
+      # <TLS_HOSTNAME>) rides the same sequencing as the devices fleet.
+      REGISTRAR_URL: http://registrar:3000
+    volumes:
+      - primus-data:/data/agent
+    depends_on:
+      registrar:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    stop_grace_period: 30s
+    stop_signal: SIGTERM
+    restart: always
+  # ── f57.14 END ──────────────────────────────────────────────────────────────
+
   # f57.13: one-shot TLS material provisioning — decodes the TLS_CERT_B64 /
   # TLS_KEY_B64 fleet variables into the shared caddy-certs volume (PEM
   # pair). Image-carried script (the litellm-init pattern): identical bytes
@@ -326,3 +405,7 @@ volumes:
   caddy-certs:
   # f57.15: the VS queue's Dolt state volume.
   doltdata:
+  # f57.14: primus state — the shared agent-data volume pattern (the
+  # registrant-own service writes the bundle + ready marker here; the
+  # hermes service mounts it at /data/primus as HERMES_HOME).
+  primus-data:

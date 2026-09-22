@@ -47,6 +47,9 @@ const env = {
   graceUuid: process.env.E2E_GRACE_UUID ?? '',
   graceKey: process.env.E2E_GRACE_KEY ?? '',
   adminKey: process.env.E2E_ADMIN_KEY ?? '',
+  /** f57.14: primus — the coordinator's own row (active, full bundle). */
+  primusUuid: process.env.PRIMUS_DEVICE_UUID ?? '',
+  primusKey: process.env.PRIMUS_REGISTRAR_KEY ?? '',
 };
 
 for (const k of ['databaseUrl', 'uuid', 'key', 'agentName'] as const) {
@@ -54,6 +57,9 @@ for (const k of ['databaseUrl', 'uuid', 'key', 'agentName'] as const) {
 }
 for (const k of ['graceUuid', 'graceKey', 'adminKey'] as const) {
   if (env[k] === '') throw new Error(`seed: missing env ${k} (f57.11 E2E)`);
+}
+for (const k of ['primusUuid', 'primusKey'] as const) {
+  if (env[k] === '') throw new Error(`seed: missing env ${k} (f57.14 E2E)`);
 }
 if (!Number.isFinite(env.rearmSeconds) || env.rearmSeconds <= 0) {
   throw new Error(`seed: SEED_REARM_SECONDS must be positive, got ${env.rearmSeconds}`);
@@ -219,6 +225,79 @@ async function main(): Promise<void> {
     .values({ hash: adminHash, label: 'e2e-admin' })
     .onConflictDoNothing();
   console.log('[seed] admin key seeded (label e2e-admin)');
+
+  // ---- f57.14: primus — the coordinator's own device row (active) with a
+  // FULL bundle carrying every structured canonical (the exact file set the
+  // console's structured editor renders): merged config/agent.env
+  // (AGENT_NAME=primus + MODEL_ROUTE + GATEWAY_API_KEY + the bundle-contract
+  // extras), config/secrets.env (Slack token), verbatim SOUL.md (the VS
+  // coordinator SOUL: queue curator + owner-exception classes, the ADR-0001
+  // clause mirror), config/a2a.json (identity key + trusted peers), and
+  // config/github-app.pem (owner-side custody on the real fleet; a
+  // deterministic placeholder here — the AC asserts the bootstrap CHAIN,
+  // never a live credential). e2e.sh's primus-registrant bootstraps this
+  // row; AC12 asserts the artifacts land on the primus-data volume and the
+  // hermes container consumes them (ready marker gate).
+  const primusBundle: IdentityBundle = {
+    schema_version: 1,
+    bundle_version: BUNDLE_VERSION,
+    generated_at: new Date().toISOString(),
+    files: [
+      {
+        path: 'config/agent.env',
+        mode: '0600',
+        content:
+          'AGENT_NAME=primus\n' +
+          'MODEL_ROUTE=ollama-cloud/glm-5.3\n' +
+          'GATEWAY_API_KEY=sim-e2e-gateway-key\n' +
+          'GATEWAY_URL=http://litellm:4000\n',
+      },
+      { path: 'config/secrets.env', mode: '0600', content: 'SLACK_BOT_TOKEN=sim-e2e-slack-token\n' },
+      {
+        path: 'SOUL.md',
+        mode: '0600',
+        content:
+          '# SOUL — primus (VS coordinator)\n\n' +
+          'You are primus, the Vector Sigma fleet coordinator.\n' +
+          'Queue curator per docs/queue-conventions.md; cross-fleet contact\n' +
+          'with ultronbot is A2A-only, never shared-queue writes. Credential,\n' +
+          'install, and self-config mutations require the owner directly\n' +
+          '(ADR-0001 owner-exception clause set).\n',
+      },
+      {
+        path: 'config/a2a.json',
+        mode: '0600',
+        content: JSON.stringify({ identity_key: 'sim-e2e-a2a-identity', trusted_peers: [] }, null, 2) + '\n',
+      },
+      { path: 'config/github-app.pem', mode: '0600', content: 'sim-e2e-pem-placeholder\n' },
+    ],
+  };
+  const primusHash = await hashKey(env.primusKey);
+  await db
+    .insert(devices)
+    .values({
+      balenaUuid: env.primusUuid,
+      agentName: 'primus',
+      registrarKeyHash: primusHash,
+      status: 'active',
+      notes: 'compose-simulated coordinator self-bootstrap (f57.14 E2E)',
+    })
+    .onConflictDoUpdate({
+      target: devices.balenaUuid,
+      set: { registrarKeyHash: primusHash, status: 'active' },
+    });
+  await db
+    .insert(identityBlobs)
+    .values({ deviceId: env.primusUuid, bundle: primusBundle, version: BUNDLE_VERSION })
+    .onConflictDoUpdate({
+      target: identityBlobs.deviceId,
+      set: { bundle: primusBundle, version: BUNDLE_VERSION, updatedAt: new Date() },
+    });
+  await db
+    .insert(deliverySlots)
+    .values({ deviceId: env.primusUuid, state: 'armed', autoRearmAfter: '1 hour' })
+    .onConflictDoNothing();
+  console.log('[seed] primus row active with full bundle (f57.14 E2E)');
 
   await client.end();
   console.log(
