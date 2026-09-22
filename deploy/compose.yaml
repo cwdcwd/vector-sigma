@@ -125,10 +125,12 @@ services:
       # Real TLS readiness (Copilot f57.13 review): the entrypoint is still
       # PID 1 while waiting for certs, so process liveness would report a
       # "healthy" edge before any cert exists. Probe the actual front door:
-      # caddy serving the pinned hostname over TLS. caddy:2-alpine ships
-      # curl; --insecure because THIS check is about the server having a
-      # usable pair loaded, not about the client trusting the CA.
-      test: ["CMD-SHELL", "curl -fsk --resolve {$TLS_HOSTNAME:vsigma.lan}:443:127.0.0.1 https://{$TLS_HOSTNAME:vsigma.lan}/healthz -o /dev/null || exit 1"]
+      # caddy serving the pinned hostname over TLS. The hostname comes from
+      # the TLS_HOSTNAME environment variable at runtime (NOT compose
+      # interpolation — {$...} here would be eaten by the ${VAR} parser).
+      # caddy:2-alpine ships curl; --insecure because THIS check is about
+      # the server having a usable pair loaded, not client CA trust.
+      test: ["CMD-SHELL", "curl -fsk --resolve \"$${TLS_HOSTNAME:-vsigma.lan}:443:127.0.0.1\" \"https://$${TLS_HOSTNAME:-vsigma.lan}/healthz\" -o /dev/null || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
