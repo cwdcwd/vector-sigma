@@ -182,6 +182,10 @@ services:
       # absent; a fresh volume per run keeps the boot identical.
       HERMES_HOME: /data/primus
       HERMES_GATEWAY_BOOTSTRAP_STATE: running
+      # Read the registrant-written (uid 1000) bundle on the shared volume
+      # (run-4 lesson) — the base compose documents the mechanism.
+      HERMES_UID: "1000"
+      HERMES_GID: "1000"
     # Long-run form (the base compose carries `command: gateway run`; the
     # overlay inherits it — no override needed).
     volumes:

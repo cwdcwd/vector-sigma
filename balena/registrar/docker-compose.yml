@@ -291,6 +291,14 @@ services:
       # The gateway comes up on first boot (the image's first-boot-only
       # seed contract; the persisted state wins on every later boot).
       HERMES_GATEWAY_BOOTSTRAP_STATE: running
+      # The bundle on the shared volume is written by registrant-own as
+      # uid/gid 1000 (the node base image's built-in user — the same
+      # convention the devices app rides). The hermes runtime defaults to
+      # uid 10000; without this remap it cannot read the 0600 bundle files
+      # (the image's documented HERMES_UID mechanism — same as its
+      # bind-mounted-host-dir guidance).
+      HERMES_UID: "1000"
+      HERMES_GID: "1000"
     volumes:
       - primus-data:/data/primus
     depends_on:

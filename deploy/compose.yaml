@@ -240,6 +240,11 @@ services:
     environment:
       HERMES_HOME: /data/primus
       HERMES_GATEWAY_BOOTSTRAP_STATE: running
+      # Read the registrant-written (uid 1000) bundle on the shared volume —
+      # the image's HERMES_UID remap mechanism (run-4 lesson: uid 10000
+      # cannot read the 0600 files otherwise).
+      HERMES_UID: "1000"
+      HERMES_GID: "1000"
     volumes:
       - primus-data:/data/primus
     depends_on:
