@@ -770,14 +770,17 @@ ac12_primus_self_bootstrap() {
   else
     fail "AC12 hermes stage2 boot" "no config.yaml under HERMES_HOME — stage2 never ran"
   fi
-  # The bundle from HERMES_HOME's view: the registrant's DATA_DIR (/data/agent
-  # on the SAME volume) appears as agent/ under HERMES_HOME — the shared-volume
-  # contract, and the structural gate was the registrant's marker healthcheck
-  # (hermes started only after identity existed).
-  if docker exec "$hcontainer" sh -c "grep -q 'primus' /data/primus/agent/SOUL.md" 2>/dev/null; then
-    pass "AC12 hermes sees the bundle" "agent/SOUL.md readable from HERMES_HOME (the shared-volume view)"
+  # The bundle from HERMES_HOME's view: the registrant mounts the shared
+  # volume at /data/agent (its DATA_DIR), so the bundle sits at the volume
+  # ROOT — which IS /data/primus. primus's SOUL.md lands at
+  # $HERMES_HOME/SOUL.md: stage2's first-boot seed is skipped (file already
+  # present) and the hermes runtime serves the bundle's SOUL — the config
+  # delivery the whole lane exists to prove. (Run-5 correction: my earlier
+  # agent/… path never existed; the volume root is the bundle dir.)
+  if docker exec "$hcontainer" sh -c "grep -q 'primus' /data/primus/SOUL.md" 2>/dev/null; then
+    pass "AC12 hermes serves the bundle SOUL" "bundle SOUL.md at HERMES_HOME root — stage2 seed skipped, primus's SOUL wins"
   else
-    fail "AC12 hermes sees the bundle" "agent/SOUL.md not readable under /data/primus — volume sharing broken"
+    fail "AC12 hermes serves the bundle SOUL" "SOUL.md not readable at /data/primus root — bundle not at HERMES_HOME root"
   fi
 }
 
