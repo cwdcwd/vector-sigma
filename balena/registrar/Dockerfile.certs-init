@@ -8,6 +8,10 @@
 # needs node.
 
 FROM alpine:3.20
+# openssl: the script validates the cert/key pair (modulus match) before
+# publishing — a mismatched or truncated paste fails loud at provision time
+# instead of as a caddy restart loop in production (Copilot f57.13 review).
+RUN apk add --no-cache openssl
 
 COPY certs-init.sh /usr/local/bin/certs-init.sh
 RUN chmod +x /usr/local/bin/certs-init.sh

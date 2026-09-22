@@ -7,7 +7,9 @@
 # Why an image-carried script (the litellm-init pattern): the balena
 # supervisor does NO compose interpolation, so the decode must run inside
 # the container against the environment the supervisor injects; the same
-# bytes serve plain docker compose identically. No twin drift.
+# The base is alpine WITH openssl (see Dockerfile.certs-init) — the script
+# validates the decoded pair (x509/rsa modulus match) before publishing,
+# so nothing needs node.
 #
 # Idempotent + rotation-safe: rewrites the PEMs on every run, so rotating
 # the leaf = update the two fleet variables + restart (certs-init + caddy
