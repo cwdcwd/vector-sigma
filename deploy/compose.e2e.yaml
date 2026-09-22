@@ -46,6 +46,10 @@ services:
       E2E_GRACE_UUID: ${E2E_GRACE_UUID:?set in deploy/.env.e2e}
       E2E_GRACE_KEY: ${E2E_GRACE_KEY:?set in deploy/.env.e2e}
       E2E_ADMIN_KEY: ${E2E_ADMIN_KEY:?set in deploy/.env.e2e}
+      # f57.14: the primus row's env (the seed inserts the coordinator's
+      # device row + full bundle; primus-registrant bootstraps against it).
+      PRIMUS_DEVICE_UUID: ${PRIMUS_DEVICE_UUID:?set in deploy/.env.e2e}
+      PRIMUS_REGISTRAR_KEY: ${PRIMUS_REGISTRAR_KEY:?set in deploy/.env.e2e}
       # Short auto-rearm window so the re-delivery path is observable in
       # seconds (production default is 1 hour).
       SEED_REARM_SECONDS: ${SEED_REARM_SECONDS:-45}
