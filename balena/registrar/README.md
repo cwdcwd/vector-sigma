@@ -7,7 +7,7 @@ Pi 5, aarch64) — the vector-sigma master device. Per the owner ruling
 on its own hardware; it never couples to the Cabal's ai.lan (clean-start
 principle). The gateway serves the models front door, virtual keys, and the
 /a2a/* agent mesh — devices point `GATEWAY_URL` and `A2A_PUBLIC_URL` at
-`http://<this-device-LAN-IP>:4000`.
+`https://<TLS_HOSTNAME>:8443`.
 
 The balena multi-container app for the **registrar fleet**: the Vector
 Sigma registrar API + admin console, backed by its own Postgres, on one
@@ -69,9 +69,12 @@ env).
 |---|---|---|---|
 | `POSTGRES_PASSWORD` | **fleet-wide** | **yes — no default** | Postgres role password. Fleet-scoped: both the postgres service (role creation) and the registrar service (URL part) must see the same value. **No secrets in compose or image layers.** |
 | `SESSION_SECRET` | registrar | **yes — no default** | Admin-console HMAC session secret (≥16 chars). **The registrar refuses to boot without it** — missing or short fails startup with the variable name; there is no fallback secret. Set it on the fleet before the first `registrar-v*` release ships. |
-| `LITELLM_MASTER_KEY` | **fleet-wide** | **yes — no default** (f57.12) | LiteLLM gateway master key — mints virtual keys, unlocks the Admin UI (`http://<device-LAN-IP>:4000/ui`). **Must start with `sk-`** (LiteLLM requirement). 600-equivalent custody: it IS the gateway; never in image layers, compose, chat, or the database. Fleet scope per the bead's variable contract (service scope would be a hardening option — see "Gateway variable scoping" below). |
+| `LITELLM_MASTER_KEY` | **fleet-wide** | **yes — no default** (f57.12) | LiteLLM gateway master key — mints virtual keys, unlocks the Admin UI (`https://<TLS_HOSTNAME>:8443/ui`). **Must start with `sk-`** (LiteLLM requirement). 600-equivalent custody: it IS the gateway; never in image layers, compose, chat, or the database. Fleet scope per the bead's variable contract (service scope would be a hardening option — see "Gateway variable scoping" below). |
 | `LITELLM_PG_PASSWORD` | **fleet-wide** | **yes — no default** (f57.12) | Password for the gateway's dedicated least-privilege postgres role. The `litellm-init` service provisions the `litellm` role + `litellm` database on every boot and re-asserts this value (ALTER ROLE) — rotating it needs no manual psql step, just a release re-deploy or service restart. |
 | `OLLAMA_CLOUD_API_KEY` | **fleet-wide** | **yes — no default** (f57.12) | Ollama Cloud credential — the gateway's model upstream (OpenAI-compatible `https://ollama.com/v1`). Held only by the gateway container; devices never see it. |
+| `TLS_HOSTNAME` | **fleet-wide** | **yes — no default** (f57.13) | The master device hostname the caddy edge serves (must match the Pi-hole DNS record — see [docs/tls-runbook.md](../../docs/tls-runbook.md)). Feeds the Caddyfile's `{$TLS_HOSTNAME:vsigma.lan}` substitution. |
+| `TLS_CERT_B64` | **fleet-wide** | **yes — no default** (f57.13) | Base64 (single line, `-w0`) of the leaf cert PEM from `scripts/gen-vs-ca.sh` output. The one-shot `certs-init` service decodes it into the caddy-certs volume; rotation = re-run the script, re-paste, restart `certs-init` + `caddy`. |
+| `TLS_KEY_B64` | **fleet-wide** | **yes — no default** (f57.13) | Base64 of the leaf KEY PEM — same paste source (`vs-tls/b64-cert.env`), same rotation path. The CA key itself is NEVER a variable (owner-custodied). |
 
 ### Static in compose (override only if you know why)
 
@@ -99,19 +102,31 @@ the fix path (balena fleet/service variable). The compose file pins
 the structural parts, so the owner only ever supplies the password
 secret.
 
-The registrar's admin console + API ride the same container port (3000),
-published as **host port 80** on the device LAN interfaces (standard HTTP
-port, fleet-ops-f57.9): `http://<device-LAN-IP>/` — no port suffix. The
-balenaCloud public URL tunnels to device port 80, so the same release
-serves the public URL and the LAN front door.
+The registrar's admin console + API ride the same container port (3000).
+Since f57.13 the composition's published surface is the **caddy TLS
+edge**: `https://<TLS_HOSTNAME>/` (port 443) for the admin console + API,
+`https://<TLS_HOSTNAME>:8443/` for the VS gateway, and port 80 is a 308
+redirect to https — the registrar and litellm containers no longer publish
+host ports directly. The balenaCloud public URL tunnels device port 80
+and therefore lands on the redirect: plain-HTTP console access through
+the tunnel is dead by design (use https from a trusted host; see
+[docs/tls-runbook.md](../../docs/tls-runbook.md)).
 
 > **Deploy sequencing (read before tagging a release):** the release that
-> carries fleet-ops-f57.9 stops publishing `:3000` and starts publishing
-> `:80`. From the moment it lands on the registrar device, the devices
-> fleet's `REGISTRAR_URL` dashboard variable must drop the `:3000` — a
-> device bootstrapping between the release landing and the variable flip
-> fails to register. Tag → confirm the registrar device pulled the
-> release → flip `REGISTRAR_URL` → verify LAN + public URL.
+> carries fleet-ops-f57.9 stopped publishing `:3000` and published `:80`;
+> f57.13 supersedes it — the composition's published surface is now caddy
+> (80 redirect / 443 registrar / 8443 gateway). **Order (Copilot review):
+> provision device trust FIRST** — set `VS_CA_CERT_B64` on the devices
+> fleet BEFORE the release lands (a device pulling the f57.13 registrant
+> with its OLD http `REGISTRAR_URL` boots unchanged, with the CA already
+> staged; there is no window where a device has an https URL but no CA).
+> From the moment the f57.13 release lands on the registrar device, the
+> devices fleet's `REGISTRAR_URL` dashboard variable must become
+> `https://<TLS_HOSTNAME>`. Tag → confirm the registrar device pulled the
+> release and caddy serves
+> (`curl https://<TLS_HOSTNAME>/healthz --cacert <vs-ca.crt>`) → flip
+> `REGISTRAR_URL` → verify a device bootstraps. Full owner checklist:
+> [docs/tls-runbook.md](../../docs/tls-runbook.md).
 
 ## First admin key
 
@@ -207,8 +222,9 @@ so there is exactly one config artifact, no twin drift). Model routes per
 the config: explicit `ollama-cloud/glm-5.3` + `ollama-cloud/glm-5.2`
 groups with glm↔glm cross-fallbacks, a `*` pass-through wildcard to
 Ollama Cloud (routes, never a fallback target — j9f lesson verbatim), and
-a commented future `gw-sonnet` anthropic lane. Port 4000 publishes to the
-device LAN; `http://<device-LAN-IP>:4000/ui` is the Admin UI.
+a commented future `gw-sonnet` anthropic lane. The gateway is compose-
+internal since f57.13 — no host publish; the Admin UI is served through
+the TLS edge at `https://<TLS_HOSTNAME>:8443/ui`.
 
 ### First-boot sequence
 
@@ -246,7 +262,7 @@ needed; the service reads them the same way.
 
 The gateway serves `/a2a/*` pass-through natively (same pattern ai.lan
 serves the Cabal): each VS device's Hermes points `A2A_PUBLIC_URL` at
-`http://<master-LAN-IP>:4000`, and its agent card is served by the VS
+`https://<TLS_HOSTNAME>:8443`, and its agent card is served by the VS
 gateway — peer traffic rides the master device, never ai.lan. The
 structured bundle editor's A2A fields (`a2a_identity_key`,
 `a2a_trusted_peers`) document this in their hints; full mesh wiring
@@ -270,7 +286,7 @@ once the new one exists).
    gateway fail-louds without them.
 2. Tag the release (owner action, e.g. `registrar-v1.1.0`); wait for the
    device to pull it and the gateway to come up (`/health/liveliness`
-   at `http://<device-LAN-IP>:4000/health/liveliness` → 200).
+   at `https://<TLS_HOSTNAME>:8443/health/liveliness` → 200).
 3. Mint `vs-optimus-prime` (gateway key) and `vs-optimus-prime-a2a`
    (A2A identity key) against the new gateway — LiteLLM Admin UI
    (`/ui`, login with the master key) or `POST /key/generate` with
@@ -279,7 +295,7 @@ once the new one exists).
 4. Delete the obsolete ai.lan `vs-optimus-prime` alias (owner action,
    ai.lan side).
 5. Point the device bundle at the new gateway: registrar bundle
-   `config/agent.env` gains `GATEWAY_URL=http://<master-LAN-IP>:4000`
+   `config/agent.env` gains `GATEWAY_URL=https://<TLS_HOSTNAME>:8443`
    and `config/a2a.json` documents `A2A_PUBLIC_URL` per the editor hints;
    full device-side wiring rides the follow-up bead.
 
@@ -290,7 +306,7 @@ liveness — the stock litellm image ships no curl); real HTTP liveliness
 is asserted externally: the deploy E2E smoke (AC9) polls
 `/health/liveliness` for 200 and asserts the explicit model groups in
 `/v1/models`. On-device spot check: `curl -s
-http://<device-LAN-IP>:4000/health/liveliness` from any LAN host (or
+https://<TLS_HOSTNAME>:8443/health/liveliness` from any LAN host (or
 the balenaCloud public URL path if the owner enables it).
 
 ## First flash

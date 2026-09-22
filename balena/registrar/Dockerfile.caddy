@@ -1,0 +1,24 @@
+# balena/registrar/Dockerfile.caddy — the VS composition's TLS edge
+# (fleet-ops-f57.13).
+#
+# Caddy fronts the whole master-device composition: registrar (admin +
+# API) and litellm (gateway + /ui + /a2a/*). The Caddyfile is baked (the
+# balena supervisor cannot bind-mount — the litellm pattern); TLS material
+# arrives via the caddy-certs volume, provisioned by the one-shot
+# certs-init service from the TLS_CERT_B64 / TLS_KEY_B64 fleet variables.
+# deploy/ self-host builds the SAME image — one artifact, no twin drift.
+#
+# caddy:2-alpine is multi-arch (aarch64 included) — no build required, but
+# an explicit FROM pin keeps the fleet's image lineage auditable.
+
+FROM caddy:2-alpine
+
+COPY Caddyfile /etc/caddy/Caddyfile
+COPY caddy-entrypoint.sh /caddy-entrypoint.sh
+RUN chmod +x /caddy-entrypoint.sh
+
+# Wait for the certs pair, then exec the stock caddy entrypoint (which
+# already runs `caddy run --config /etc/caddy/Caddyfile` with the right
+# data/signal wiring).
+ENTRYPOINT ["/caddy-entrypoint.sh"]
+CMD ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]

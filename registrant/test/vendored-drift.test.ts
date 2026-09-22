@@ -60,6 +60,9 @@ const vendoredFiles = [
   ['registrar/drizzle/0000_yielding_morlun.sql', 'balena/registrar/registrar/drizzle/0000_yielding_morlun.sql'],
   ['registrar/drizzle/meta/0000_snapshot.json', 'balena/registrar/registrar/drizzle/meta/0000_snapshot.json'],
   ['registrar/drizzle/meta/_journal.json', 'balena/registrar/registrar/drizzle/meta/_journal.json'],
+  // f57.13: the CA shim ships in BOTH the deploy/ image and the balena
+  // devices registrant image — one file, two COPY targets, byte-pinned.
+  ['deploy/vs-entrypoint.sh', 'balena/devices/registrant/vs-entrypoint.sh'],
 ] as const;
 
 describe('balena vendored sources', () => {

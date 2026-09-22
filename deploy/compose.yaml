@@ -3,10 +3,15 @@
 # Quickstart (see deploy/README.md):
 #   cp deploy/.env.example deploy/.env   # edit: set real secrets
 #   docker compose -f deploy/compose.yaml up -d --build
-#   curl http://127.0.0.1:3000/healthz
+#   curl https://vsigma.lan/healthz --cacert vs-tls/vs-ca.crt   # via the caddy TLS edge (f57.13)
 #
 # Interpolation is fail-closed: every ${VAR:?} aborts `compose config` when
 # deploy/.env does not define it — no silent defaults for secrets.
+#
+# f57.13: the composition's front door is caddy (TLS from the VS-own
+# internal CA — generate with scripts/gen-vs-ca.sh; see docs/tls-runbook.md).
+# registrar + litellm are compose-internal; caddy publishes 443 (registrar:
+# admin + API) and 8443 (litellm gateway + /ui + /a2a/*); port 80 redirects.
 
 services:
   postgres:
@@ -70,10 +75,62 @@ services:
         condition: service_healthy
       litellm-init:
         condition: service_completed_successfully
-    ports:
-      - "127.0.0.1:${LITELLM_PORT:-4000}:4000"
+    # f57.13 (Copilot review): NO host publish — the plaintext 127.0.0.1:4000
+    # bypass is gone; the gateway is reachable only through the caddy TLS
+    # edge at https://<TLS_HOSTNAME>:8443. E2E asserts it there (AC9).
     healthcheck:
       test: ["CMD-SHELL", "kill -0 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  # f57.13: one-shot TLS material provisioning (same image as the balena
+  # app — context balena/registrar, Dockerfile.certs-init). ${VAR:?}
+  # interpolation here vs fleet variables on balena; identical decode bytes.
+  certs-init:
+    build:
+      context: ../balena/registrar
+      dockerfile: Dockerfile.certs-init
+    environment:
+      CERTS_DIR: /certs
+      TLS_CERT_B64: ${TLS_CERT_B64:?set in deploy/.env — paste from scripts/gen-vs-ca.sh output (b64-cert.env)}
+      TLS_KEY_B64: ${TLS_KEY_B64:?set in deploy/.env — paste from scripts/gen-vs-ca.sh output (b64-cert.env)}
+    volumes:
+      - caddy-certs:/certs
+    restart: "no"
+
+  # f57.13: the TLS edge (same image as the balena app). TLS_HOSTNAME feeds
+  # the Caddyfile's {$TLS_HOSTNAME:...} substitution; the two publish ports
+  # are the composition's only exposed surface (registrar :443, litellm
+  # :8443; port 80 = 308 redirect). The balenaCloud public-URL equivalent
+  # (device port 80) therefore lands on the redirect — intentional, see
+  # the README.
+  caddy:
+    build:
+      context: ../balena/registrar
+      dockerfile: Dockerfile.caddy
+    environment:
+      TLS_HOSTNAME: ${TLS_HOSTNAME:-vsigma.lan}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8443:8443"
+    volumes:
+      - caddy-certs:/certs
+    depends_on:
+      - certs-init
+    healthcheck:
+      # Real TLS readiness (Copilot f57.13 review): the entrypoint is still
+      # PID 1 while waiting for certs, so process liveness would report a
+      # "healthy" edge before any cert exists. Probe the actual front door:
+      # caddy serving the pinned hostname over TLS. The hostname comes from
+      # the TLS_HOSTNAME environment variable at runtime (NOT compose
+      # interpolation — {$...} here would be eaten by the ${VAR} parser).
+      # caddy:2-alpine ships curl; --insecure because THIS check is about
+      # the server having a usable pair loaded, not client CA trust.
+      test: ["CMD-SHELL", "curl -fsk --resolve \"$${TLS_HOSTNAME:-vsigma.lan}:443:127.0.0.1\" \"https://$${TLS_HOSTNAME:-vsigma.lan}/healthz\" -o /dev/null || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -93,11 +150,9 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    # Loopback-only publish: the registrar is reached over the LAN only via a
-    # reverse proxy the operator chooses (Caddy/nginx/Tailscale); it never
-    # binds a public interface by default.
-    ports:
-      - "127.0.0.1:${REGISTRAR_PORT:-3000}:3000"
+    # f57.13 (Copilot review): NO host publish — the plaintext 127.0.0.1:3000
+    # bypass is gone; the registrar is reachable only through the caddy TLS
+    # edge at https://<TLS_HOSTNAME> (443). E2E rides the edge end-to-end.
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 5s
@@ -106,5 +161,9 @@ services:
       start_period: 5s
     restart: unless-stopped
 
+# f57.13: shared TLS material (PEM pair decoded from TLS_CERT_B64 /
+# TLS_KEY_B64 by certs-init; caddy serves it). Same volume name on the
+# balena side (caddy-certs).
 volumes:
   pgdata:
+  caddy-certs:

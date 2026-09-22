@@ -97,6 +97,9 @@ describe('config', () => {
       BALENA_DEVICE_UUID: '123e4567-e89b-12d3-a456-426614174000',
       REGISTRAR_URL: 'https://registrar.example.com/',
       REGISTRAR_KEY: 'k-1234567890abcdef',
+      // f57.13: https test URLs ride with a provisioned CA — the contract
+      // every real https deployment satisfies (the shim's NODE_EXTRA_CA_CERTS).
+      NODE_EXTRA_CA_CERTS: '/tmp/test-vs-ca.pem',
     });
     expect(c.registrarUrl).toBe('https://registrar.example.com');
     expect(c.dataDir).toBe('/data/agent');
@@ -111,6 +114,7 @@ describe('config', () => {
       BALENA_DEVICE_UUID: '123e4567-e89b-12d3-a456-426614174000',
       REGISTRAR_URL: 'https://registrar.example.com',
       REGISTRAR_KEY: 'k-1234567890abcdef',
+      NODE_EXTRA_CA_CERTS: '/tmp/test-vs-ca.pem', // f57.13 https contract
       GRACE_POLL_INTERVAL_MS: '2000',
     });
     expect(c.gracePollIntervalMs).toBe(2000);
@@ -130,6 +134,7 @@ describe('config', () => {
       BALENA_DEVICE_UUID: 'b1e516d9cf23c6bd0b474edae9ec41e6',
       REGISTRAR_URL: 'https://registrar.example.com',
       REGISTRAR_KEY: 'k-1234567890abcdef',
+      NODE_EXTRA_CA_CERTS: '/tmp/test-vs-ca.pem', // f57.13 https contract
     });
     expect(c.balenaDeviceUuid).toBe(
       'b1e516d9-cf23-c6bd-0b47-4edae9ec41e6',
@@ -141,6 +146,7 @@ describe('config', () => {
       BALENA_DEVICE_UUID: '123e4567-e89b-12d3-a456-426614174000',
       REGISTRAR_URL: 'https://registrar.example.com',
       REGISTRAR_KEY: 'k-1234567890abcdef',
+      NODE_EXTRA_CA_CERTS: '/tmp/test-vs-ca.pem', // f57.13 https contract
     });
     expect(c.balenaDeviceUuid).toBe('123e4567-e89b-12d3-a456-426614174000');
   });
