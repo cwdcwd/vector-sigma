@@ -46,6 +46,10 @@ services:
       E2E_GRACE_UUID: ${E2E_GRACE_UUID:?set in deploy/.env.e2e}
       E2E_GRACE_KEY: ${E2E_GRACE_KEY:?set in deploy/.env.e2e}
       E2E_ADMIN_KEY: ${E2E_ADMIN_KEY:?set in deploy/.env.e2e}
+      # f57.14: the primus row's env (the seed inserts the coordinator's
+      # device row + full bundle; primus-registrant bootstraps against it).
+      PRIMUS_DEVICE_UUID: ${PRIMUS_DEVICE_UUID:?set in deploy/.env.e2e}
+      PRIMUS_REGISTRAR_KEY: ${PRIMUS_REGISTRAR_KEY:?set in deploy/.env.e2e}
       # Short auto-rearm window so the re-delivery path is observable in
       # seconds (production default is 1 hour).
       SEED_REARM_SECONDS: ${SEED_REARM_SECONDS:-45}
@@ -165,9 +169,77 @@ services:
         aliases:
           - vsigma.lan
 
+  # f57.14: primus — the compose-simulated coordinator self-bootstrap. The
+  # REAL official Hermes image + the REAL vendored registrant, riding the
+  # same registrar the device uses. The overlay's job: deterministic env
+  # (UUID/key from .env.e2e, seeded row) + the shared primus-data volume.
+  # Assertions (e2e.sh AC12) ride the ready marker + bundle files on the
+  # volume — the dogfood proof is the BOOTSTRAP CHAIN, not a live model
+  # call (the seeded bundle's gateway key is a simulation value).
+  hermes:
+    environment:
+      # CI determinism: the image's stage2 hook seeds config.yaml only when
+      # absent; a fresh volume per run keeps the boot identical.
+      HERMES_HOME: /data/primus
+      HERMES_GATEWAY_BOOTSTRAP_STATE: running
+      # Read the registrant-written (uid 1000) bundle on the shared volume
+      # (run-4 lesson) — the base compose documents the mechanism.
+      HERMES_UID: "1000"
+      HERMES_GID: "1000"
+    # Long-run form (the base compose carries `command: gateway run`; the
+    # overlay inherits it — no override needed).
+    volumes:
+      - primus-data:/data/primus
+    depends_on:
+      primus-registrant:
+        condition: service_healthy
+    restart: "no"
+
+  # f57.14: the overlay's primus registrant (the deploy image's
+  # registrant-own service, renamed to keep the base service's default
+  # command; the base compose defines the build, this overlay overrides
+  # the env deterministically from .env.e2e). Compose-internal http —
+  # the pre-TLS contract.
+  primus-registrant:
+    build:
+      context: ../balena/registrar/registrant-own
+      dockerfile: Dockerfile
+    environment:
+      BALENA_DEVICE_UUID: ${PRIMUS_DEVICE_UUID:?set in deploy/.env.e2e}
+      REGISTRAR_URL: http://registrar:3000
+      REGISTRAR_KEY: ${PRIMUS_REGISTRAR_KEY:?set in deploy/.env.e2e}
+      DATA_DIR: /data/agent
+      CLOCK_GATE_TIMEOUT_MS: "2000"
+      # Long watch: AC12 asserts the bootstrap artifacts, not rotation.
+      WATCH_INTERVAL_MS: "600000"
+      LOG_LEVEL: info
+    volumes:
+      - primus-data:/data/agent
+    healthcheck:
+      # THE gate hermes waits on (run-2 lesson: depends_on service_healthy
+      # is unsatisfiable without a healthcheck). Marker-based, not process
+      # liveness: healthy == the bootstrap chain completed and identity
+      # exists on the shared volume — hermes starts only then (its own
+      # entrypoint re-gates on the same marker structurally). A failed
+      # bootstrap (grace-poll resident, no marker) keeps this red and
+      # fails compose up loudly.
+      test: ["CMD-SHELL", "test -f /data/agent/ready.marker"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+    depends_on:
+      registrar:
+        condition: service_healthy
+      seed:
+        condition: service_completed_successfully
+    restart: "no"
+
 networks:
   default: {}
 
 volumes:
   device-data:
   grace-device-data:
+  # f57.14: primus state (shared by primus-registrant + hermes).
+  primus-data:
