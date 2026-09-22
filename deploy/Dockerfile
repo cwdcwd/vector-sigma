@@ -24,6 +24,8 @@ COPY registrar/ registrar/
 COPY registrant/ registrant/
 COPY deploy/tsconfig.json deploy/
 COPY deploy/seed/ deploy/seed/
+COPY deploy/vs-entrypoint.sh /usr/local/bin/vs-entrypoint.sh
+RUN chmod 0755 /usr/local/bin/vs-entrypoint.sh
 
 RUN npm run build
 
@@ -41,4 +43,9 @@ EXPOSE 3000
 RUN mkdir -p /data/agent && chown -R node:node /data/agent
 USER node
 
+# f57.13: CA shim entrypoint — decodes VS_CA_CERT_B64 (or uses VS_CA_CERT)
+# into NODE_EXTRA_CA_CERTS before exec'ing the service command. No-op when
+# no CA variables are set; the registrant's config layer enforces the
+# https-with-CA contract separately (fail-loud at loadConfig).
+ENTRYPOINT ["/usr/local/bin/vs-entrypoint.sh"]
 CMD ["node", "registrar/dist/index.js"]

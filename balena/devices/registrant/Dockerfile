@@ -45,6 +45,15 @@ COPY --from=build /app/dist ./dist
 # 1000 — fleet convention docker-base-image-builtin-user) so the
 # non-root registrant can write the 0600 bundle + ready marker.
 RUN mkdir -p /data/agent && chown -R node:node /data/agent
+
+# f57.13: CA shim twin (byte-identical to deploy/vs-entrypoint.sh — pinned
+# by registrant/test/vendored-drift.test.ts). Decodes VS_CA_CERT_B64 (the
+# devices-fleet variable carrying the VS internal CA) into
+# NODE_EXTRA_CA_CERTS before the registrant starts.
+COPY vs-entrypoint.sh /usr/local/bin/vs-entrypoint.sh
+RUN chmod 0755 /usr/local/bin/vs-entrypoint.sh
+
 USER node
 
+ENTRYPOINT ["/usr/local/bin/vs-entrypoint.sh"]
 CMD ["node", "dist/index.js"]

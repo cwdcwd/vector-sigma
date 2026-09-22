@@ -14,8 +14,15 @@ set -euo pipefail
 
 PROJECT="vector-sigma-e2e"
 ENV_FILE="deploy/.env.e2e"
-COMPOSE="docker compose --env-file $ENV_FILE -f deploy/compose.yaml -f deploy/compose.e2e.yaml -p $PROJECT"
-BASE_URL="http://127.0.0.1:3000"
+TLS_ENV_FILE="deploy/.env.e2e.tls"
+COMPOSE="docker compose --env-file $ENV_FILE --env-file $TLS_ENV_FILE -f deploy/compose.yaml -f deploy/compose.e2e.yaml -p $PROJECT"
+# f57.13: the composition's front door is the caddy TLS edge. Host-side
+# assertions ride https://vsigma.lan (curl --resolve -> 127.0.0.1, --cacert
+# the throwaway E2E CA); TLS_HOSTNAME is the fixed E2E hostname baked into
+# the overlay's network alias and the generated CA's SAN.
+TLS_HOSTNAME="vsigma.lan"
+CA_CERT="deploy/.e2e-tls/vs-ca.crt"
+BASE_URL="https://$TLS_HOSTNAME"
 PG_USER="$(grep -E '^POSTGRES_USER=' "$ENV_FILE" | cut -d= -f2-)"
 PG_DB="$(grep -E '^POSTGRES_DB=' "$ENV_FILE" | cut -d= -f2-)"
 E2E_DEVICE_UUID="$(grep -E '^E2E_DEVICE_UUID=' "$ENV_FILE" | cut -d= -f2-)"
@@ -62,6 +69,32 @@ trap 'cleanup_on_failure' EXIT
 psql_count() { # psql_count <sql-where-fragment> — count rows in delivery_log
   $COMPOSE exec -T postgres psql -U "$PG_USER" -d "$PG_DB" -tA \
     -c "SELECT count(*) FROM delivery_log WHERE $1" 2>/dev/null | tr -d '[:space:]'
+}
+
+# f57.13: host-side TLS curl — resolves the E2E hostname to loopback and
+# trusts the throwaway E2E CA. Every host-side assertion rides through the
+# REAL caddy edge (the front door a LAN client uses).
+tls_curl() { # tls_curl <curl args...>
+  curl -s --resolve "$TLS_HOSTNAME:443:127.0.0.1" --cacert "$CA_CERT" "$@"
+}
+
+# f57.13: mint the throwaway E2E CA + leaf with the OWNER'S script
+# (scripts/gen-vs-ca.sh — dogfooding the exact generation path) and emit
+# the two env files:
+#   deploy/.env.e2e.tls  — TLS_CERT_B64/TLS_KEY_B64 (caddy side) +
+#                          E2E_CA_CERT_B64 (device trust side)
+#   deploy/.e2e-tls/    — the material itself (gitignored; CA_CERT var
+#                          points here for --cacert)
+tls_env_generate() {
+  rm -rf deploy/.e2e-tls
+  bash scripts/gen-vs-ca.sh "$TLS_HOSTNAME" deploy/.e2e-tls >/dev/null
+  [ -s "$CA_CERT" ] || { echo "[e2e] CA generation failed" >&2; exit 1; }
+  {
+    grep -E '^TLS_CERT_B64=' deploy/.e2e-tls/b64-cert.env
+    grep -E '^TLS_KEY_B64=' deploy/.e2e-tls/b64-cert.env
+    echo "E2E_CA_CERT_B64=$(base64 -w0 "$CA_CERT")"
+  } > "$TLS_ENV_FILE"
+  [ -s "$TLS_ENV_FILE" ] || { echo "[e2e] TLS env emission failed" >&2; exit 1; }
 }
 
 wait_audit_count() { # wait_audit_count <where> <min> — poll up to 20s
@@ -115,14 +148,14 @@ stack_down() {
 ac2_replay_425() {
   note "AC2: direct replay must 425 with Retry-After"
   local code headers rh rb
-  code="$(curl -s -o /tmp/e2e-body.json -w '%{http_code}' -X POST "$BASE_URL/v1/bootstrap" \
+  code="$(tls_curl -o /tmp/e2e-body.json -w '%{http_code}' -X POST "$BASE_URL/v1/bootstrap" \
     -H "Authorization: Bearer $E2E_DEVICE_KEY" -H 'Content-Type: application/json' \
     -d "{\"balena_uuid\":\"$E2E_DEVICE_UUID\"}")"
   expect "AC2 replay status" "$code" "425"
   # M1: guard the grep — missing Retry-After header is the defect this assertion
   # exists to catch; unguarded grep -i exits 1 when not found, which -e kills
   # before the fail() can record the FAIL. Guarded capture lets the assertion run.
-  rh="$(curl -s -D - -o /dev/null -X POST "$BASE_URL/v1/bootstrap" \
+  rh="$(tls_curl -D - -o /dev/null -X POST "$BASE_URL/v1/bootstrap" \
     -H "Authorization: Bearer $E2E_DEVICE_KEY" -H 'Content-Type: application/json' \
     -d "{\"balena_uuid\":\"$E2E_DEVICE_UUID\"}" | tr -d '\r' | grep -i '^retry-after:' | cut -d' ' -f2)" || rh=""
   rb="$(node -e "const b=require('/tmp/e2e-body.json');console.log(b.retry_after_seconds ?? '')" 2>/dev/null)" || rb=""
@@ -170,7 +203,7 @@ ac3_rearm_redelivers() {
 ac4_status_version() {
   note "AC4: GET /v1/status reports bundle version + slot counters"
   local code version dcount
-  code="$(curl -s -o /tmp/e2e-body.json -w '%{http_code}' "$BASE_URL/v1/status?balena_uuid=$E2E_DEVICE_UUID" \
+  code="$(tls_curl -o /tmp/e2e-body.json -w '%{http_code}' "$BASE_URL/v1/status?balena_uuid=$E2E_DEVICE_UUID" \
     -H "Authorization: Bearer $E2E_DEVICE_KEY")"
   expect "AC4 status code" "$code" "200"
   version="$(node -e "const b=require('/tmp/e2e-body.json');console.log(b.bundle_version ?? '')" 2>/dev/null)"
@@ -256,15 +289,15 @@ ac7_console_structured_save() {
   # flow: login CSRF from the login page, session from the login response,
   # editor CSRF from the editor page.
   local csrf session_cookie editor_csrf login_code save_code version
-  csrf="$(curl -s -D - -o /dev/null "$BASE_URL/admin/login" \
+  csrf="$(tls_curl -D - -o /dev/null "$BASE_URL/admin/login" \
     | tr -d '\r' | grep -i '^set-cookie: vsigma_csrf=' | cut -d' ' -f2- | cut -d';' -f1 | tr -d ' ')"
   if [ -z "$csrf" ]; then fail AC7 "no csrf cookie on login page"; return; fi
-  session_cookie="$(curl -s -D - -o /dev/null -X POST "$BASE_URL/admin/login" \
+  session_cookie="$(tls_curl -D - -o /dev/null -X POST "$BASE_URL/admin/login" \
     -H "Cookie: ${csrf}" \
     --data-urlencode "admin_key=$E2E_ADMIN_KEY" \
     --data-urlencode "_csrf=${csrf#vsigma_csrf=}" \
     | tr -d '\r' | grep -i '^set-cookie: vsigma_admin=' | cut -d' ' -f2- | cut -d';' -f1 | tr -d ' ')"
-  login_code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE_URL/admin/login" \
+  login_code="$(tls_curl -o /dev/null -w '%{http_code}' -X POST "$BASE_URL/admin/login" \
     -H "Cookie: ${csrf}" \
     --data-urlencode "admin_key=$E2E_ADMIN_KEY" \
     --data-urlencode "_csrf=${csrf#vsigma_csrf=}")"
@@ -278,12 +311,12 @@ ac7_console_structured_save() {
   # corrupted token with 403 (fleet-ops-f57.11 CI red). One awk process
   # reads the captured file, prints the first match, exits — no pipeline,
   # no early-exit SIGPIPE hazard under `set -o pipefail`.
-  curl -s -H "Cookie: ${csrf}; ${session_cookie}" \
+  tls_curl -H "Cookie: ${csrf}; ${session_cookie}" \
     "$BASE_URL/admin/devices/$E2E_DEVICE_UUID/bundle" > /tmp/e2e-editor.html
   editor_csrf="$(awk 'match($0, /name="_csrf" value="[^"]*"/) { print substr($0, RSTART+20, RLENGTH-21); exit }' \
     /tmp/e2e-editor.html)"
   if [ -z "$editor_csrf" ]; then fail AC7 "no editor csrf (session cookie rejected?)"; return; fi
-  save_code="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  save_code="$(tls_curl -o /dev/null -w '%{http_code}' -X POST \
     "$BASE_URL/admin/devices/$E2E_DEVICE_UUID/bundle" \
     -H "Cookie: ${csrf}; ${session_cookie}" \
     --data-urlencode "_csrf=$editor_csrf" \
@@ -309,7 +342,7 @@ e2e-pem
   expect "AC7 structured save status" "$save_code" "303"
   # 3. Version bumped to 2 via the shared path.
   local version
-  version="$(curl -s -H "Authorization: Bearer $E2E_DEVICE_KEY" \
+  version="$(tls_curl -H "Authorization: Bearer $E2E_DEVICE_KEY" \
     "$BASE_URL/v1/status?balena_uuid=$E2E_DEVICE_UUID" | node -e "console.log(JSON.parse(require('fs').readFileSync(0,'utf8')).bundle_version ?? '')")"
   expect "AC7 version bumped via console save" "$version" "2"
   # 4. Wipe the device volume + restart: the re-armed slot re-delivers the
@@ -426,8 +459,10 @@ ac8_grace_self_heal() {
 }
 
 ac9_litellm_smoke() {
-  note "AC9: VS gateway smoke — liveliness + models list (f57.12)"
-  local base="http://127.0.0.1:4000"
+  note "AC9: VS gateway smoke — liveliness + models list over TLS (f57.12 + f57.13)"
+  # f57.13: the gateway is fronted by caddy at https://vsigma.lan:8443 —
+  # the smoke rides the REAL edge, --resolve to loopback, throwaway CA trust.
+  local base="https://$TLS_HOSTNAME:8443"
   local master
   master="$(grep -E '^LITELLM_MASTER_KEY=' "$ENV_FILE" | cut -d= -f2-)"
   if [ -z "$master" ]; then
@@ -438,16 +473,19 @@ ac9_litellm_smoke() {
   # start runs prisma migrations against a fresh database (tens of seconds),
   # and the compose build pulls the litellm base image on cold runners.
   local deadline=$((SECONDS + 240)) code=""
-  until code="$(curl -s -o /dev/null -w '%{http_code}' -m 5 "$base/health/liveliness" 2>/dev/null)" \
+  until code="$(curl -s -o /dev/null -w '%{http_code}' -m 5 \
+      --resolve "$TLS_HOSTNAME:8443:127.0.0.1" --cacert "$CA_CERT" \
+      "$base/health/liveliness" 2>/dev/null)" \
     && [ "$code" = "200" ]; do
     [ $SECONDS -ge $deadline ] && break
     sleep 3
   done
   if [ "$code" = "200" ]; then
-    pass "AC9 liveliness" "/health/liveliness -> 200"
+    pass "AC9 liveliness" "/health/liveliness -> 200 over TLS edge (:8443)"
   else
     fail "AC9 liveliness" "last code: ${code:-none} (deadline 240s)"
-    note "litellm container recent logs (self-diagnosis):"
+    note "caddy + litellm container recent logs (self-diagnosis):"
+    docker logs "$PROJECT-caddy-1" 2>&1 | tail -15 || true
     docker logs "$PROJECT-litellm-1" 2>&1 | tail -25 || true
     return
   fi
@@ -457,7 +495,8 @@ ac9_litellm_smoke() {
   # Substring checks: /v1/models ids are the config model_names, but a
   # substring match stays robust to any deployment-version id decoration.
   local models
-  models="$(curl -s -m 10 "$base/v1/models" -H "Authorization: Bearer $master" 2>/dev/null || true)"
+  models="$(curl -s -m 10 --resolve "$TLS_HOSTNAME:8443:127.0.0.1" --cacert "$CA_CERT" \
+    "$base/v1/models" -H "Authorization: Bearer $master" 2>/dev/null || true)"
   if [ -n "$models" ]; then
     if printf '%s' "$models" | grep -q 'glm-5\.3' \
       && printf '%s' "$models" | grep -q 'glm-5\.2'; then
@@ -604,7 +643,68 @@ ac10_queue_plane() {
   fi
 }
 
+# AC11 (f57.13): the TLS edge contract, asserted from the host through the
+# REAL front door:
+#   1. port 80 redirects to https (308)
+#   2. plain https WITHOUT the CA fails (TLS is ENFORCED, not optional)
+#   3. 443 serves the registrar over TLS with the E2E CA trust (healthz 200)
+#   4. served cert is the E2E leaf: SAN vsigma.lan, issuer Vector Sigma
+#      Internal CA (the gen-vs-ca.sh material — dogfooded, not stock)
+#   5. the DEVICE bootstrapped through the edge: its REGISTRAR_URL is
+#      https://vsigma.lan and the ready marker exists (AC1's cold boot is
+#      the TLS path itself; this makes the attribution explicit)
+ac10_tls_edge() {
+  note "AC11: TLS edge contract — redirect, enforcement, cert, device path (f57.13)"
+  local code sans issuer
+
+  # 1. port 80 -> 308 redirect to https
+  code="$(curl -s -o /dev/null -w '%{http_code}' --resolve "$TLS_HOSTNAME:80:127.0.0.1" \
+    "http://$TLS_HOSTNAME/" 2>/dev/null || true)"
+  expect "AC11 port 80 redirect" "$code" "308"
+
+  # 2. TLS enforced: same call WITHOUT the CA must FAIL (self-signed rejection)
+  if curl -s -o /dev/null --resolve "$TLS_HOSTNAME:443:127.0.0.1" \
+    "https://$TLS_HOSTNAME/healthz" 2>/dev/null; then
+    fail "AC11 TLS enforced" "untrusted client SUCCEEDED — TLS not enforced"
+  else
+    pass "AC11 TLS enforced" "untrusted client rejected (self-signed CA not in store)"
+  fi
+
+  # 3. trusted path: healthz 200 over the edge
+  code="$(tls_curl -o /dev/null -w '%{http_code}' "$BASE_URL/healthz")"
+  expect "AC11 registrar healthz over TLS" "$code" "200"
+
+  # 4. served cert identity: SAN + issuer from the throwaway E2E material
+  sans="$(openssl s_client -connect "127.0.0.1:443" -servername "$TLS_HOSTNAME" </dev/null 2>/dev/null \
+    | openssl x509 -noout -ext subjectAltName 2>/dev/null | grep -o 'DNS:[^ ,]*' || true)"
+  issuer="$(openssl s_client -connect "127.0.0.1:443" -servername "$TLS_HOSTNAME" </dev/null 2>/dev/null \
+    | openssl x509 -noout -issuer 2>/dev/null || true)"
+  if printf '%s' "$sans" | grep -q "DNS:$TLS_HOSTNAME"; then
+    pass "AC11 cert SAN" "$sans"
+  else
+    fail "AC11 cert SAN" "got: $sans"
+  fi
+  if printf '%s' "$issuer" | grep -q 'Vector Sigma Internal CA'; then
+    pass "AC11 cert issuer" "VS internal CA (gen-vs-ca.sh material)"
+  else
+    fail "AC11 cert issuer" "got: $issuer"
+  fi
+
+  # 5. the device's own path was TLS: ready marker present (bootstrap went
+  #    through https://vsigma.lan — the overlay's REGISTRAR_URL) and the
+  #    audit rows carry the edge as source.
+  if docker exec "$PROJECT-device-1" test -f /data/agent/ready.marker 2>/dev/null; then
+    pass "AC11 device bootstrapped via TLS" "ready.marker present (REGISTRAR_URL=https://$TLS_HOSTNAME)"
+  else
+    fail "AC11 device bootstrapped via TLS" "no ready.marker — device never completed TLS bootstrap"
+  fi
+}
+
 # ---- main ---------------------------------------------------------------------
+
+# f57.13: the TLS env file is (re)generated on --up; ensure it exists for
+# assert-only and --down paths too (compose refuses a missing --env-file).
+[ -f "$TLS_ENV_FILE" ] || tls_env_generate
 
 case "${1:-}" in
   --down) stack_down; exit $? ;;
@@ -622,7 +722,7 @@ ac7_console_structured_save
 ac8_grace_self_heal
 ac9_litellm_smoke
 ac10_queue_plane
-
+ac10_tls_edge
 echo
 echo "[e2e] ===== RESULT: $PASS passed, $FAIL failed ====="
 [ "$FAIL" -eq 0 ]
