@@ -54,11 +54,52 @@ services:
         condition: service_healthy
     restart: "no"
 
+  # f57.13 (Copilot review): dedicated TLS gate for the E2E device — the
+  # device's own depends_on only reached registrar/seed, and the registrar
+  # healthcheck probes its in-container http, so the device could start
+  # while caddy was still waiting on certs-init. This one-shot service
+  # polls the REAL edge (https, CA-trusted, healthz 200) and the device
+  # waits for its completion — TLS readiness gates the device by
+  # construction, not by timing luck. Network alias: the device talks to
+  # https://vsigma.lan; the overlay maps that hostname to caddy (see the
+  # networks block below).
+  tls-gate:
+    image: curlimages/curl:8.10.1
+    depends_on:
+      - caddy
+    environment:
+      E2E_CA_CERT_B64: ${E2E_CA_CERT_B64:?set by deploy/e2e.sh --up (generated throwaway CA)}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        echo "$E2E_CA_CERT_B64" | base64 -d > /tmp/e2e-ca.crt
+        i=0
+        until curl -fs --resolve "$${TLS_HOSTNAME:-vsigma.lan}:443:caddy" \
+            --cacert /tmp/e2e-ca.crt \
+            "https://$${TLS_HOSTNAME:-vsigma.lan}/healthz" >/dev/null 2>&1; do
+          i=$$((i + 1))
+          if [ "$$i" -ge 120 ]; then
+            echo "tls-gate: edge never became ready in 120s" >&2
+            exit 1
+          fi
+          sleep 1
+        done
+        echo "tls-gate: TLS edge serving healthz with the E2E CA"
+    restart: "no"
+
   device:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
     command: ["node", "registrant/dist/index.js"]
+    depends_on:
+      tls-gate:
+        condition: service_completed_successfully
+      registrar:
+        condition: service_healthy
+      seed:
+        condition: service_completed_successfully
     environment:
       BALENA_DEVICE_UUID: ${E2E_DEVICE_UUID:?set in deploy/.env.e2e}
       # f57.13: TLS bootstrap — the REAL contract: https://<master-hostname>
@@ -83,11 +124,6 @@ services:
       LOG_LEVEL: info
     volumes:
       - device-data:/data/agent
-    depends_on:
-      registrar:
-        condition: service_healthy
-      seed:
-        condition: service_completed_successfully
     restart: "no"
 
   # f57.11: grace-path device — PENDING row, no bundle. The registrant

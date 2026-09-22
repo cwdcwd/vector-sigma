@@ -3,12 +3,13 @@ import { loadConfig } from '../src/config.js';
 
 /**
  * TLS trust contract (fleet-ops-f57.13): an https REGISTRAR_URL requires a
- * provisioned VS CA; http boots unchanged. Four branches:
+ * provisioned VS CA; http boots unchanged. Five branches:
  *   1. https + NO CA provision          -> startup aborts, naming the vars
  *   2. https + NODE_EXTRA_CA_CERTS      -> boots (the vs-entrypoint path)
  *   3. https + VS_CA_CERT_B64 / VS_CA_CERT -> boots (misconfigured-shim path)
  *   4. https + VS_ALLOW_PUBLIC_CA=true   -> boots (explicit public-CA opt-out)
  *   5. http + no CA                     -> boots unchanged (pre-TLS topology)
+ * Scheme is case-insensitive (Copilot review): HTTPS:// also gates.
  */
 
 const baseEnv = {
@@ -68,5 +69,11 @@ describe('config TLS trust contract (f57.13)', () => {
       REGISTRAR_URL: 'http://registrar:3000',
     });
     expect(cfg.registrarUrl).toBe('http://registrar:3000');
+  });
+
+  it('gates uppercase HTTPS:// too (scheme is case-insensitive — Copilot review)', () => {
+    expect(() =>
+      loadConfig({ ...baseEnv, REGISTRAR_URL: 'HTTPS://vsigma.lan' }),
+    ).toThrowError(/no VS CA is provisioned/);
   });
 });

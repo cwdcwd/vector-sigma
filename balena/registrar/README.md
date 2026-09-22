@@ -115,15 +115,17 @@ the tunnel is dead by design (use https from a trusted host; see
 > **Deploy sequencing (read before tagging a release):** the release that
 > carries fleet-ops-f57.9 stopped publishing `:3000` and published `:80`;
 > f57.13 supersedes it — the composition's published surface is now caddy
-> (80 redirect / 443 registrar / 8443 gateway). From the moment the f57.13
-> release lands on the registrar device, the devices fleet's
-> `REGISTRAR_URL` dashboard variable must become
-> `https://<TLS_HOSTNAME>` — a device bootstrapping between the release
-> landing and the variable flip fails to register (same hazard class as
-> f57.9). Tag → confirm the registrar device pulled the release and caddy
-> serves (`curl https://<TLS_HOSTNAME>/healthz --cacert <vs-ca.crt>`) →
-> flip `REGISTRAR_URL` → set `VS_CA_CERT_B64` on the devices fleet →
-> verify a device bootstraps. Full owner checklist:
+> (80 redirect / 443 registrar / 8443 gateway). **Order (Copilot review):
+> provision device trust FIRST** — set `VS_CA_CERT_B64` on the devices
+> fleet BEFORE the release lands (a device pulling the f57.13 registrant
+> with its OLD http `REGISTRAR_URL` boots unchanged, with the CA already
+> staged; there is no window where a device has an https URL but no CA).
+> From the moment the f57.13 release lands on the registrar device, the
+> devices fleet's `REGISTRAR_URL` dashboard variable must become
+> `https://<TLS_HOSTNAME>`. Tag → confirm the registrar device pulled the
+> release and caddy serves
+> (`curl https://<TLS_HOSTNAME>/healthz --cacert <vs-ca.crt>`) → flip
+> `REGISTRAR_URL` → verify a device bootstraps. Full owner checklist:
 > [docs/tls-runbook.md](../../docs/tls-runbook.md).
 
 ## First admin key
@@ -220,8 +222,9 @@ so there is exactly one config artifact, no twin drift). Model routes per
 the config: explicit `ollama-cloud/glm-5.3` + `ollama-cloud/glm-5.2`
 groups with glm↔glm cross-fallbacks, a `*` pass-through wildcard to
 Ollama Cloud (routes, never a fallback target — j9f lesson verbatim), and
-a commented future `gw-sonnet` anthropic lane. Port 4000 publishes to the
-device LAN; `https://<TLS_HOSTNAME>:8443/ui` is the Admin UI.
+a commented future `gw-sonnet` anthropic lane. The gateway is compose-
+internal since f57.13 — no host publish; the Admin UI is served through
+the TLS edge at `https://<TLS_HOSTNAME>:8443/ui`.
 
 ### First-boot sequence
 

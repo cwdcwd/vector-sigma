@@ -72,7 +72,7 @@ psql_count() { # psql_count <sql-where-fragment> — count rows in delivery_log
 }
 
 # f57.13: host-side TLS curl — resolves the E2E hostname to loopback and
-# trusts the throwaway E2A CA. Every host-side assertion rides through the
+# trusts the throwaway E2E CA. Every host-side assertion rides through the
 # REAL caddy edge (the front door a LAN client uses).
 tls_curl() { # tls_curl <curl args...>
   curl -s --resolve "$TLS_HOSTNAME:443:127.0.0.1" --cacert "$CA_CERT" "$@"

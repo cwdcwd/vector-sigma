@@ -26,8 +26,16 @@
 # re-running scripts/gen-vs-ca.sh (window-driven 30d/180d pattern).
 
 # --- port 80: redirect to TLS (one site for the whole hostname) -----------
+# A catch-all :80 site follows the hostname-specific one (Copilot f57.13
+# review): a request arriving through a balenaCloud public URL carries the
+# public hostname in Host, not TLS_HOSTNAME, and must still receive the
+# 308 — the README/runbook promise port 80 ALWAYS redirects.
 http://{$TLS_HOSTNAME:vsigma.lan}:80 {
 	redir https://{$TLS_HOSTNAME:vsigma.lan}{uri} 308
+}
+
+http://:80 {
+	redir https://{host}{uri} 308
 }
 
 # --- registrar: admin console + /v1 API on 443 ----------------------------

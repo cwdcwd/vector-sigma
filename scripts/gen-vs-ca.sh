@@ -99,13 +99,22 @@ chmod 644 "$OUTDIR/vs-ca.crt" "$OUTDIR/vs-leaf.crt" "$OUTDIR/vs-leaf-chain.crt"
 
 # ---- Dashboard-ready base64 lines (single-line, paste-safe for the
 # balenaCloud fleet-variable editor; also the deploy/.env contract).
-{ base64 -w0 "$OUTDIR/vs-leaf.crt"; echo; } > "$OUTDIR/b64-cert.env.tmp"
-{ base64 -w0 "$OUTDIR/vs-leaf.key"; echo; } >> "$OUTDIR/b64-cert.env.tmp"
+# b64_nolen <file>: portable no-newline base64 (Copilot review — GNU's
+# `base64 -w0` does not exist on macOS/BSD; every emit below uses this,
+# and a failure aborts the script rather than emitting an empty value).
+b64_nolen() { base64 "$1" | tr -d '\r\n'; }
+b64_nolen "$OUTDIR/vs-leaf.crt" > "$OUTDIR/b64-cert.env.tmp"
+echo >> "$OUTDIR/b64-cert.env.tmp"
+b64_nolen "$OUTDIR/vs-leaf.key" >> "$OUTDIR/b64-cert.env.tmp"
+echo >> "$OUTDIR/b64-cert.env.tmp"
 {
-  echo "TLS_CERT_B64=$(base64 -w0 "$OUTDIR/vs-leaf.crt")"
-  echo "TLS_KEY_B64=$(base64 -w0 "$OUTDIR/vs-leaf.key")"
-  echo "# (also available: VS_CA_CERT_B64=$(base64 -w0 "$OUTDIR/vs-ca.crt") for the device trust side)"
+  echo "TLS_CERT_B64=$(b64_nolen "$OUTDIR/vs-leaf.crt")"
+  echo "TLS_KEY_B64=$(b64_nolen "$OUTDIR/vs-leaf.key")"
+  echo "# (also available: VS_CA_CERT_B64=$(b64_nolen "$OUTDIR/vs-ca.crt") for the device trust side)"
 } > "$OUTDIR/b64-cert.env"
+[ -s "$OUTDIR/b64-cert.env" ] || fail "b64-cert.env emission produced an empty file"
+grep -q '^TLS_CERT_B64=..' "$OUTDIR/b64-cert.env" || fail "TLS_CERT_B64 line is empty/malformed — aborting"
+grep -q '^TLS_KEY_B64=..' "$OUTDIR/b64-cert.env" || fail "TLS_KEY_B64 line is empty/malformed — aborting"
 rm -f "$OUTDIR/b64-cert.env.tmp"
 
 echo "gen-vs-ca: done."

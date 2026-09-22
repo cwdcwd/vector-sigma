@@ -84,7 +84,10 @@ export function loadConfig(
   const registrarUrl = e.REGISTRAR_URL.replace(/\/+$/, '');
   // TLS trust contract (f57.13): https requires a provisioned CA — fail
   // loud with the variable names, never a silent public-CA fallback.
-  if (registrarUrl.startsWith('https:') && !e.VS_ALLOW_PUBLIC_CA) {
+  // Scheme is case-insensitive (Copilot f57.13 review): compare against the
+  // parsed URL's lowercased protocol so `HTTPS://…` cannot bypass the gate.
+  const isHttps = /^https:$/i.test(new URL(registrarUrl).protocol);
+  if (isHttps && !e.VS_ALLOW_PUBLIC_CA) {
     const caProvisioned =
       typeof env.NODE_EXTRA_CA_CERTS === 'string' && env.NODE_EXTRA_CA_CERTS.length > 0 ||
       typeof e.VS_CA_CERT_B64 === 'string' && e.VS_CA_CERT_B64.length > 0 ||

@@ -33,26 +33,55 @@ fi
 
 mkdir -p "$CERTS_DIR"
 
-# Decode; verify the bytes are a real PEM on the way in (fail loud on a
-# truncated paste — the dashboard editor is the usual culprit).
-echo "$TLS_CERT_B64" | base64 -d > "$CERTS_DIR/tls.crt" 2>/dev/null || {
+# Decode into temporaries, validate BOTH objects and the pair's moduli
+# match, then publish atomically (Copilot f57.13 review: never let a
+# truncated / mismatched paste reach caddy as "provisioned"). cert/key
+# write ordering: temp-validate first, then rename both into place, then
+# the .ready marker LAST — the marker is what caddy waits on, so a
+# half-published pair can never be observed.
+CRT_TMP="$CERTS_DIR/.tls.crt.tmp"
+KEY_TMP="$CERTS_DIR/.tls.key.tmp"
+echo "$TLS_CERT_B64" | base64 -d > "$CRT_TMP" 2>/dev/null || {
   echo "certs-init: TLS_CERT_B64 is not valid base64" >&2
   exit 1
 }
-echo "$TLS_KEY_B64" | base64 -d > "$CERTS_DIR/tls.key" 2>/dev/null || {
+echo "$TLS_KEY_B64" | base64 -d > "$KEY_TMP" 2>/dev/null || {
   echo "certs-init: TLS_KEY_B64 is not valid base64" >&2
   exit 1
 }
 
-grep -q "BEGIN CERTIFICATE" "$CERTS_DIR/tls.crt" || {
+grep -q "BEGIN CERTIFICATE" "$CRT_TMP" || {
   echo "certs-init: decoded TLS_CERT_B64 is not a PEM certificate (no BEGIN CERTIFICATE)" >&2
   exit 1
 }
-grep -qE "BEGIN (EC |RSA )?PRIVATE KEY|BEGIN PRIVATE KEY" "$CERTS_DIR/tls.key" || {
+grep -qE "BEGIN (EC |RSA )?PRIVATE KEY|BEGIN PRIVATE KEY" "$KEY_TMP" || {
   echo "certs-init: decoded TLS_KEY_B64 is not a PEM private key" >&2
   exit 1
 }
 
-chmod 600 "$CERTS_DIR/tls.crt" "$CERTS_DIR/tls.key"
+# Pairing check: the certificate's and the key's public-key moduli must
+# match — a cert pasted with another key's b64 fails HERE, not as a caddy
+# restart loop in production.
+if ! openssl x509 -in "$CRT_TMP" -noout -modulus 2>/dev/null \
+     | openssl md5 > "$CRT_TMP.modulus" \
+   || ! openssl rsa -in "$KEY_TMP" -noout -modulus 2>/dev/null \
+     | openssl md5 > "$KEY_TMP.modulus"; then
+  echo "certs-init: cert/key are not parseable by openssl (x509/rsa modulus read failed)" >&2
+  exit 1
+fi
+if ! cmp -s "$CRT_TMP.modulus" "$KEY_TMP.modulus"; then
+  echo "certs-init: TLS_CERT_B64 and TLS_KEY_B64 do not form a pair (modulus mismatch)" >&2
+  exit 1
+fi
+rm -f "$CRT_TMP.modulus" "$KEY_TMP.modulus"
 
-echo "certs-init: TLS material provisioned at $CERTS_DIR (leaf cert + key)"
+# All checks green — publish the pair atomically, then the readiness
+# marker. The marker carries the generation's fingerprint (both moduli
+# hashes) so caddy-side tooling can detect rotation.
+mv -f "$CRT_TMP" "$CERTS_DIR/tls.crt"
+mv -f "$KEY_TMP" "$CERTS_DIR/tls.key"
+chmod 600 "$CERTS_DIR/tls.crt" "$CERTS_DIR/tls.key"
+openssl x509 -in "$CERTS_DIR/tls.crt" -noout -modulus 2>/dev/null | openssl md5 \
+  | tr -d '\n' > "$CERTS_DIR/.ready"
+
+echo "certs-init: TLS material provisioned and pair-validated at $CERTS_DIR (leaf cert + key)"

@@ -15,17 +15,24 @@ set -eu
 
 CERTS_DIR="${CERTS_DIR:-/certs}"
 
+# Wait for the ATOMIC readiness marker, not file existence (Copilot f57.13
+# review): certs-init validates the pair off to the side and only then
+# renames it into place + writes .ready LAST — so this marker implies a
+# fully-validated, complete pair. During rotation the old pair's marker is
+# overwritten only after the new pair is validated and published, so this
+# wait also closes the rotation race (caddy always starts on a coherent
+# generation).
 i=0
-until [ -f "$CERTS_DIR/tls.crt" ] && [ -f "$CERTS_DIR/tls.key" ]; do
+until [ -f "$CERTS_DIR/.ready" ] && [ -f "$CERTS_DIR/tls.crt" ] && [ -f "$CERTS_DIR/tls.key" ]; do
   i=$((i + 1))
   if [ "$i" -ge 120 ]; then
-    echo "caddy-entrypoint: TLS material never appeared at $CERTS_DIR within 120s — check the certs-init service logs (TLS_CERT_B64 / TLS_KEY_B64 fleet vars)" >&2
+    echo "caddy-entrypoint: TLS material never became ready at $CERTS_DIR within 120s — check the certs-init service logs (TLS_CERT_B64 / TLS_KEY_B64 fleet vars)" >&2
     exit 1
   fi
   sleep 1
 done
 
-echo "caddy-entrypoint: TLS pair present at $CERTS_DIR — starting caddy"
+echo "caddy-entrypoint: validated TLS pair ready at $CERTS_DIR (marker $(cat "$CERTS_DIR/.ready")) — starting caddy"
 
 # Re-exec the stock entrypoint (caddy:2-alpine ships ENTRYPOINT ["caddy"];
 # our CMD from the Dockerfile rides through "$@").

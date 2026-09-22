@@ -65,28 +65,30 @@ Mirrors the Cabal's `ai_lan_tls_check` posture:
    # {"status":"ok"}
    ```
 
-5. **Flip the devices** — the `devices` fleet's `REGISTRAR_URL` becomes
+5. **Provision device CA trust — BEFORE the URL flip** (Copilot review:
+   the registrant aborts on an https URL with no CA provisioned, so
+   flipping the URL first takes every device down during the window).
+   Set ONE fleet variable on the `devices` fleet:
+
+   ```
+   VS_CA_CERT_B64=<single-line base64 of vs-ca.crt>
+   ```
+
+   The registrant image's entrypoint shim decodes it to
+   `NODE_EXTRA_CA_CERTS` before the registrant starts. The registrant's
+   config layer enforces the contract fail-loud: an https `REGISTRAR_URL`
+   with no CA provisioned aborts startup naming the variables (no silent
+   public-CA fallback — the f57.8 posture). `http` URLs (compose-internal,
+   pre-TLS topologies) boot unchanged.
+
+6. **Flip the devices** — the `devices` fleet's `REGISTRAR_URL` becomes
    `https://vsigma.lan` (port 443 = registrar's front door; no port
-   suffix). **Sequencing hazard (the f57.9 class):** a device
-   bootstrapping between the release landing and the variable flip fails
-   — its https URL has no edge yet, or its old http URL hits caddy's
-   redirect. Order: release lands → verify caddy → THEN flip.
-
-## Device trust (the devices fleet)
-
-Each VS device needs the CA cert to trust `https://vsigma.lan`. Set ONE
-fleet variable on the `devices` fleet:
-
-```
-VS_CA_CERT_B64=<single-line base64 of vs-ca.crt>
-```
-
-The registrant image's entrypoint shim decodes it to
-`NODE_EXTRA_CA_CERTS` before the registrant starts. The registrant's
-config layer enforces the contract fail-loud: an https `REGISTRAR_URL`
-with no CA provisioned aborts startup naming the variables (no silent
-public-CA fallback — the f57.8 posture). `http` URLs (compose-internal,
-pre-TLS topologies) boot unchanged.
+   suffix). With device CA trust already provisioned (step 5) a device
+   bootstrapping at any moment of the flip resolves a working pair —
+   its https URL has a live edge AND a provisioned CA. A device
+   bootstrapping BEFORE the release lands still runs its old http URL —
+   the release flip is the last moving part, not the middle one.
+   Order: CA trust (5) → release verified serving (4) → flip.
 
 **The clock gate is now load-bearing:** a device with a wrong clock fails
 the cert validity window before it can bootstrap — time-sync-before-TLS
