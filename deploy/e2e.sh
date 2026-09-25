@@ -509,6 +509,78 @@ ac9_litellm_smoke() {
   fi
 }
 
+# f57.17 (AC9b): the DB-backed half of the gateway smoke. AC9's two
+# assertions are DB-independent by design (liveliness = process liveness;
+# models list = config-served) — a broken DATABASE_URL passes AC9 today.
+# This probe closes the gap: mint a virtual key (POST /key/generate, the
+# README's owner mint path, master-key auth, deterministic alias) and read
+# it back (GET /key/list?key_alias=<exact>&return_full_object=true). A 200
+# mint means the token row was written through prisma to postgres —
+# migrations ran AND the gateway's DATABASE_URL is live; the alias surfacing
+# in the list response means the row round-trips. Both routes are local
+# DB operations: no upstream LLM traffic, preserving AC9's smoke property.
+# Route shapes verified against the pinned ghcr.io/berriai/litellm:1.100.1
+# sources (litellm/proxy/management_endpoints/key_management_endpoints.py):
+# POST /key/generate -> GenerateKeyResponse{key: str, ...};
+# GET /key/list -> {keys: [...]} with bare token strings unless
+# return_full_object=true — hence the flag: full objects carry key_alias.
+ac9b_litellm_db_smoke() {
+  note "AC9b: VS gateway DB contract — virtual-key mint + list via /key/generate + /key/list (f57.17)"
+  local base="https://$TLS_HOSTNAME:8443"
+  local master
+  master="$(grep -E '^LITELLM_MASTER_KEY=' "$ENV_FILE" | cut -d= -f2-)"
+  if [ -z "$master" ]; then
+    fail AC9b "LITELLM_MASTER_KEY missing from $ENV_FILE"
+    return
+  fi
+  local alias="e2e-ac9b-virtual-key"
+  local gen_body=/tmp/e2e-ac9b-generate.json
+  local list_body=/tmp/e2e-ac9b-list.json
+  local code minted found
+  # 1. Mint — minimal payload: deterministic alias for the exact-match
+  #    lookup + 1h duration so probe keys self-expire on a standing stack.
+  #    No models list (the probe key never completes anything), no budget.
+  code="$(curl -s -o "$gen_body" -w '%{http_code}' -m 30 \
+      --resolve "$TLS_HOSTNAME:8443:127.0.0.1" --cacert "$CA_CERT" \
+      -X POST "$base/key/generate" \
+      -H "Authorization: Bearer $master" \
+      -H 'Content-Type: application/json' \
+      -d "{\"key_alias\": \"$alias\", \"duration\": \"1h\"}" 2>/dev/null || true)"
+  expect "AC9b mint virtual key" "$code" "200"
+  if [ "$code" != "200" ]; then
+    note "generate response body (self-diagnosis — error body, no key on failure):"
+    tail -c 500 "$gen_body" 2>/dev/null || true
+    docker logs "$PROJECT-litellm-1" 2>&1 | tail -15 || true
+    return
+  fi
+  minted="$(node -e 'const b=require(process.argv[1]);console.log(typeof b.key==="string"&&b.key.length>0?"ok":"missing")' "$gen_body" 2>/dev/null)" || minted="missing"
+  expect "AC9b minted key present" "$minted" "ok"
+  if [ "$minted" != "ok" ]; then
+    return
+  fi
+  # 2. List with the exact-match alias filter (verified: /key/list matches
+  #    key_alias exactly by default — no substring false-positives).
+  code="$(curl -s -o "$list_body" -w '%{http_code}' -m 30 \
+      --resolve "$TLS_HOSTNAME:8443:127.0.0.1" --cacert "$CA_CERT" \
+      "$base/key/list?key_alias=$alias&return_full_object=true" \
+      -H "Authorization: Bearer $master" 2>/dev/null || true)"
+  expect "AC9b list virtual keys" "$code" "200"
+  if [ "$code" != "200" ]; then
+    note "list response body (self-diagnosis):"
+    tail -c 500 "$list_body" 2>/dev/null || true
+    return
+  fi
+  # 3. The alias must surface — full key objects parsed per the harness's
+  #    node convention; key VALUES are never printed (same discipline as
+  #    the master key, simulation stack or not).
+  found="$(node -e 'const b=require(process.argv[1]);const ks=Array.isArray(b.keys)?b.keys:[];console.log(ks.some(k=>k&&typeof k==="object"&&k.key_alias===process.argv[2])?"yes":"no")' "$list_body" "$alias" 2>/dev/null)" || found="no"
+  if [ "$found" = "yes" ]; then
+    pass "AC9b minted key visible" "alias '$alias' served by /key/list — prisma migrations ran + postgres reachable end-to-end"
+  else
+    fail "AC9b minted key visible" "alias '$alias' not in /key/list response: $(node -e 'const b=require(process.argv[1]);const ks=Array.isArray(b.keys)?b.keys:[];console.log(JSON.stringify({total_count:b.total_count??null,aliases:ks.filter(k=>k&&typeof k==="object").map(k=>k.key_alias).slice(0,5)}))' "$list_body" 2>/dev/null || true)"
+  fi
+}
+
 # ---- AC10 (f57.15): the VS queue plane — dolt health, scotty serving,
 # bd client round-trip against the compose dolt ------------------------------
 
@@ -805,6 +877,7 @@ ac6_volume_state
 ac7_console_structured_save
 ac8_grace_self_heal
 ac9_litellm_smoke
+ac9b_litellm_db_smoke
 ac10_queue_plane
 ac10_tls_edge
 ac12_primus_self_bootstrap
