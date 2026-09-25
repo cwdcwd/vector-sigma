@@ -348,7 +348,7 @@ coordinator. This is the dogfood proof at the heart of the architecture —
 the coordinator bootstraps through the SAME chain every device uses:
 
 ```
-registrar (healthy) → registrant-own (fetch + apply bundle) → hermes (ready-marker gate)
+registrar (started) → registrant-own (fetch + apply bundle) → hermes (started)
 ```
 
 - **`registrant-own`** — a vendored twin of the devices app's registrant
@@ -356,13 +356,26 @@ registrar (healthy) → registrant-own (fetch + apply bundle) → hermes (ready-
   compose-internal registrar (`http://registrar:3000` — pre-TLS by the
   bead's contract; the https flip rides the same sequencing as the
   devices fleet) and applies the primus bundle to the shared
-  `primus-data` volume, writing `ready.marker` last.
+  `primus-data` volume, writing `ready.marker` last. Ordering safety is
+  in the poll loop, not a compose condition (f57.20): the balena
+  supervisor rejects long-form `depends_on` conditions outright (only
+  `service_started` is supported), so both depends_on entries here are
+  short-form service lists; the registrant's bounded 425 retry +
+  permanent-error grace poll + `restart: always` make it safe to start
+  at any point in the registrar's lifecycle.
 - **`hermes`** — the official `nousresearch/hermes-agent` image
   (version-tagged, arm64-published), `HERMES_HOME=/data/primus` on the
-  same volume. The image's entrypoint gates on the ready marker: no
-  identity, no gateway. `HERMES_GATEWAY_BOOTSTRAP_STATE=running` starts
-  the supervised gateway on first boot (the image's first-boot-only seed
-  contract); the persisted state wins on every later boot.
+  same volume. The image has NO marker gate (f57.20 finding: zero
+  `ready.marker` references anywhere in the image's v2026.9.21 source —
+  the marker gate belongs to the devices app's own `gate.sh`, not this
+  image). `HERMES_GATEWAY_BOOTSTRAP_STATE=running` starts the
+  supervised gateway on first boot (the image's first-boot-only seed
+  contract); the persisted state wins on every later boot, and the
+  bundle's operator-provided files are never clobbered — so an early
+  hermes start (before registrant-own has applied the bundle) costs at
+  most one restart-loop cycle on an unprovisioned device, never a
+  broken provisioned one. The ready marker is the fleet's assertion
+  signal (E2E AC12), not an image-side gate.
 
 ### Hermes config contract (AC4)
 
