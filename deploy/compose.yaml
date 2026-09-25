@@ -3,15 +3,18 @@
 # Quickstart (see deploy/README.md):
 #   cp deploy/.env.example deploy/.env   # edit: set real secrets
 #   docker compose -f deploy/compose.yaml up -d --build
-#   curl https://vsigma.lan/healthz --cacert vs-tls/vs-ca.crt   # via the caddy TLS edge (f57.13)
+#   docker compose -f deploy/compose.yaml cp \
+#     caddy:/data/caddy/pki/authorities/local/root.crt ./vs-ca.crt
+#   curl https://vsigma.lan/healthz --cacert vs-ca.crt   # via the caddy TLS edge (f57.13)
 #
 # Interpolation is fail-closed: every ${VAR:?} aborts `compose config` when
 # deploy/.env does not define it — no silent defaults for secrets.
 #
-# f57.13: the composition's front door is caddy (TLS from the VS-own
-# internal CA — generate with scripts/gen-vs-ca.sh; see docs/tls-runbook.md).
-# registrar + litellm are compose-internal; caddy publishes 443 (registrar:
-# admin + API) and 8443 (litellm gateway + /ui + /a2a/*); port 80 redirects.
+# f57.13: the composition's front door is caddy, TLS via `tls internal` —
+# Caddy's own local CA, self-provisioned on first boot and renewed
+# automatically thereafter (see docs/tls-runbook.md). registrar + litellm
+# are compose-internal; caddy publishes 443 (registrar: admin + API) and
+# 8443 (litellm gateway + /ui + /a2a/*); port 80 redirects.
 
 services:
   postgres:
@@ -86,27 +89,14 @@ services:
       start_period: 30s
     restart: unless-stopped
 
-  # f57.13: one-shot TLS material provisioning (same image as the balena
-  # app — context balena/registrar, Dockerfile.certs-init). ${VAR:?}
-  # interpolation here vs fleet variables on balena; identical decode bytes.
-  certs-init:
-    build:
-      context: ../balena/registrar
-      dockerfile: Dockerfile.certs-init
-    environment:
-      CERTS_DIR: /certs
-      TLS_CERT_B64: ${TLS_CERT_B64:?set in deploy/.env — paste from scripts/gen-vs-ca.sh output (b64-cert.env)}
-      TLS_KEY_B64: ${TLS_KEY_B64:?set in deploy/.env — paste from scripts/gen-vs-ca.sh output (b64-cert.env)}
-    volumes:
-      - caddy-certs:/certs
-    restart: "no"
-
   # f57.13: the TLS edge (same image as the balena app). TLS_HOSTNAME feeds
   # the Caddyfile's {$TLS_HOSTNAME:...} substitution; the two publish ports
   # are the composition's only exposed surface (registrar :443, litellm
   # :8443; port 80 = 308 redirect). The balenaCloud public-URL equivalent
   # (device port 80) therefore lands on the redirect — intentional, see
-  # the README.
+  # the README. `tls internal` self-provisions on first boot — no
+  # dependency on a provisioning service; caddy-data MUST be a named
+  # volume or every `up` mints a fresh, untrusted CA (docs/tls-runbook.md).
   caddy:
     build:
       context: ../balena/registrar
@@ -118,9 +108,7 @@ services:
       - "443:443"
       - "8443:8443"
     volumes:
-      - caddy-certs:/certs
-    depends_on:
-      - certs-init
+      - caddy-data:/data
     healthcheck:
       # Real TLS readiness (Copilot f57.13 review): the entrypoint is still
       # PID 1 while waiting for certs, so process liveness would report a
@@ -284,7 +272,10 @@ services:
 
 volumes:
   pgdata:
-  caddy-certs:
+  # f57.13 (Caddy-internal-CA rewrite): Caddy's self-generated CA key +
+  # leaf certs live here — must persist, or every recreate mints a new,
+  # untrusted CA. Wipe it deliberately to force a CA roll.
+  caddy-data:
   # f57.15: the VS queue's Dolt state volume.
   doltdata:
   # f57.14: primus state (bundle + ready marker from registrant-own;

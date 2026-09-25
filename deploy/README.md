@@ -27,12 +27,13 @@ baked into the image), one env contract: only the secret delivery differs
 ```bash
 cp deploy/.env.example deploy/.env
 $EDITOR deploy/.env        # set POSTGRES_PASSWORD, SESSION_SECRET, LITELLM_* (required)
-# TLS material (f57.13): generate with the VS CA script and paste the two
-# single-line values into deploy/.env (TLS_HOSTNAME / TLS_CERT_B64 / TLS_KEY_B64):
-scripts/gen-vs-ca.sh vsigma.lan           # -> ./vs-tls/b64-cert.env
 docker compose -f deploy/compose.yaml up -d --build
-curl https://vsigma.lan/healthz --cacert vs-tls/vs-ca.crt          # → {"status":"ok"}
-curl https://vsigma.lan:8443/health/liveliness --cacert vs-tls/vs-ca.crt # → 200 (the VS gateway)
+# TLS (f57.13): caddy self-provisions its own internal CA on first boot —
+# nothing to generate beforehand. Extract the root cert once to curl it:
+docker compose -f deploy/compose.yaml cp \
+  caddy:/data/caddy/pki/authorities/local/root.crt ./vs-ca.crt
+curl https://vsigma.lan/healthz --cacert vs-ca.crt          # → {"status":"ok"}
+curl https://vsigma.lan:8443/health/liveliness --cacert vs-ca.crt # → 200 (the VS gateway)
 ```
 
 Notes:
@@ -138,8 +139,10 @@ What the E2E proves, in order (the bead's acceptance criteria):
     round-trips init → create → list → close against the compose dolt
     (throwaway volume — the CI init IS the one-time act by construction).
 11. **TLS edge (f57.13)**: port 80 → 308, untrusted clients rejected,
-    healthz over TLS with the E2E CA, served cert SAN/issuer match the
-    gen-vs-ca.sh material, and the device bootstrapped through the edge.
+    healthz over TLS with the CA extracted from caddy's self-provisioned
+    internal PKI, served cert SAN/issuer match (issuer CN pinned to
+    "Vector Sigma Internal CA" via the Caddyfile's `pki` block), and the
+    device bootstrapped through the edge.
 12. **primus self-bootstrap (f57.14)**: the REAL official Hermes image +
     the REAL vendored registrant bootstrap the coordinator's identity
     through the same chain every device uses — ready marker, every

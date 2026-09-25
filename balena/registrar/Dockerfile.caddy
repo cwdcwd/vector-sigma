@@ -1,12 +1,13 @@
 # balena/registrar/Dockerfile.caddy — the VS composition's TLS edge
-# (fleet-ops-f57.13).
+# (fleet-ops-f57.13; rotation automated — see docs/tls-runbook.md).
 #
 # Caddy fronts the whole master-device composition: registrar (admin +
 # API) and litellm (gateway + /ui + /a2a/*). The Caddyfile is baked (the
-# balena supervisor cannot bind-mount — the litellm pattern); TLS material
-# arrives via the caddy-certs volume, provisioned by the one-shot
-# certs-init service from the TLS_CERT_B64 / TLS_KEY_B64 fleet variables.
-# deploy/ self-host builds the SAME image — one artifact, no twin drift.
+# balena supervisor cannot bind-mount — the litellm pattern); TLS is
+# `tls internal` — Caddy's own local CA, self-provisioned and stored on
+# the caddy-data volume. No certs-init dependency: Caddy needs nothing
+# but the Caddyfile to start serving. deploy/ self-host builds the SAME
+# image — one artifact, no twin drift.
 #
 # caddy:2-alpine is multi-arch (aarch64 included) — no build required, but
 # an explicit FROM pin keeps the fleet's image lineage auditable.
@@ -14,11 +15,8 @@
 FROM caddy:2-alpine
 
 COPY Caddyfile /etc/caddy/Caddyfile
-COPY caddy-entrypoint.sh /caddy-entrypoint.sh
-RUN chmod +x /caddy-entrypoint.sh
 
-# Wait for the certs pair, then exec the stock caddy entrypoint (which
-# already runs `caddy run --config /etc/caddy/Caddyfile` with the right
-# data/signal wiring).
-ENTRYPOINT ["/caddy-entrypoint.sh"]
+# Stock entrypoint/CMD (caddy:2-alpine's own ENTRYPOINT + this CMD) — no
+# custom wait shim needed: `tls internal` has no external file dependency,
+# so caddy can start immediately and self-provision its CA + leaf.
 CMD ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]

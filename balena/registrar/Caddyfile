@@ -1,4 +1,5 @@
-# Caddyfile — the Vector Sigma master-device TLS edge (fleet-ops-f57.13).
+# Caddyfile — the Vector Sigma master-device TLS edge (fleet-ops-f57.13,
+# rewritten for automated rotation — see docs/tls-runbook.md).
 #
 # Fronts the whole composition:
 #   https://<master-hostname>:443  -> registrar (admin console + /v1 API)
@@ -7,7 +8,7 @@
 #
 # NOT fronted (deliberate, per the Cabal precedent — LAN-internal services
 # stay off the edge):
-#   postgres, litellm-init, certs-init — compose-internal only.
+#   postgres, litellm-init — compose-internal only.
 #   dolt (when the queue bead lands)  — the fleet's shared queue DB is
 #     fleet-internal traffic; it gets no edge exposure. The Scotty UI (when
 #     it lands) is fronted here — see the placeholder stanza below.
@@ -19,11 +20,22 @@
 # worlds with no compose-interpolation fork (the balena supervisor does
 # none).
 #
-# TLS: explicit cert/key pair on the caddy-certs volume (provisioned by
-# the one-shot certs-init service from the TLS_CERT_B64 / TLS_KEY_B64
-# fleet variables — VS-own internal CA, docs/tls-runbook.md). No ACME, no
-# on-demand issuance: the CA is owner-custodied, the leaf is rotated by
-# re-running scripts/gen-vs-ca.sh (window-driven 30d/180d pattern).
+# TLS: `tls internal` — Caddy's own built-in local CA (the `pki` app
+# below), self-provisioned on first boot and stored on the caddy-data
+# volume. No owner-run script, no fleet-variable cert pair, no certs-init
+# service: Caddy mints AND renews the leaf itself, automatically, for as
+# long as the volume persists. The CA's root_cn is pinned to "Vector Sigma
+# Internal CA" so the fleet keeps its own identity in served certs (not
+# Caddy's generic default) — devices still trust it via VS_CA_CERT_B64,
+# extracted once from the caddy-data volume (docs/tls-runbook.md).
+{
+	pki {
+		ca local {
+			root_cn "Vector Sigma Internal CA"
+			intermediate_cn "Vector Sigma Internal CA - Intermediate"
+		}
+	}
+}
 
 # --- port 80: redirect to TLS (one site for the whole hostname) -----------
 # A catch-all :80 site follows the hostname-specific one (Copilot f57.13
@@ -40,7 +52,7 @@ http://:80 {
 
 # --- registrar: admin console + /v1 API on 443 ----------------------------
 {$TLS_HOSTNAME:vsigma.lan} {
-	tls /certs/tls.crt /certs/tls.key
+	tls internal
 
 	# The registrar derives nothing from X-Forwarded-* today (LAN-only
 	# trust model); TRUST_PROXY stays a registrar-side opt-in. Caddy sets
@@ -51,7 +63,7 @@ http://:80 {
 
 # --- VS gateway (LiteLLM): gateway + /ui + /a2a/* on 8443 -----------------
 {$TLS_HOSTNAME:vsigma.lan}:8443 {
-	tls /certs/tls.crt /certs/tls.key
+	tls internal
 
 	# LiteLLM derives agent-card URLs from the request Host header;
 	# reverse_proxy preserves it by default, so card URLs stay correct
@@ -60,9 +72,9 @@ http://:80 {
 }
 
 # --- Scotty UI (placeholder — lands with the queue bead, f57.15) ----------
-# Uncomment when the scotty service exists; same cert pair, same pattern:
+# Uncomment when the scotty service exists; same internal-CA pattern:
 #
 # {$TLS_HOSTNAME:vsigma.lan}:8444 {
-# 	tls /certs/tls.crt /certs/tls.key
+# 	tls internal
 # 	reverse_proxy scotty:8080
 # }

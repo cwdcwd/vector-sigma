@@ -23,6 +23,7 @@ COMPOSE="docker compose --env-file $ENV_FILE --env-file $TLS_ENV_FILE -f deploy/
 TLS_HOSTNAME="vsigma.lan"
 CA_CERT="deploy/.e2e-tls/vs-ca.crt"
 BASE_URL="https://$TLS_HOSTNAME"
+CADDY_CONTAINER="$PROJECT-caddy-1"
 PG_USER="$(grep -E '^POSTGRES_USER=' "$ENV_FILE" | cut -d= -f2-)"
 PG_DB="$(grep -E '^POSTGRES_DB=' "$ENV_FILE" | cut -d= -f2-)"
 E2E_DEVICE_UUID="$(grep -E '^E2E_DEVICE_UUID=' "$ENV_FILE" | cut -d= -f2-)"
@@ -78,22 +79,33 @@ tls_curl() { # tls_curl <curl args...>
   curl -s --resolve "$TLS_HOSTNAME:443:127.0.0.1" --cacert "$CA_CERT" "$@"
 }
 
-# f57.13: mint the throwaway E2E CA + leaf with the OWNER'S script
-# (scripts/gen-vs-ca.sh — dogfooding the exact generation path) and emit
-# the two env files:
-#   deploy/.env.e2e.tls  — TLS_CERT_B64/TLS_KEY_B64 (caddy side) +
-#                          E2E_CA_CERT_B64 (device trust side)
-#   deploy/.e2e-tls/    — the material itself (gitignored; CA_CERT var
-#                          points here for --cacert)
+# f57.13 (Caddy-internal-CA rewrite): caddy mints its own local CA on first
+# boot — there is nothing to generate up front. This extracts the root
+# cert caddy already produced (docker cp from its data volume, the same
+# path the tls-runbook documents for the owner) and emits:
+#   deploy/.env.e2e.tls  — E2E_CA_CERT_B64 (device trust side; caddy itself
+#                          needs no TLS variables at all now)
+#   deploy/.e2e-tls/     — the cert itself (gitignored; CA_CERT var points
+#                          here for --cacert)
+# Requires a running (or previously-run) caddy container — stack_up calls
+# this AFTER caddy reports healthy, i.e. after it has already served TLS
+# at least once and therefore definitely holds a root cert.
 tls_env_generate() {
-  rm -rf deploy/.e2e-tls
-  bash scripts/gen-vs-ca.sh "$TLS_HOSTNAME" deploy/.e2e-tls >/dev/null
-  [ -s "$CA_CERT" ] || { echo "[e2e] CA generation failed" >&2; exit 1; }
-  {
-    grep -E '^TLS_CERT_B64=' deploy/.e2e-tls/b64-cert.env
-    grep -E '^TLS_KEY_B64=' deploy/.e2e-tls/b64-cert.env
-    echo "E2E_CA_CERT_B64=$(base64 -w0 "$CA_CERT")"
-  } > "$TLS_ENV_FILE"
+  mkdir -p deploy/.e2e-tls
+  if docker inspect "$CADDY_CONTAINER" >/dev/null 2>&1 \
+      && docker cp "$CADDY_CONTAINER:/data/caddy/pki/authorities/local/root.crt" "$CA_CERT" 2>/dev/null; then
+    note "extracted caddy's self-provisioned internal CA root from $CADDY_CONTAINER"
+  elif [ ! -s "$CA_CERT" ]; then
+    # No caddy container to extract from (e.g. a bare --down before any
+    # --up ran this session) — mint a throwaway self-signed placeholder
+    # purely so compose's ${E2E_CA_CERT_B64:?} interpolation has a value;
+    # nothing trusts it, and `down` tears the stack out from under it
+    # immediately.
+    openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+      -subj "/CN=e2e-teardown-placeholder" -keyout /dev/null -out "$CA_CERT" 2>/dev/null
+  fi
+  [ -s "$CA_CERT" ] || { echo "[e2e] no CA material available (real or placeholder)" >&2; exit 1; }
+  echo "E2E_CA_CERT_B64=$(base64 -w0 "$CA_CERT" 2>/dev/null || base64 "$CA_CERT" | tr -d '\n')" > "$TLS_ENV_FILE"
   [ -s "$TLS_ENV_FILE" ] || { echo "[e2e] TLS env emission failed" >&2; exit 1; }
 }
 
@@ -121,7 +133,32 @@ stack_up() {
   STACK_OWNER=true  # This run owns the stack — enable auto-teardown on failure
   note "fresh stack: down -v, then build + up (project $PROJECT)..."
   $COMPOSE down -v >/dev/null 2>&1 || true
-  $COMPOSE up -d --build || { note "compose up failed"; exit 1; }
+  rm -rf deploy/.e2e-tls
+
+  # f57.13 (Caddy-internal-CA rewrite): caddy self-provisions its CA on
+  # first boot — there is no CA material to hand the device container
+  # until caddy has actually started. Two-phase bring-up: (1) everything
+  # except tls-gate/device, which need the CA bytes as an env var at
+  # container-create time (docker compose reads deploy/.env.e2e.tls fresh
+  # on every invocation); (2) extract the CA, then start tls-gate/device.
+  $COMPOSE up -d --build --scale tls-gate=0 --scale device=0 \
+    || { note "compose up (phase 1: everything but tls-gate/device) failed"; exit 1; }
+
+  note "waiting for caddy to self-provision its internal CA and serve TLS..."
+  local deadline=$((SECONDS + 60))
+  until [ "$(docker inspect -f '{{.State.Health.Status}}' "$CADDY_CONTAINER" 2>/dev/null)" = "healthy" ]; do
+    if [ $SECONDS -ge $deadline ]; then
+      note "caddy never became healthy within 60s; recent logs:"
+      docker logs "$CADDY_CONTAINER" 2>&1 | tail -30
+      exit 1
+    fi
+    sleep 1
+  done
+  tls_env_generate
+
+  note "starting tls-gate + device now that the CA is extracted..."
+  $COMPOSE up -d --build tls-gate device \
+    || { note "compose up (phase 2: tls-gate/device) failed"; exit 1; }
 
   note "waiting for cold bootstrap (seed gate → device → ready marker)..."
   if ! wait_marker; then
@@ -720,8 +757,9 @@ ac10_queue_plane() {
 #   1. port 80 redirects to https (308)
 #   2. plain https WITHOUT the CA fails (TLS is ENFORCED, not optional)
 #   3. 443 serves the registrar over TLS with the E2E CA trust (healthz 200)
-#   4. served cert is the E2E leaf: SAN vsigma.lan, issuer Vector Sigma
-#      Internal CA (the gen-vs-ca.sh material — dogfooded, not stock)
+#   4. served cert is caddy's self-issued leaf: SAN vsigma.lan, issuer
+#      "Vector Sigma Internal CA" (the Caddyfile's `pki` block pins the
+#      root_cn — Caddy's own local CA, not its generic default identity)
 #   5. the DEVICE bootstrapped through the edge: its REGISTRAR_URL is
 #      https://vsigma.lan and the ready marker exists (AC1's cold boot is
 #      the TLS path itself; this makes the attribution explicit)
@@ -757,7 +795,7 @@ ac10_tls_edge() {
     fail "AC11 cert SAN" "got: $sans"
   fi
   if printf '%s' "$issuer" | grep -q 'Vector Sigma Internal CA'; then
-    pass "AC11 cert issuer" "VS internal CA (gen-vs-ca.sh material)"
+    pass "AC11 cert issuer" "VS internal CA (caddy self-issued, pki.ca.local.root_cn pinned)"
   else
     fail "AC11 cert issuer" "got: $issuer"
   fi

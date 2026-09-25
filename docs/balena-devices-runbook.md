@@ -34,7 +34,7 @@ Both share the named volume `agent-data`, mounted at `/data/agent`. Identity liv
 |---|---|---|---|
 | `BALENA_DEVICE_UUID` | auto (platform) | — | Reserved. Injected by balena; the registrant reads it and the registrar matches it. |
 | `REGISTRAR_URL` | device | yes | Registrar endpoint the registrant bootstraps against (`REGISTRAR_URL` in the engineering spec). Since f57.13: `https://<master-hostname>` — the caddy TLS edge. |
-| `VS_CA_CERT_B64` | **fleet** | yes (https) | Single-line base64 of the VS internal CA cert (`vs-ca.crt` from `scripts/gen-vs-ca.sh`). The registrant image's entrypoint shim decodes it into Node's trust store (`NODE_EXTRA_CA_CERTS`); the registrant refuses to boot on an https `REGISTRAR_URL` without it (fail-loud, f57.8 posture). See [tls-runbook.md](tls-runbook.md). |
+| `VS_CA_CERT_B64` | **fleet** | yes (https) | Single-line base64 of the VS internal CA root cert — extracted once from the caddy service's self-provisioned PKI (`/data/caddy/pki/authorities/local/root.crt`; caddy mints it on first boot via `tls internal`, no owner-run script). The registrant image's entrypoint shim decodes it into Node's trust store (`NODE_EXTRA_CA_CERTS`); the registrant refuses to boot on an https `REGISTRAR_URL` without it (fail-loud, f57.8 posture). See [tls-runbook.md](tls-runbook.md). |
 | `REGISTRAR_KEY` | device | yes | Per-device bootstrap key; the only secret in platform variables. Shown once at registrar-console key creation. |
 | `LOG_LEVEL` | device or fleet | no | Registrant log level (`info` default). |
 | `CLOCK_GATE_TIMEOUT_MS` | device or fleet | no | Max NTP wait before best-effort proceed (default 600000). |
