@@ -102,7 +102,12 @@ chmod 644 "$OUTDIR/vs-ca.crt" "$OUTDIR/vs-leaf.crt" "$OUTDIR/vs-leaf-chain.crt"
 # b64_nolen <file>: portable no-newline base64 (Copilot review — GNU's
 # `base64 -w0` does not exist on macOS/BSD; every emit below uses this,
 # and a failure aborts the script rather than emitting an empty value).
-b64_nolen() { base64 "$1" | tr -d '\r\n'; }
+# f57.18: read via stdin redirect, NEVER a positional file operand — GNU
+# base64 accepts a file arg, BSD/macOS base64 does not (owner-live
+# 2026-09-24, mid registrar-v1.1.0 step 1: died at emission with
+# 'base64: invalid argument <file>' + BSD usage; certs were fine, only
+# b64-cert.env was missing).
+b64_nolen() { base64 < "$1" | tr -d '\r\n'; }
 b64_nolen "$OUTDIR/vs-leaf.crt" > "$OUTDIR/b64-cert.env.tmp"
 echo >> "$OUTDIR/b64-cert.env.tmp"
 b64_nolen "$OUTDIR/vs-leaf.key" >> "$OUTDIR/b64-cert.env.tmp"
