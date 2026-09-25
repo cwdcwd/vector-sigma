@@ -42,15 +42,18 @@ version: "2.4"
 # static structural value here (public endpoint, not a secret); override via
 # dashboard variable only if Ollama Cloud's URL ever changes.
 #
-# f57.13 TLS edge: caddy fronts the composition (registrar :443, litellm
-# :8443, https://TLS_HOSTNAME). Owner-set fleet variables: TLS_HOSTNAME (the
-# Pi-hole record name, e.g. vsigma.lan), TLS_CERT_B64 + TLS_KEY_B64 (base64
-# PEM pair from scripts/gen-vs-ca.sh output — single-line, dashboard-safe;
-# never in image layers). The one-shot certs-init service decodes them into
-# the caddy-certs volume; caddy waits for the pair then serves. Host ports
-# 443/8443 publish to the device LAN; port 80 redirects to TLS. Device
-# REGISTRAR_URL flips to https://<TLS_HOSTNAME> — see the README deploy-
-# sequencing note (the f57.9 hazard class: flip AFTER the release lands).
+# f57.13 TLS edge (rotation automated, see docs/tls-runbook.md): caddy
+# fronts the composition (registrar :443, litellm :8443, https://
+# TLS_HOSTNAME) with `tls internal` — Caddy's own local CA, self-
+# provisioned on first boot and renewed automatically for as long as the
+# caddy-data volume persists. Owner-set fleet variable: TLS_HOSTNAME (the
+# Pi-hole record name, e.g. vsigma.lan) only — no cert/key fleet variables,
+# no one-shot provisioning service. Host ports 443/8443 publish to the
+# device LAN; port 80 redirects to TLS. Device REGISTRAR_URL flips to
+# https://<TLS_HOSTNAME> — see the README deploy-sequencing note (the
+# f57.9 hazard class: flip AFTER the release lands, and only after
+# VS_CA_CERT_B64 is staged on the devices fleet — extracted once from the
+# caddy-data volume, tls-runbook.md).
 
 services:
   postgres:
@@ -350,31 +353,15 @@ services:
     restart: always
   # ── f57.14 END ──────────────────────────────────────────────────────────────
 
-  # f57.13: one-shot TLS material provisioning — decodes the TLS_CERT_B64 /
-  # TLS_KEY_B64 fleet variables into the shared caddy-certs volume (PEM
-  # pair). Image-carried script (the litellm-init pattern): identical bytes
-  # on balena (supervisor injects the fleet vars as env) and in deploy/
-  # self-host (${VAR} interpolation). Fail-loud on missing/truncated values;
-  # idempotent + rotation-safe (rewrites the pair every run — rotating the
-  # leaf = update the two fleet vars + restart this service and caddy).
-  certs-init:
-    build:
-      context: .
-      dockerfile: Dockerfile.certs-init
-    environment:
-      # Secrets arrive as fleet variables: TLS_CERT_B64 + TLS_KEY_B64 (no
-      # static values here). CERTS_DIR is structural.
-      CERTS_DIR: /certs
-    volumes:
-      - caddy-certs:/certs
-    restart: "no"
-
   # f57.13: the TLS edge — caddy fronts the whole composition per the baked
   # Caddyfile (registrar :443, litellm :8443, 80 -> 308 redirect). TLS_HOSTNAME
   # is a fleet variable consumed by caddy's own {$VAR:default} substitution
   # (the supervisor does no interpolation; the Caddyfile stays identical in
-  # deploy/ self-host). The entrypoint shim waits for the certs-init pair so
-  # the concurrent start order can never fail caddy fast.
+  # deploy/ self-host). `tls internal` needs no provisioning step to start —
+  # the caddy-data volume is where Caddy's self-generated CA + leaf certs
+  # live, and it MUST be a named (persistent) volume: it is the only thing
+  # standing between "automatic rotation" and "a new untrusted CA on every
+  # release" (docs/tls-runbook.md).
   caddy:
     build:
       context: .
@@ -391,9 +378,7 @@ services:
       - "443:443"
       - "8443:8443"
     volumes:
-      - caddy-certs:/certs
-    depends_on:
-      - certs-init
+      - caddy-data:/data
     healthcheck:
       # Real TLS readiness (Copilot f57.13 review): the entrypoint is still
       # PID 1 while waiting for certs, so process liveness would report a
@@ -414,7 +399,10 @@ services:
 
 volumes:
   pgdata:
-  caddy-certs:
+  # f57.13 (Caddy-internal-CA rewrite): Caddy's self-generated CA key +
+  # leaf certs live here (/data/caddy/pki/...). Must persist across
+  # releases — wiping it forces a CA roll (docs/tls-runbook.md "CA roll").
+  caddy-data:
   # f57.15: the VS queue's Dolt state volume.
   doltdata:
   # f57.14: primus state — the shared agent-data volume pattern (the

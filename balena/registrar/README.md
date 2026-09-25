@@ -76,9 +76,7 @@ env).
 | `DOLT_ROOT_PASSWORD` | dolt | **yes — no default** (f57.15) | Dolt superuser password (the image requires it to bootstrap; root stays localhost-only by image default — never a LAN login). |
 | `BEADS_DOLT_PASSWORD` | scotty | **yes — no default** (f57.15) | SAME secret value as `DOLT_PASSWORD`, under the env key bd reads (bd and the dolt image read different keys). Lets the scotty container's in-image bd join the queue read-only. |
 | `PRIMUS_REGISTRAR_KEY` | registrant-own | **yes — no default** (f57.14) | The registrar key for the master device's own row (agent_name=primus). Mint/insert per the device-key flow; never reuse another row's key. |
-| `TLS_HOSTNAME` | **fleet-wide** | **yes — no default** (f57.13) | The master device hostname the caddy edge serves (must match the Pi-hole DNS record — see [docs/tls-runbook.md](../../docs/tls-runbook.md)). Feeds the Caddyfile's `{$TLS_HOSTNAME:vsigma.lan}` substitution. |
-| `TLS_CERT_B64` | **fleet-wide** | **yes — no default** (f57.13) | Base64 (single line, `-w0`) of the leaf cert PEM from `scripts/gen-vs-ca.sh` output. The one-shot `certs-init` service decodes it into the caddy-certs volume; rotation = re-run the script, re-paste, restart `certs-init` + `caddy`. |
-| `TLS_KEY_B64` | **fleet-wide** | **yes — no default** (f57.13) | Base64 of the leaf KEY PEM — same paste source (`vs-tls/b64-cert.env`), same rotation path. The CA key itself is NEVER a variable (owner-custodied). |
+| `TLS_HOSTNAME` | **fleet-wide** | **yes — no default** (f57.13) | The master device hostname the caddy edge serves (must match the Pi-hole DNS record — see [docs/tls-runbook.md](../../docs/tls-runbook.md)). Feeds the Caddyfile's `{$TLS_HOSTNAME:vsigma.lan}` substitution. This is the ONLY TLS-related fleet variable — caddy mints and rotates its own cert/key via `tls internal`; there is no cert/key pair to paste. |
 ### Static in compose (override only if you know why)
 
 | Variable | Service | Value | Purpose |
@@ -118,15 +116,20 @@ the tunnel is dead by design (use https from a trusted host; see
 > **Deploy sequencing (read before tagging a release):** the release that
 > carries fleet-ops-f57.9 stopped publishing `:3000` and published `:80`;
 > f57.13 supersedes it — the composition's published surface is now caddy
-> (80 redirect / 443 registrar / 8443 gateway). **Order (Copilot review):
-> provision device trust FIRST** — set `VS_CA_CERT_B64` on the devices
-> fleet BEFORE the release lands (a device pulling the f57.13 registrant
-> with its OLD http `REGISTRAR_URL` boots unchanged, with the CA already
-> staged; there is no window where a device has an https URL but no CA).
-> From the moment the f57.13 release lands on the registrar device, the
-> devices fleet's `REGISTRAR_URL` dashboard variable must become
-> `https://<TLS_HOSTNAME>`. Tag → confirm the registrar device pulled the
-> release and caddy serves
+> (80 redirect / 443 registrar / 8443 gateway), with TLS from Caddy's own
+> self-provisioned internal CA (`tls internal` — no owner-run script, no
+> cert/key fleet variables; rotation is automatic for as long as the
+> caddy-data volume persists). **Order (Copilot review): provision device
+> trust FIRST** — extract the CA root cert caddy minted on first boot
+> (`docker exec`/`balena ssh` into the caddy service:
+> `cat /data/caddy/pki/authorities/local/root.crt`) and set
+> `VS_CA_CERT_B64` on the devices fleet BEFORE the release lands (a device
+> pulling the f57.13 registrant with its OLD http `REGISTRAR_URL` boots
+> unchanged, with the CA already staged; there is no window where a
+> device has an https URL but no CA). From the moment the f57.13 release
+> lands on the registrar device, the devices fleet's `REGISTRAR_URL`
+> dashboard variable must become `https://<TLS_HOSTNAME>`. Tag → confirm
+> the registrar device pulled the release and caddy serves
 > (`curl https://<TLS_HOSTNAME>/healthz --cacert <vs-ca.crt>`) → flip
 > `REGISTRAR_URL` → verify a device bootstraps. Full owner checklist:
 > [docs/tls-runbook.md](../../docs/tls-runbook.md).
