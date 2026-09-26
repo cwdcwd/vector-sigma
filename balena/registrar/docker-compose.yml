@@ -267,9 +267,15 @@ services:
   # SAME chain every device uses — the registrant-own service fetches the
   # owner-prepared primus bundle from the registrar (device row pre-created
   # in the console, agent_name=primus) and applies it to the shared
-  # primus-data volume; the official Hermes image's entrypoint blocks on
-  # the ready marker before its gateway starts. Ordering: registrar
-  # healthy -> registrant-own (bootstrap) -> hermes (ready-marker gate).
+  # primus-data volume. Ordering (f57.20 short-form): registrar started
+  # -> registrant-own (bootstrap poll) -> hermes started. The official
+  # Hermes image has NO marker gate (f57.20 finding: zero ready.marker
+  # references in the v2026.9.21 image source; the marker gate belongs
+  # to the devices app's own gate.sh, not this image) — the marker is
+  # the fleet's assertion signal (E2E AC12), and the marker-gap race is
+  # closed by the image's first-boot-only seed + restart:always contract,
+  # same as the devices app's agent runtime. See the hermes service's
+  # f57.20 note.
   #
   # Hermes contract (AC1): state on the primus-data volume via
   # HERMES_HOME=/data/primus (the image's stage2 hook seeds config.yaml /
@@ -305,14 +311,20 @@ services:
     volumes:
       - primus-data:/data/primus
     depends_on:
-      registrant-own:
-        condition: service_healthy
+      - registrant-own
     healthcheck:
-      # Process liveness only: the identity gate is structural (the
-      # entrypoint-dispatch blocks until the ready marker exists), so an
-      # unprovisioned primus shows hermes Exited in the dashboard, not
-      # "Running" with nothing inside — the same posture as the devices
-      # app's agent gate.
+      # Process liveness only: the official image has no marker gate
+      # (f57.20 finding — the v2026.9.21 entrypoint/stage2 tree carries
+      # zero ready.marker references; the gate belongs to the devices
+      # app's gate.sh, NOT this image). hermes therefore starts as soon
+      # as its container launches; the marker-gap race (hermes first
+      # boot vs registrant-own apply) is closed by the image's
+      # first-boot-only seed (operator files win, stage2 skips seeding
+      # when the bundle's files exist) + restart:always: an unprovisioned
+      # device shows hermes restart-looping in the dashboard — the same
+      # surface the devices app's agent gate gives (agent Exited), and
+      # the E2E marker assertion (AC12) is unaffected: it runs AFTER the
+      # chain completes, not inside hermes.
       test: ["CMD-SHELL", "kill -0 1"]
       interval: 30s
       timeout: 5s
@@ -341,9 +353,23 @@ services:
     volumes:
       - primus-data:/data/agent
     depends_on:
-      registrar:
-        condition: service_healthy
+      - registrar
     healthcheck:
+      # Process liveness only (f57.20 note): under the supervisor this
+      # healthcheck never gated hermes — depends_on long-form
+      # conditions are unsupported by the supervisor (run 36), and a
+      # `kill -0 1` health proves process liveness, not bootstrap
+      # completion (the grace-poll resident is "healthy" the whole
+      # time it is blocked). The ordering safety comes from the
+      # registrant's own retry loop, NOT this check: REGISTRAR_URL is
+      # compose-internal http with a bounded 425-retry + a resident
+      # grace poll (401/403/404) + supervisor restart on transient
+      # network errors — the registrant-own service is safe to start
+      # at any point in registrar's lifecycle. If the fleet later
+      # wants hermes to wait on THIS service completing bootstrap,
+      # make the marker itself the healthcheck (E2E overlay pattern:
+      # test -f /data/agent/ready.marker) — healthy then MEANS the
+      # chain completed.
       test: ["CMD-SHELL", "kill -0 1"]
       interval: 30s
       timeout: 5s
