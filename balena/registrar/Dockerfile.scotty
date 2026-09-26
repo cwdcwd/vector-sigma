@@ -43,12 +43,36 @@ RUN sha256sum /tmp/scotty-8ea-deep-link.patch | grep -q '^1bdd684884bb0a63ec1f48
 
 # ── bd 1.2.2: prebuilt release binary (upstream scotty Dockerfile shape) ─────
 FROM node:26.4.0-alpine AS bd
-# Pinned per the fleet convention; TARGETARCH matches Docker's values used in
-# the beads release asset names (arm64 on the Pi, amd64 in CI).
+# Pinned per the fleet convention (fleet/conventions/bd-version-pin: bd 1.3.x
+# auto-migrates the shared Dolt schema — NEVER bump past the fleet pin).
+# f57.21: the release asset arch is derived INSIDE the RUN from `uname -m`,
+# NOT from TARGETARCH. Automatic population of TARGETARCH / TARGETPLATFORM is
+# BuildKit-only; balena's remote builder is the LEGACY builder, which sets
+# neither — registrar-v1.1.1 deploy run 36205380041 failed with
+#   ADD failed: failed to GET .../beads_1.2.2_linux_.tar.gz with status 404
+# (empty arch). uname -m is builder-agnostic, reports the true build arch
+# (aarch64->arm64 on the Pi, x86_64->amd64 in CI; under a qemu cross-build
+# it reports the emulated target arch), and fails loud on anything else.
+# The tarball is verified against the release's own checksums.txt at the
+# SAME v${BD_VERSION} pin before install — fail-loud on mismatch, matching
+# the 8ea-patch hash-pin supply-chain posture.
 ARG BD_VERSION=1.2.2
-ARG TARGETARCH
-ADD "https://github.com/gastownhall/beads/releases/download/v${BD_VERSION}/beads_${BD_VERSION}_linux_${TARGETARCH}.tar.gz" /tmp/bd.tar.gz
-RUN tar -xzf /tmp/bd.tar.gz -C /tmp && mv /tmp/bd /usr/local/bin/bd.real
+RUN arch="$(uname -m)" \
+    && case "$arch" in \
+         aarch64) arch=arm64 ;; \
+         x86_64) arch=amd64 ;; \
+         *) echo "ERROR (f57.21): unsupported build host uname -m '${arch}' — expected aarch64 or x86_64; refusing to guess the bd release asset (Dockerfile.scotty)" 1>&2; exit 1 ;; \
+       esac \
+    && tarball="beads_${BD_VERSION}_linux_${arch}.tar.gz" \
+    && wget -q -O /tmp/checksums.txt "https://github.com/gastownhall/beads/releases/download/v${BD_VERSION}/checksums.txt" \
+    && wget -q -O "/tmp/${tarball}" "https://github.com/gastownhall/beads/releases/download/v${BD_VERSION}/${tarball}" \
+    && want="$(grep -F "${tarball}" /tmp/checksums.txt | cut -d' ' -f1)" \
+    && [ -n "$want" ] || { echo "ERROR (f57.21): checksums.txt at bd ${BD_VERSION} has no entry for ${tarball} — refusing to install an unverified binary (Dockerfile.scotty)" 1>&2; exit 1; } \
+    && got="$(sha256sum "/tmp/${tarball}" | cut -d' ' -f1)" \
+    && [ "$want" = "$got" ] || { echo "ERROR (f57.21): sha256 mismatch for ${tarball}: want ${want}, got ${got} — refusing to install (Dockerfile.scotty)" 1>&2; exit 1; } \
+    && tar -xzf "/tmp/${tarball}" -C /tmp \
+    && mv /tmp/bd /usr/local/bin/bd.real \
+    && rm -f "/tmp/${tarball}" /tmp/checksums.txt
 
 # ── Eleventy: self-contained tree for the showcase publisher ─────────────────
 # Upstream shape verbatim: the app locates node_modules/@11ty/eleventy/cmd.cjs
