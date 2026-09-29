@@ -1141,6 +1141,145 @@ ac12_primus_self_bootstrap() {
   fi
 }
 
+# AC13 (b1r): primus's queue tooling — the baked image dogfood. The hermes
+# container is the CUSTOM image now (bd 1.2.2 full read-write + queue-join +
+# docs + the 03-vs-queue-join boot hook). Assertions, all INSIDE the
+# container:
+#   0. canonicalize the e2e dolt's project_id to the fleet contract
+#      (bcde5891-…): AC10's host-side bd init legitimately minted a random
+#      id into this throwaway DB (the init rewrites the shared DB's
+#      project_id — the 9-09 lockout class, by design in its own
+#      workspace). The baked join config carries the CANONICAL id, and bd
+#      1.2.2 REFUSES to connect on a mismatch (PROJECT IDENTITY MISMATCH —
+#      verified live in the b1r lab: fail-loud, never silent-empty). The
+#      canonicalization is the bead's "e2e dolt is seeded with the
+#      canonical project_id" — one UPDATE, then read back and assert.
+#   1. bd --version answers 1.2.2 (the fleet pin, absolute).
+#   2. the boot hook seeded $HERMES_HOME/vs-queue (first-boot-only copy):
+#      metadata.json + dolt-server.port + the actor-stamped config.yaml
+#      (primus + backup.enabled false — the peer-client posture).
+#   3. bd status CONNECTS from inside the container, as the runtime user,
+#      from the seeded workspace — the dogfood proof: primus can curate.
+#   4. the baked docs are present (queue-conventions.md + vs-environment.md).
+#   5. scotty still serves /api/projects 200 AFTER canonicalization — the
+#      read-only dashboard's baked join (same canonical id) re-aligns with
+#      the DB; one id, every client.
+ac13_primus_queue_tooling() {
+  note "AC13: primus queue tooling — bd 1.2.2 + canonical join + docs in the hermes image (b1r)"
+  local dolt_password
+  dolt_password="$(grep -E '^DOLT_PASSWORD=' "$ENV_FILE" | cut -d= -f2)"
+  if [ -z "$dolt_password" ]; then
+    fail AC13 "DOLT_PASSWORD missing from $ENV_FILE"
+    return
+  fi
+  local canonical="bcde5891-5482-4eb0-a223-8533504832d6"
+
+  # 0. canonicalize the throwaway e2e dolt to the fleet contract id.
+  # AC10's host-side bd init legitimately minted a RANDOM project_id into
+  # this throwaway DB (the init rewrites the shared DB's project_id — by
+  # design in its own workspace; the lockout class is the e2e's harness
+  # here). The baked joins (hermes + scotty) carry the CANONICAL id, and
+  # bd 1.2.2 REFUSES to connect on a mismatch (PROJECT IDENTITY MISMATCH —
+  # verified live in the b1r lab: fail-loud, never silent-empty).
+  # Mechanism: bd sql from AC10's own host workspace (its metadata.json
+  # still carries the minted random id, so bd's identity check passes and
+  # the vs user owns vs_ops — in-privilege). `key` is a reserved word in
+  # the dolt dialect: backtick-quoted (proven live, b1r lab). bd sql
+  # reports rows-affected for UPDATE — assert exactly 1. NO host-side
+  # read-back afterwards: the workspace's id would now mismatch the DB
+  # (the identity check would refuse). The container-side bd status
+  # (step 3) IS the functional read-back — its failure mode names both
+  # ids for triage.
+  local workdir=/tmp/vs-queue-e2e
+  if [ ! -f "$workdir/.beads/metadata.json" ]; then
+    fail "AC13 canonicalize project_id" "AC10's bd workspace $workdir missing — bd init never ran"
+    return
+  fi
+  local bd_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  local bd_bin="$workdir/bd"
+  # The `key` column identifier: a shell VARIABLE carries the backticks as
+  # DATA — inline backticks inside double quotes are command substitution
+  # (and the b1r run-1 line shipped doubled backslashes that bash -n
+  # happily parsed as substitution — caught on byte review). Single-quote
+  # assignment, expand as $idcol: zero escaping ambiguity.
+  local idcol='`key`'
+  local upd_out
+  upd_out="$(cd "$workdir" && PATH="$bd_path" BEADS_DOLT_PASSWORD="$dolt_password" CI=true \
+    "$bd_bin" sql "UPDATE metadata SET value='$canonical' WHERE $idcol='_project_id'" 2>&1 || true)"
+  if printf '%s' "$upd_out" | grep -q '1 rows affected\|1 row affected'; then
+    pass "AC13 canonicalize project_id" "e2e dolt's _project_id -> the canonical VS queue contract id (bd sql: 1 row affected)"
+  else
+    fail "AC13 canonicalize project_id" "bd sql UPDATE did not report 1 row affected (got: $(printf '%s' "$upd_out" | head -c 200))"
+    return
+  fi
+
+  local hcontainer="$PROJECT-hermes-1"
+
+  # 1. bd pin: the baked binary answers 1.2.2. Run as the runtime user
+  # (docker exec defaults to root; every file bd writes under
+  # $HERMES_HOME must stay owned by the remapped runtime user — the
+  # upstream image's own exec-shim rationale).
+  local ver
+  ver="$(docker exec -u hermes "$hcontainer" bd --version 2>/dev/null || true)"
+  if printf '%s' "$ver" | grep -q 'bd version 1.2.2'; then
+    pass "AC13 bd pin" "in-image bd answers: $ver"
+  else
+    fail "AC13 bd pin" "bd --version in the hermes container answered '${ver:-nothing}' — want bd version 1.2.2"
+  fi
+
+  # 2. the boot hook seeded the queue workspace (first-boot-only). The
+  # hook runs in cont-init BEFORE the gateway, and AC12 already proved
+  # hermes booted past stage2 — so the workspace must exist now. Short
+  # deadline anyway so a fail-soft hook error surfaces with its logs.
+  local deadline=$((SECONDS + 60))
+  until docker exec "$hcontainer" test -f /data/primus/vs-queue/.beads/metadata.json 2>/dev/null; do
+    if [ $SECONDS -ge $deadline ]; then
+      fail "AC13 queue workspace" "no /data/primus/vs-queue/.beads/metadata.json after 60s — boot hook never seeded; hook logs:"
+      docker logs "$hcontainer" 2>&1 | grep -i 'vs-queue-join' | tail -10
+      return
+    fi
+    sleep 2
+  done
+  pass "AC13 queue workspace" "03-vs-queue-join seeded /data/primus/vs-queue (first-boot copy from /opt/vs/queue-join)"
+  local actor
+  actor="$(docker exec "$hcontainer" sh -c "cat /data/primus/vs-queue/.beads/config.yaml 2>/dev/null" || true)"
+  if printf '%s' "$actor" | grep -q 'actor: "primus"' && printf '%s' "$actor" | grep -q 'enabled: false'; then
+    pass "AC13 actor stamp" "workspace config.yaml: actor primus + auto-backup silenced (peer-client posture)"
+  else
+    fail "AC13 actor stamp" "config.yaml missing actor/backup keys (got: $(printf '%s' "$actor" | head -c 120))"
+  fi
+
+  # 3. THE dogfood proof: bd status connects from inside the container,
+  #    as the runtime user, from the seeded workspace, against the
+  #    compose dolt — canonical id, env password, service-name host.
+  local st
+  st="$(docker exec -u hermes -w /data/primus/vs-queue "$hcontainer" bd status 2>&1 || true)"
+  if printf '%s' "$st" | grep -q 'Issue Database Status'; then
+    pass "AC13 bd status" "primus's in-image bd connected to the compose dolt (canonical project contract)"
+  else
+    fail "AC13 bd status" "bd status refused from inside the hermes container: $(printf '%s' "$st" | head -c 300)"
+  fi
+
+  # 4. docs baked into the image (the environment-knowledge half of the
+  #    lane): both paths present under /opt/vs/docs.
+  if docker exec "$hcontainer" test -f /opt/vs/docs/queue-conventions.md 2>/dev/null \
+     && docker exec "$hcontainer" test -f /opt/vs/docs/vs-environment.md 2>/dev/null; then
+    pass "AC13 docs baked" "queue-conventions.md + vs-environment.md present at /opt/vs/docs"
+  else
+    fail "AC13 docs baked" "one or both docs missing at /opt/vs/docs"
+  fi
+
+  # 5. scotty re-aligned: the dashboard's baked join carries the same
+  #    canonical id; after canonicalization its bd connects again.
+  local code
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:3306/api/projects || true)"
+  if [ "$code" = "200" ]; then
+    pass "AC13 scotty re-aligned" "/api/projects 200 post-canonicalization — one id, every client (scotty + primus + host)"
+  else
+    fail "AC13 scotty re-aligned" "/api/projects answered ${code:-none} after canonicalization"
+  fi
+}
+
 # ---- main ---------------------------------------------------------------------
 
 # f57.13: the TLS env file is (re)generated on --up; ensure it exists for
@@ -1168,6 +1307,7 @@ ac_w5d_admin_key_ui
 ac10_queue_plane
 ac10_tls_edge
 ac12_primus_self_bootstrap
+ac13_primus_queue_tooling
 echo
 echo "[e2e] ===== RESULT: $PASS passed, $FAIL failed ====="
 [ "$FAIL" -eq 0 ]

@@ -1,0 +1,53 @@
+# balena/devices/Dockerfile.agent-hermes — FORWARD-SHAPE ONLY
+# (fleet-ops-b1r, owner flag: "will also affect the registrant fleet").
+#
+# This Dockerfile is a DOCUMENTED COPY of the registrar app's primus
+# image pattern (balena/registrar/Dockerfile.hermes). It is NOT BUILT
+# TODAY: the devices app's agent runtime stays the placeholder
+# (balena/devices/agent/Dockerfile — node:22-bookworm-slim + gate.sh)
+# until the real hermes runtime swap lands in its own lane, per the
+# bead's explicit "do NOT build the devices runtime" clause.
+#
+# When the swap lands, this file becomes the build: switch the devices
+# docker-compose.yml agent service from `image:`/placeholder build to
+#
+#     build:
+#       context: .
+#       dockerfile: Dockerfile.agent-hermes
+#
+# and the SAME additions the registrar's primus image carries apply:
+#   1. bd 1.2.2 baked FULL READ-WRITE (the scotty tarball+sha256
+#      pattern VERBATIM — ARG BD_VERSION=1.2.2, uname -m arch case
+#      [legacy-builder-safe, no TARGETARCH], checksums.txt-verified,
+#      fail-loud). Devices are queue WORKERS, not curators — still
+#      read-write (they claim + comment + close), just not scotty's
+#      bd-readonly wrapper posture.
+#   2. A queue-join config at /opt/vs/queue-join/.beads (config-only
+#      join; canonical project_id from the coordinator — the fleet
+#      contract; NEVER a device-side bd init).
+#   3. The same docs (queue-conventions.md + a per-device environment
+#      map) at /opt/vs/docs.
+#   4. The same boot hook shape (vs-queue-join.sh as
+#      /etc/cont-init.d/03-vs-queue-join) — with dolt_server_host set
+#      to the master's LAN address (or LAN hostname), NOT the compose
+#      service name: devices reach the master dolt over the LAN at
+#      <master-LAN-IP>:3326, exactly as scripts/vs-queue-bootstrap.md
+#      documents.
+#   5. The join differs from primus's in exactly TWO fields:
+#      dolt_server_host (<master-LAN-IP> — fleet variable, never
+#      baked) and dolt_server_port (3326, the LAN-published port).
+#
+# Until that lane exists, this file documents the pattern so the
+# runtime swap lands ready: same supply-chain posture, same boot-hook
+# contract, same docs posture — one pattern, two apps.
+
+# The pin stays the official-image tag current at the swap (do not
+# bump past the fleet's parity pin without a fleet PR).
+FROM nousresearch/hermes-agent:v2026.9.21
+
+# [FORWARD-SHAPE] The bake steps land with the runtime-swap lane:
+# bd 1.2.2 (scotty tarball+sha256 pattern), queue-join, docs, and the
+# 03-vs-queue-join boot hook — see the block comment above and
+# balena/registrar/Dockerfile.hermes for the live pattern.
+RUN echo "forward-shape only — build the real runtime in the devices runtime-swap lane (fleet-ops-b1r §6)" \
+    && echo "see balena/registrar/Dockerfile.hermes for the pattern this file will copy"

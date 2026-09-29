@@ -177,6 +177,11 @@ services:
   # Assertions (e2e.sh AC12) ride the ready marker + bundle files on the
   # volume — the dogfood proof is the BOOTSTRAP CHAIN, not a live model
   # call (the seeded bundle's gateway key is a simulation value).
+  # b1r: the base compose now BUILDS the custom hermes image (bd 1.2.2 +
+  # queue join + docs + boot hook) — the overlay inherits the build. The
+  # queue env deterministically arrives here (the base's ${VAR:?} is
+  # satisfied from .env.e2e's simulation value either way; the explicit
+  # entry documents the AC13 surface).
   hermes:
     environment:
       # CI determinism: the image's stage2 hook seeds config.yaml only when
@@ -187,6 +192,9 @@ services:
       # (run-4 lesson) — the base compose documents the mechanism.
       HERMES_UID: "1000"
       HERMES_GID: "1000"
+      # b1r (AC13): the in-image bd's Dolt password — same simulation
+      # value the scotty service + the host-side AC10 bd client use.
+      BEADS_DOLT_PASSWORD: ${BEADS_DOLT_PASSWORD:?set in deploy/.env.e2e — simulation value}
     # Long-run form (the base compose carries `command: gateway run`; the
     # overlay inherits it — no override needed).
     volumes:
