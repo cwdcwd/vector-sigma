@@ -695,13 +695,17 @@ ac_anc_postgres_consolidation() {
   $COMPOSE start postgres > /tmp/e2e-anc-start.log 2>&1 \
     || { fail "AC-anc compose start postgres" "start exited non-zero: $(tail -3 /tmp/e2e-anc-start.log)"; return; }
   local deadline=$((SECONDS + 90))
-  until [ "$($COMPOSE exec -T postgres pg_isready -U "$PG_USER" 2>/dev/null)" = "accepting connections" ]; do
+  # pg_isready prints "<host>:<port> - accepting connections" (the host:port
+  # prefix varies with the exec context) — match the SUFFIX, not the full
+  # line: the full-line equality in the first run of this gate burned the
+  # whole 90s budget and then failed on a healthy answer.
+  until $COMPOSE exec -T postgres pg_isready -U "$PG_USER" 2>/dev/null | grep -q 'accepting connections'; do
     [ $SECONDS -ge $deadline ] && break
     sleep 2
   done
   local ready_again
   ready_again="$($COMPOSE exec -T postgres pg_isready -U "$PG_USER" 2>/dev/null)" || ready_again=""
-  if [ "$ready_again" = "accepting connections" ]; then
+  if printf '%s' "$ready_again" | grep -q 'accepting connections'; then
     pass "AC-anc postgres back after restart" "pg_isready accepting connections again"
   else
     fail "AC-anc postgres back after restart" "pg_isready says '${ready_again:-nothing}' after 90s"

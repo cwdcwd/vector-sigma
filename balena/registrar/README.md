@@ -238,11 +238,14 @@ the missing variable if a fleet var is absent (fail-loud).
 The old one-shot `litellm-init` service no longer exists (owner ruling
 2026-09-29: consolidate — one less container on a resource-strapped
 device; the wrapper runs the identical SQL bytes the one-shot ran). The
-graceful-shutdown contract is a hard gate: the wrapper forwards SIGTERM
-to the stock entrypoint so postgres checkpoints and flushes WAL inside
-the 60s `stop_grace_period` — the balena supervisor's stop never
-SIGKILLs an unwarned postgres at the deadline (that is the corruption
-path this design closes).
+graceful-shutdown contract is a hard gate: the wrapper translates the
+container's stop signal into a postmaster FAST shutdown (its own SIGTERM
+becomes SIGINT for the postgres child — postmaster SIGTERM is SMART
+shutdown, which waits for clients that hold lifetime pool connections
+and never completes inside the grace) so postgres checkpoints and
+flushes WAL inside the 60s `stop_grace_period` — the balena
+supervisor's stop never SIGKILLs an unwarned postgres at the deadline
+(that is the corruption path this design closes).
 
 **Live-volume note:** the master device's pgdata already holds device
 bundles — a fresh initdb cannot run there and MUST NOT; the wrapper

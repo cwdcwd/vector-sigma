@@ -95,16 +95,38 @@ describe('postgres consolidation contract (fleet-ops-anc)', () => {
     expect(block).toMatch(/stop_grace_period:\s*60s/);
   });
 
-  it('wrapper script exists and forwards SIGTERM (the corruption hard gate)', () => {
+  it('wrapper script exists and translates the stop signal (the corruption hard gate)', () => {
     const wrapper = readFileSync(
       path.join(repoRoot, 'balena/registrar/postgres-entrypoint.sh'),
       'utf8',
     );
-    // The wrapper MUST trap the stop signals and forward them to the child
-    // postgres — eating the signal means SIGKILL at the deadline and a
-    // corrupted identity DB (the exact failure this design closes).
+    // The wrapper MUST trap the stop signals and get the postmaster to
+    // checkpoint inside the 60s grace. Forwarding TERM verbatim is the bug
+    // this closes: postmaster SIGTERM is SMART shutdown (waits for clients
+    // to disconnect — the registrar/litellm pools never do inside the
+    // grace; SIGKILL at the deadline corrupts the identity DB). The trap
+    // must translate to SIGINT — postmaster FAST shutdown: terminate
+    // clients, rollback, checkpoint, exit in seconds.
     expect(wrapper).toMatch(/trap\s+\S+\s+TERM\s+INT/);
-    expect(wrapper).toMatch(/kill -TERM "\$child"/);
+    expect(wrapper).toMatch(/kill -INT "\$child"/);
+    // Forwarding TERM verbatim to the postmaster is FORBIDDEN (SMART-shutdown
+    // trap). The abort paths must also use INT.
+    expect(wrapper).not.toMatch(/kill -TERM "\$child"/);
+    // The trap must be armed BEFORE the readiness wait — a stop signal
+    // during boot must translate too, not kill the wrapper as PID 1 while
+    // postgres runs un-warned (strictly worse than the stock image).
+    // (Anchor on the readiness loop's invocation, not the bare word
+    // `pg_isready` — the header comment mentions it too.)
+    expect(wrapper.indexOf('trap term_child TERM INT')).toBeLessThan(
+      wrapper.indexOf('until pg_isready'),
+    );
+    // Reap must be an interruptible poll loop (busybox ash does not
+    // reliably interrupt `wait` for a trapped signal), and the child's
+    // exit status must propagate — postgres exiting 1 must not surface
+    // as a green container.
+    expect(wrapper).toMatch(/while kill -0 "\$child"[\s\S]*?done/);
+    expect(wrapper).toMatch(/wait "\$child" \|\| rc=\$\?/);
+    expect(wrapper).toMatch(/exit "\$rc"/);
     expect(wrapper).toMatch(/pg_isready/);
     // Provisioning SQL verbatim from the retired one-shot.
     expect(wrapper).toContain("CREATE ROLE litellm LOGIN");

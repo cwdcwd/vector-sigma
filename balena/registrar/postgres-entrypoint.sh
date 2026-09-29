@@ -19,11 +19,12 @@
 #       (CREATE ROLE litellm + CREATE DATABASE litellm + least-privilege
 #       REVOKE + ALTER ROLE re-assert every boot — idempotent, safe on
 #       the live volume);
-#   (d) wait on the child with SIGTERM/SIGINT forwarding. THE GRACEFUL-
-#       SHUTDOWN CONTRACT IS A HARD GATE: the wrapper MUST forward the
-#       stop signal so postgres checkpoints and flushes WAL inside
-#       stop_grace_period 60s — a wrapper that eats the signal gets
-#       SIGKILLed at the deadline and corrupts the identity DB.
+#   (d) translate the container's stop signal into a postgres FAST
+#       shutdown and reap the child via an interruptible poll loop. THE
+#       GRACEFUL-SHUTDOWN CONTRACT IS A HARD GATE: the wrapper MUST get
+#       the postmaster to checkpoint and flush WAL inside
+#       stop_grace_period 60s — a wrapper that lets the runtime SIGKILL
+#       an unwarned postgres at the deadline corrupts the identity DB.
 #
 # Inputs (environment) — same contract the one-shot had, plus the
 # postgres image's own POSTGRES_* vars which pass straight through:
@@ -50,10 +51,39 @@ set -eu
 /usr/local/bin/docker-entrypoint.sh postgres &
 child=$!
 
+# ---- (d) babysit: translate the stop signal into a postmaster FAST shutdown --
+# The trap goes up BEFORE the readiness wait, not after: TERM at any point
+# of the container's life (docker stop / balena supervisor update mid-boot)
+# must translate, because with no trap the wrapper shell dies as PID 1 and
+# the container teardown SIGKILLs an unwarned postgres — strictly worse than
+# the stock image, where PID 1 IS the postmaster and always sees the signal.
+#
+# The stop signal MUST NOT be forwarded as-is. To the postgres postmaster
+# SIGTERM means SMART shutdown — wait indefinitely for every connected
+# client (registrar + litellm hold lifetime prisma pool connections) to
+# disconnect. That never happens inside a 60s grace: the runtime SIGKILLs
+# at the deadline mid-WAL — exactly the corruption this gate exists to
+# close (observed on PR #28 run 36593814510: SMART waited out the full
+# grace; zero shutdown/checkpoint lines in the logs).
+#
+# SIGINT is the postmaster's FAST shutdown: it terminates the client
+# connections itself, rolls back and checkpoints, and exits within
+# seconds — the shutdown the 60s budget was designed for. Translating
+# the wrapper's TERM to an INT for the child therefore satisfies both
+# contracts at once: `docker stop` semantics (any client may vanish)
+# and postgres semantics (deterministic checkpoint + exit).
+term_child() {
+  # Self-disarm: one INT is the whole instruction; a repeated stop signal
+  # (supervisor retry) must not re-signal a postmaster already exiting.
+  trap - TERM INT
+  kill -INT "$child" 2>/dev/null || true
+}
+trap term_child TERM INT
+
 # ---- (b) wait for readiness -------------------------------------------------
 if [ -z "${PGPASSWORD:-}" ] && [ -z "${POSTGRES_PASSWORD:-}" ]; then
   echo "postgres-wrapper: PGPASSWORD (deploy .env) or POSTGRES_PASSWORD (balena fleet var) is required — no default" >&2
-  kill -TERM "$child" 2>/dev/null || true
+  kill -INT "$child" 2>/dev/null || true
   wait "$child" 2>/dev/null || true
   exit 1
 fi
@@ -62,7 +92,7 @@ if [ -z "${PGPASSWORD:-}" ]; then
 fi
 if [ -z "${LITELLM_PG_PASSWORD:-}" ]; then
   echo "postgres-wrapper: LITELLM_PG_PASSWORD is required (balena fleet variable / deploy/.env) — no default" >&2
-  kill -TERM "$child" 2>/dev/null || true
+  kill -INT "$child" 2>/dev/null || true
   wait "$child" 2>/dev/null || true
   exit 1
 fi
@@ -83,10 +113,13 @@ until pg_isready -h "$PGHOST" -U "$PGUSER" >/dev/null 2>&1; do
   i=$((i + 1))
   if [ "$i" -ge 120 ]; then
     echo "postgres-wrapper: postgres never became ready within 120s" >&2
-    kill -TERM "$child" 2>/dev/null || true
+    kill -INT "$child" 2>/dev/null || true
     wait "$child" 2>/dev/null || true
     exit 1
   fi
+  # Interruptible sleep: a stop signal that lands during this wait fires
+  # the trap, which INTs the child; the loop's next iteration sees the
+  # dead child and exits the wait path cleanly.
   sleep 1
 done
 
@@ -115,22 +148,18 @@ SQL
 
 echo "postgres-wrapper: litellm role + database ready"
 
-# ---- (d) babysit: forward TERM/INT to the child, reap, keep PID 1 alive ------
-# SIGTERM arrives from `docker stop` / the balena supervisor within
-# stop_grace_period (60s). Forwarding it lets the stock entrypoint's own
-# trap do `pg_ctl stop` — checkpoint + WAL flush — instead of the runtime
-# SIGKILLing an unwarned postgres at the deadline (the corruption gate).
-term_child() {
-  kill -TERM "$child" 2>/dev/null || true
-}
-trap term_child TERM INT
-
-# First wait returns as soon as the child is reaped (the trap interrupts
-# it); the second wait blocks until the child is fully reaped if the
-# signal landed mid-exec. wait (no args) then blocks for ANY remaining
-# jobs — with only the one child this is the container's exit path, and
-# it also re-reaps if the trap fired before this point.
-wait "$child" || true
-trap - TERM INT
-wait "$child" 2>/dev/null || true
-wait || true
+# ---- reap: interruptible poll loop + exit-status propagation -----------------
+# Reap via a short-sleep poll loop, not a bare `wait "$child"`: some
+# /bin/sh builds (busybox ash included) do not reliably interrupt the
+# `wait` builtin for a trapped signal, so the trap could stay pending
+# while `wait` blocks forever on the live child — a second silent way
+# to eat the stop signal. The loop's 1s sleep lets the trap fire no
+# later than the next tick. `wait` after the child is gone collects
+# its exit status without blocking, and the wrapper PROPAGATES it: a
+# postgres that exited 1 must not surface as a green container.
+while kill -0 "$child" 2>/dev/null; do
+  sleep 1
+done
+rc=0
+wait "$child" || rc=$?
+exit "$rc"
