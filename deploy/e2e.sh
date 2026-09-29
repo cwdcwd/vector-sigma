@@ -1175,23 +1175,41 @@ ac13_primus_queue_tooling() {
   local canonical="bcde5891-5482-4eb0-a223-8533504832d6"
 
   # 0. canonicalize the throwaway e2e dolt to the fleet contract id.
-  # Same authenticated dolt CLI shape as AC10 (global flags before the
-  # subcommand, app-user auth). The vs user owns vs_ops (it created the
-  # bd schema in AC10's init), so the UPDATE is in-privilege.
-  if ! $COMPOSE exec -T dolt dolt --host 127.0.0.1 --port 3306 --no-tls \
-        -u vs -p "$dolt_password" \
-        sql -q "UPDATE metadata SET value='$canonical' WHERE key='_project_id';" >/dev/null 2>&1; then
-    fail "AC13 canonicalize project_id" "dolt UPDATE failed — metadata table missing (AC10 init never ran?)"
+  # AC10's host-side bd init legitimately minted a RANDOM project_id into
+  # this throwaway DB (the init rewrites the shared DB's project_id — by
+  # design in its own workspace; the lockout class is the e2e's harness
+  # here). The baked joins (hermes + scotty) carry the CANONICAL id, and
+  # bd 1.2.2 REFUSES to connect on a mismatch (PROJECT IDENTITY MISMATCH —
+  # verified live in the b1r lab: fail-loud, never silent-empty).
+  # Mechanism: bd sql from AC10's own host workspace (its metadata.json
+  # still carries the minted random id, so bd's identity check passes and
+  # the vs user owns vs_ops — in-privilege). `key` is a reserved word in
+  # the dolt dialect: backtick-quoted (proven live, b1r lab). bd sql
+  # reports rows-affected for UPDATE — assert exactly 1. NO host-side
+  # read-back afterwards: the workspace's id would now mismatch the DB
+  # (the identity check would refuse). The container-side bd status
+  # (step 3) IS the functional read-back — its failure mode names both
+  # ids for triage.
+  local workdir=/tmp/vs-queue-e2e
+  if [ ! -f "$workdir/.beads/metadata.json" ]; then
+    fail "AC13 canonicalize project_id" "AC10's bd workspace $workdir missing — bd init never ran"
     return
   fi
-  local got_id
-  got_id="$($COMPOSE exec -T dolt dolt --host 127.0.0.1 --port 3306 --no-tls \
-        -u vs -p "$dolt_password" \
-        sql -q "SELECT value FROM metadata WHERE key='_project_id';" 2>/dev/null | tail -1 | tr -d '[:space:]')"
-  if [ "$got_id" = "$canonical" ]; then
-    pass "AC13 canonicalize project_id" "e2e dolt carries the canonical VS queue contract id"
+  local bd_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  local bd_bin="$workdir/bd"
+  # The `key` column identifier: a shell VARIABLE carries the backticks as
+  # DATA — inline backticks inside double quotes are command substitution
+  # (and the b1r run-1 line shipped doubled backslashes that bash -n
+  # happily parsed as substitution — caught on byte review). Single-quote
+  # assignment, expand as $idcol: zero escaping ambiguity.
+  local idcol='`key`'
+  local upd_out
+  upd_out="$(cd "$workdir" && PATH="$bd_path" BEADS_DOLT_PASSWORD="$dolt_password" CI=true \
+    "$bd_bin" sql "UPDATE metadata SET value='$canonical' WHERE $idcol='_project_id'" 2>&1 || true)"
+  if printf '%s' "$upd_out" | grep -q '1 rows affected\|1 row affected'; then
+    pass "AC13 canonicalize project_id" "e2e dolt's _project_id -> the canonical VS queue contract id (bd sql: 1 row affected)"
   else
-    fail "AC13 canonicalize project_id" "read back '$got_id', want '$canonical'"
+    fail "AC13 canonicalize project_id" "bd sql UPDATE did not report 1 row affected (got: $(printf '%s' "$upd_out" | head -c 200))"
     return
   fi
 
