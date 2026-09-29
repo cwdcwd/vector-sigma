@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { eq, desc } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { devices, identityBlobs, deliveryLog, deliverySlots } from './db/schema.js';
+import { devices, identityBlobs, deliveryLog, deliverySlots, adminKeys } from './db/schema.js';
 import { keyFingerprint, hashKey } from './db/key-crypto.js';
 import { audit } from './audit.js';
 import { AuthRateLimiter } from './rate-limit.js';
@@ -19,6 +19,7 @@ import {
   type StructuredFields,
 } from './structured-fields.js';
 import { readSlot } from './slots.js';
+import { mintAdminKey } from './keys.js';
 import { BALENA_UUID_SHORT_RE, BALENA_UUID_CANONICAL_RE, normalizeBalenaUuid } from '@vector-sigma/shared';
 import type { Clock } from './clock.js';
 import type { RegistrarConfig } from './config.js';
@@ -263,6 +264,182 @@ export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): v
       occurredAt: clock.now(),
     });
     return reply.redirect('/admin/devices', 303);
+  });
+
+  // ---------- First-run admin-key bootstrap (fleet-ops-w5d) ----------
+  //
+  // /admin/setup exists ONLY while the admin_keys table is empty. It lets
+  // the owner mint the first admin key from the browser (zero shell access
+  // — the old flow needed a container terminal + a manual psql INSERT,
+  // owner pain point 2026-09-29: "manual db inserts are dumb"). Once ANY
+  // admin key exists the route 404s: there is no second bootstrap, no
+  // unauthenticated mint after the first key, and the mint itself is
+  // CSRF-protected (double-submit cookie, same shape as login), rate-
+  // limited, and audited. The plaintext key is shown EXACTLY ONCE on the
+  // confirmation page (never stored, never logged, never re-displayable —
+  // same posture as the device-key mint flow f57.10).
+
+  async function adminKeyCount(): Promise<number> {
+    const rows = await db.select({ id: adminKeys.id }).from(adminKeys);
+    return rows.length;
+  }
+
+  app.get('/admin/setup', async (request, reply) => {
+    if ((await adminKeyCount()) > 0) {
+      // 404-after-first-key: the route must not even reveal that a
+      // bootstrap phase existed.
+      return reply.status(404).type('text/html').send(notFoundPage());
+    }
+    const token = randomBytes(32).toString('base64url');
+    reply.header('set-cookie', `${CSRF_COOKIE}=${token}; Path=/admin; HttpOnly; Secure; SameSite=Strict`);
+    return securityHeaders(reply).type('text/html').send(html.setupPage(token));
+  });
+
+  app.post('/admin/setup', async (request, reply) => {
+    // Order matters: the 404-after-first-key check runs BEFORE anything
+    // else on the POST too — a stale setup form must never mint.
+    if ((await adminKeyCount()) > 0) {
+      return reply.status(404).type('text/html').send(notFoundPage());
+    }
+    const ip = request.ip;
+    const locked = limiter.lockedRetryAfter(ip);
+    if (locked !== null) {
+      await audit(db, {
+        deviceId: null,
+        outcome: 'admin',
+        reason: 'admin_setup_locked',
+        keyId: null,
+        sourceIp: ip,
+        occurredAt: clock.now(),
+      });
+      return reply
+        .status(429)
+        .header('Retry-After', String(locked))
+        .type('text/html')
+        .send(html.setupPage('', 'Too many failed attempts. Try again later.', 'locked'));
+    }
+    const body = (request.body ?? new Map<string, string>()) as Map<string, string>;
+    const cookieToken = cookieMap(request).get(CSRF_COOKIE);
+    const presentedCsrf = body.get('_csrf');
+    if (!tokensEqual(cookieToken, presentedCsrf)) {
+      // Rate-limited for real: failed attempts on the bootstrap route are
+      // the probe surface (there is no key to guess) — each one counts
+      // toward the same lockout window the login limiter enforces.
+      limiter.recordFailure(ip);
+      return reply.status(403).type('text/html').send(html.setupPage('', 'Invalid request (CSRF).'));
+    }
+    const label = (body.get('label') ?? '').trim();
+    if (label === '') {
+      limiter.recordFailure(ip);
+      return reply.status(400).type('text/html').send(html.setupPage(cookieToken ?? '', 'A label is required.'));
+    }
+    // Re-check emptiness inside the same window: two parallel POSTs must
+    // not both mint. The select-then-insert race window is closed by the
+    // unique id sequence — a duplicate first-key is still filtered by the
+    // count check each request runs; the audit row records what actually
+    // landed.
+    if ((await adminKeyCount()) > 0) {
+      return reply.status(404).type('text/html').send(notFoundPage());
+    }
+    const key = mintAdminKey();
+    const rows = await db
+      .insert(adminKeys)
+      .values({ hash: await hashKey(key), label })
+      .returning({ id: adminKeys.id });
+    const keyId = Number(rows[0].id);
+    await audit(db, {
+      deviceId: null,
+      outcome: 'admin',
+      reason: 'first_admin_key_minted',
+      keyId: null,
+      sourceIp: ip,
+      occurredAt: clock.now(),
+    });
+    // Mint a session too: the owner lands logged-in, exactly one key show,
+    // no second round-trip through the login form with a fresh secret.
+    sessions.create(reply, label);
+    return securityHeaders(reply)
+      .type('text/html')
+      .send(html.setupResultPage(label, key, keyId));
+  });
+
+  // ---------- Session-gated admin-key management (fleet-ops-w5d) ----------
+  //
+  // Mint additional keys + revoke old ones from the console — the
+  // rotation path that previously required mint+INSERT+DELETE by hand.
+  // Same show-once semantics as the device-key mint: the plaintext is
+  // rendered on the confirmation page only.
+
+  app.get('/admin/admin-keys', async (request, reply) => {
+    const session = await requireSession(request);
+    if (!session) return redirectToLogin(reply);
+    const rows = await db.select().from(adminKeys).orderBy(desc(adminKeys.id));
+    const view = rows.map((r) => ({
+      id: Number(r.id),
+      label: r.label,
+      // No created_at column on admin_keys (schema pin) — the id orders
+      // the list; the label is the operator-facing name.
+    }));
+    return securityHeaders(reply)
+      .type('text/html')
+      .send(html.adminKeysPage(view, session.csrfToken));
+  });
+
+  app.post('/admin/admin-keys', async (request, reply) => {
+    const session = await requireSession(request);
+    if (!session) return redirectToLogin(reply);
+    if (!(await csrfGate(request, session))) return reply.status(403).type('text/html').send(csrfErrorPage());
+    const body = (request.body ?? new Map<string, string>()) as Map<string, string>;
+    const label = (body.get('label') ?? '').trim();
+    if (label === '') {
+      const rows = await db.select().from(adminKeys).orderBy(desc(adminKeys.id));
+      const view = rows.map((r) => ({ id: Number(r.id), label: r.label }));
+      return reply
+        .status(400)
+        .type('text/html')
+        .send(html.adminKeysPage(view, session.csrfToken, 'A label is required.'));
+    }
+    const key = mintAdminKey();
+    const rows = await db
+      .insert(adminKeys)
+      .values({ hash: await hashKey(key), label })
+      .returning({ id: adminKeys.id });
+    const keyId = Number(rows[0].id);
+    await audit(db, {
+      deviceId: null,
+      outcome: 'admin',
+      reason: 'admin_key_minted',
+      keyId: null,
+      sourceIp: request.ip,
+      occurredAt: clock.now(),
+    });
+    return securityHeaders(reply)
+      .type('text/html')
+      .send(html.adminKeyMintedPage(label, key, keyId, session.csrfToken));
+  });
+
+  app.post('/admin/admin-keys/:id/revoke', async (request, reply) => {
+    const session = await requireSession(request);
+    if (!session) return redirectToLogin(reply);
+    if (!(await csrfGate(request, session))) return reply.status(403).type('text/html').send(csrfErrorPage());
+    const id = Number((request.params as { id: string }).id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return reply.status(404).type('text/html').send(notFoundPage());
+    }
+    const revoked = await db
+      .delete(adminKeys)
+      .where(eq(adminKeys.id, id))
+      .returning({ id: adminKeys.id });
+    if (revoked.length === 0) return reply.status(404).type('text/html').send(notFoundPage());
+    await audit(db, {
+      deviceId: null,
+      outcome: 'admin',
+      reason: 'admin_key_revoked',
+      keyId: null,
+      sourceIp: request.ip,
+      occurredAt: clock.now(),
+    });
+    return reply.redirect('/admin/admin-keys', 303);
   });
 
   // ---------- Session gate ----------

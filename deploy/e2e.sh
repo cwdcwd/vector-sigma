@@ -728,6 +728,89 @@ ac_anc_postgres_consolidation() {
   fi
 }
 
+# ---- AC-w5d (fleet-ops-w5d): admin-key mint built into the console UI ------
+# The seed inserts the E2E admin key, so the running stack is in the
+# keys-exist state: this AC asserts the 404-after-first-key semantics on
+# /admin/setup (GET and a stale-form POST) plus the session-gated
+# admin-keys management (list + mint + revoke) over the REAL TLS edge.
+ac_w5d_admin_key_ui() {
+  note "AC-w5d: admin-key UI — setup 404-after-first-key + session-gated mint/revoke (fleet-ops-w5d)"
+  local csrf session_cookie keys_csrf code minted_id
+
+  # 1. /admin/setup 404s because the seeded key exists (both verbs).
+  code="$(tls_curl -o /tmp/e2e-w5d-setup.html -w '%{http_code}' "$BASE_URL/admin/setup")"
+  expect "AC-w5d setup 404 (keys exist)" "$code" "404"
+  code="$(tls_curl -o /dev/null -w '%{http_code}' -X POST "$BASE_URL/admin/setup" \
+    --data-urlencode "label=e2e-stale" --data-urlencode "_csrf=stale")"
+  expect "AC-w5d stale setup POST 404s (no mint)" "$code" "404"
+
+  # 2. Session-gated management, exactly the AC7 login pattern.
+  csrf="$(tls_curl -D - -o /dev/null "$BASE_URL/admin/login" \
+    | tr -d '\r' | grep -i '^set-cookie: vsigma_csrf=' | cut -d' ' -f2- | cut -d';' -f1 | tr -d ' ')"
+  if [ -z "$csrf" ]; then fail AC-w5d "no csrf cookie on login page"; return; fi
+  session_cookie="$(tls_curl -D - -o /dev/null -X POST "$BASE_URL/admin/login" \
+    -H "Cookie: ${csrf}" \
+    --data-urlencode "admin_key=$E2E_ADMIN_KEY" \
+    --data-urlencode "_csrf=${csrf#vsigma_csrf=}" \
+    | tr -d '\r' | grep -i '^set-cookie: vsigma_admin=' | cut -d' ' -f2- | cut -d';' -f1 | tr -d ' ')"
+  if [ -z "$session_cookie" ]; then fail AC-w5d "no session cookie after login"; return; fi
+  pass "AC-w5d console login" "session established with the seeded key"
+
+  # 3. The admin-keys list page renders (session-gated).
+  tls_curl -H "Cookie: ${csrf}; ${session_cookie}" \
+    "$BASE_URL/admin/admin-keys" > /tmp/e2e-w5d-keys.html
+  if grep -q "Admin keys" /tmp/e2e-w5d-keys.html && grep -q "e2e-admin" /tmp/e2e-w5d-keys.html; then
+    pass "AC-w5d keys list" "session-gated list renders with the seeded row"
+  else
+    fail "AC-w5d keys list" "list page missing expected content"
+  fi
+  keys_csrf="$(awk 'match($0, /name="_csrf" value="[^"]*"/) { print substr($0, RSTART+20, RLENGTH-21); exit }' \
+    /tmp/e2e-w5d-keys.html)"
+
+  # 4. Mint a second key through the form — the plaintext shows exactly once.
+  tls_curl -H "Cookie: ${csrf}; ${session_cookie}" -X POST "$BASE_URL/admin/admin-keys" \
+    --data-urlencode "label=e2e-rotation" --data-urlencode "_csrf=$keys_csrf" \
+    > /tmp/e2e-w5d-mint.html
+  if grep -q 'secret-once' /tmp/e2e-w5d-mint.html && grep -q 'ak_' /tmp/e2e-w5d-mint.html; then
+    pass "AC-w5d session mint" "second key minted, plaintext shown once"
+  else
+    fail "AC-w5d session mint" "mint page missing the show-once block"
+  fi
+  # The plaintext NEVER goes in the evidence transcript — grep only.
+
+  # 5. Revoke the minted row: harvest its id from the re-listed page.
+  tls_curl -H "Cookie: ${csrf}; ${session_cookie}" \
+    "$BASE_URL/admin/admin-keys" > /tmp/e2e-w5d-keys2.html
+  minted_id="$(awk 'match($0, /\/admin\/admin-keys\/([0-9]+)\/revoke/) { print substr($0, RSTART+18, RLENGTH-25); exit }' \
+    /tmp/e2e-w5d-keys2.html)"
+  if [ -z "$minted_id" ]; then
+    fail "AC-w5d revoke" "no revoke form/id found on the keys page"
+    return
+  fi
+  code="$(tls_curl -o /dev/null -w '%{http_code}' -X POST \
+    "$BASE_URL/admin/admin-keys/$minted_id/revoke" \
+    -H "Cookie: ${csrf}; ${session_cookie}" \
+    --data-urlencode "_csrf=$keys_csrf")"
+  expect "AC-w5d revoke minted key" "$code" "303"
+  # 6. The revoked row is gone from the list (rotation path proven).
+  tls_curl -H "Cookie: ${csrf}; ${session_cookie}" \
+    "$BASE_URL/admin/admin-keys" > /tmp/e2e-w5d-keys3.html
+  if grep -q "e2e-rotation" /tmp/e2e-w5d-keys3.html; then
+    fail "AC-w5d revoked row gone" "label e2e-rotation still listed"
+  else
+    pass "AC-w5d revoked row gone" "minted row revoked; seeded row remains"
+  fi
+  # 7. Audit rows for both operations exist in the registrar DB.
+  local minted_rows revoked_rows
+  minted_rows="$(psql_count "outcome='admin' AND reason='admin_key_minted'")"
+  revoked_rows="$(psql_count "outcome='admin' AND reason='admin_key_revoked'")"
+  if [ "${minted_rows:-0}" -ge 1 ] && [ "${revoked_rows:-0}" -ge 1 ]; then
+    pass "AC-w5d audit rows" "admin_key_minted=${minted_rows} admin_key_revoked=${revoked_rows} in delivery_log"
+  else
+    fail "AC-w5d audit rows" "minted=${minted_rows:-?} revoked=${revoked_rows:-?}"
+  fi
+}
+
 # ---- AC10 (f57.15): the VS queue plane — dolt health, scotty serving,
 # bd client round-trip against the compose dolt ------------------------------
 
@@ -1027,6 +1110,7 @@ ac8_grace_self_heal
 ac9_litellm_smoke
 ac9b_litellm_db_smoke
 ac_anc_postgres_consolidation
+ac_w5d_admin_key_ui
 ac10_queue_plane
 ac10_tls_edge
 ac12_primus_self_bootstrap

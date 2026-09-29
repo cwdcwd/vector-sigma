@@ -136,40 +136,27 @@ the tunnel is dead by design (use https from a trusted host; see
 ## First admin key
 
 The admin console (`/admin/login`) authenticates against rows in the
-`admin_keys` table. There is no default key and no way to mint one from
-the console itself — a fresh database has no admin access until you
-insert the first key. Mint + insert flow (balenaCloud device terminal):
+`admin_keys` table. **Mint the first key from the browser (fleet-ops-w5d):
+browse to `http://<device-LAN-IP>/admin/setup`** — the route exists ONLY
+while `admin_keys` is empty, so a fresh database has exactly one
+bootstrap window. Enter a label (e.g. `bootstrap`), submit, and the
+plaintext `ak_…` key is displayed **once** on the confirmation page. The
+mint creates a session, so you land logged-in; the route 404s from that
+moment on (there is no second bootstrap).
 
-1. **Mint** — open a terminal on the **registrar** service (device page
-   → the *registrar* service → ⋯ → *Select terminal*) and run:
+**Key management (console, session-gated):** the console's
+[Admin keys](http://<device-LAN-IP>/admin/admin-keys) page lists every
+key row. Mint additional keys there (label + show-once semantics,
+identical custody), and revoke old rows with the per-row Revoke button.
+**Rotation** = mint the new key → log in with it → revoke the old row —
+no shell access anywhere in the flow.
 
-   ```bash
-   node dist/admin-key.js <label>
-   ```
-
-   Example label: `bootstrap` or `owner-<date>`. The tool prints the
-   plaintext admin key (shown **once**), its argon2id hash, and a ready
-   to paste `INSERT INTO admin_keys ...` statement.
-
-2. **Insert** — open a terminal on the **postgres** service (same
-   device page, *postgres* service) and paste the printed INSERT:
-
-   ```bash
-   psql -U vsigma -d vsigma
-   ```
-
-   …then paste the INSERT line and `\q` to exit. (No password prompt on
-   the local socket inside the container.)
-
-3. **Login** — browse to `http://<device-LAN-IP>/admin/login` (or the
-   balenaCloud public URL) and paste the `ak_…` plaintext key. The
-   console session lasts 12h.
-
-**Rotation:** mint a new key + insert its row (steps 1–2), log in with
-it, then delete the old row from a postgres terminal:
-`DELETE FROM admin_keys WHERE label = '<old-label>';`. Keys are
-referenced by id in the audit trail, not by the hash — deleting a row
-never rewrites history.
+The CLI mint tool remains for break-glass use (container terminal):
+`node dist/admin-key.js <label>` prints the plaintext key, its argon2id
+hash, and a ready-to-paste `INSERT INTO admin_keys ...` statement for a
+psql session (`psql -U vsigma -d vsigma`). The normal path is the
+console — the manual INSERT is no longer required (owner pain point
+2026-09-29: "manual db inserts are dumb").
 
 **Never store the plaintext** anywhere — not in balena variables, env
 files, chat, or the database (only the argon2id hash is stored). If a
