@@ -61,6 +61,9 @@ Immediately:
 1. Record the project_id in fleet memory (`fleet/status/vector-sigma-queue`).
 2. Paste it into `balena/registrar/queue-join/metadata.json` in-repo (the
    scotty image's join config) and release.
+   DONE (fleet-ops-anc, 2026-09-29): the canonical project_id
+   `bcde5891-5482-4eb0-a223-8533504832d6` is baked into the file — this
+   step is complete; treat the committed value as the contract.
 3. Hand it to every VS device join (below). Devices NEVER init — config only.
 
 ## Device / client join (config-only — everyone else)
@@ -70,10 +73,10 @@ pick a stable one, e.g. the device hostname):
 
 ```bash
 mkdir -p .beads
-# 1. metadata.json — copy the repo's queue-join/metadata.json, replace the
-#    project_id placeholder with the canonical one, and set
-#    dolt_server_host to the master's LAN IP (or LAN hostname once Pi-hole
-#    DNS lands, f57.13):
+# 1. metadata.json — copy the repo's queue-join/metadata.json (the
+#    project_id is baked in-repo with the canonical value since
+#    fleet-ops-anc), and set dolt_server_host to the master's LAN IP
+#    (or LAN hostname once Pi-hole DNS lands, f57.13):
 cat > .beads/metadata.json <<'EOF'
 {
   "database": "vs_ops",
@@ -82,7 +85,7 @@ cat > .beads/metadata.json <<'EOF'
   "dolt_server_host": "<master-LAN-IP>",
   "dolt_server_user": "vs",
   "dolt_database": "vs_ops",
-  "project_id": "<canonical — from coordinator>",
+  "project_id": "bcde5891-5482-4eb0-a223-8533504832d6",
   "dolt_server_port": 3326
 }
 EOF
@@ -109,8 +112,8 @@ Nothing to bootstrap — the image is self-contained:
   writes server-side) + `BD_BIN` wrapper (`bd-readonly` allowlists
   `export --json` / `show <id> --json` / `--version` only, exit 77 otherwise).
 - The one setup dependency: `queue-join/metadata.json`'s `project_id`
-  placeholder must be replaced with the canonical id after the one-time init
-  (the image bakes the file as-is).
+  is baked in-repo with the canonical id (fleet-ops-anc, 2026-09-29) —
+  the image bakes the file as-is, no post-init edit is needed anymore.
 
 ## Queue conventions (the VS mirror of the Cabal's FLEET.md)
 

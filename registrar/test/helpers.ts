@@ -284,6 +284,7 @@ export class AdminClient {
       url,
       headers: { cookie: this.cookieHeader() },
     });
+    this.absorb(res);
     return { status: res.statusCode, html: res.body, headers: res.headers };
   }
 

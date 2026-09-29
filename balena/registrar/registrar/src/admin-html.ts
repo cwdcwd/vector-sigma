@@ -37,7 +37,7 @@ export interface BlobRowView {
 }
 
 function nav(csrfToken: string): string {
-  return `<nav class="nav"><a href="/admin/devices">Devices</a> <a href="/admin/audit">Audit</a> <a href="/admin/new-device">New device</a> <form method="post" action="/admin/logout" class="inline-form"><input type="hidden" name="_csrf" value="${esc(csrfToken)}"><button type="submit" class="linklike">Log out</button></form></nav>`;
+  return `<nav class="nav"><a href="/admin/devices">Devices</a> <a href="/admin/audit">Audit</a> <a href="/admin/admin-keys">Admin keys</a> <a href="/admin/new-device">New device</a> <form method="post" action="/admin/logout" class="inline-form"><input type="hidden" name="_csrf" value="${esc(csrfToken)}"><button type="submit" class="linklike">Log out</button></form></nav>`;
 }
 
 export interface PageOpts {
@@ -366,6 +366,99 @@ export function newDeviceResultPage(
 <p class="muted">Set this as REGISTRAR_KEY in the device platform variables now. It cannot be retrieved again; regenerate it if lost.</p></div>
 <p>Device status is <code>pending</code> — activate it from the <a href="/admin/devices/${esc(uuid)}">device page</a>.</p>
 <p><a href="/admin/devices">Dashboard</a></p>`,
+    { csrfToken },
+  );
+}
+
+// ---- Admin-key UI (fleet-ops-w5d) -------------------------------------------------
+
+/**
+ * First-run bootstrap form. Reachable ONLY while admin_keys is empty —
+ * the routes 404 once any key exists. Same double-submit CSRF shape as
+ * the login form; the mint posts here exactly once.
+ */
+export function setupPage(csrfToken: string, error?: string, status?: 'locked'): string {
+  return page(
+    'First-run setup',
+    `<h1>First admin key</h1>
+<p class="muted">No admin key exists yet. Mint the first one here — after this, this page is gone (404) and keys are managed from the console's <a href="/admin/admin-keys">Admin keys</a> page.</p>
+${error ? `<p class="danger">${esc(error)}</p>` : ''}
+${status === 'locked' ? `<p class="danger">Too many failed attempts. Try again later.</p>` : ''}
+<form method="post" action="/admin/setup">
+<input type="hidden" name="_csrf" value="${esc(csrfToken)}">
+<label>Label (e.g. bootstrap, owner-2026)</label>
+<input type="text" name="label" required autofocus>
+<button type="submit">Mint first admin key</button>
+</form>`,
+    { showNav: false },
+  );
+}
+
+/**
+ * One-time display of the first admin key. The plaintext is shown here
+ * and nowhere else — never stored, never logged, never re-displayable.
+ * The mint created a session, so the owner continues logged-in.
+ */
+export function setupResultPage(label: string, keyOnce: string, keyId: number): string {
+  return page(
+    'Admin key minted',
+    `<h1>First admin key minted</h1>
+<div class="card"><h2>Admin key (label: ${esc(label)}) — shown once, never stored</h2><div class="secret-once">${esc(keyOnce)}</div>
+<p class="muted">Store it in your password manager NOW. It cannot be retrieved again — a lost key is revoked and re-minted from the console.</p></div>
+<p>You are logged in (row id ${keyId}). Manage keys — mint more, revoke old ones — from the <a href="/admin/admin-keys">Admin keys</a> page.</p>
+<p><a href="/admin/devices">Dashboard</a></p>`,
+  );
+}
+
+/** Row view for the session-gated key list. */
+export interface AdminKeyRowView {
+  id: number;
+  label: string;
+}
+
+/** Session-gated key management: list + mint + revoke (the rotation path). */
+export function adminKeysPage(rows: AdminKeyRowView[], csrfToken: string, error?: string): string {
+  const trs = rows
+    .map(
+      (r) => `<tr><td>${r.id}</td><td>${esc(r.label)}</td><td>
+<form method="post" action="/admin/admin-keys/${r.id}/revoke"><input type="hidden" name="_csrf" value="${esc(csrfToken)}"><button type="submit" class="danger">Revoke</button></form>
+</td></tr>`,
+    )
+    .join('\n');
+  return page(
+    'Admin keys',
+    `<h1>Admin keys</h1>
+${error ? `<p class="danger">${esc(error)}</p>` : ''}
+<table>
+<tr><th>Id</th><th>Label</th><th></th></tr>
+${trs}
+</table>
+<div class="card"><h2>Mint a new key</h2>
+<p class="muted">Shown once on the next page — same custody as every other key. Rotation: mint the new one, log in with it, revoke the old row.</p>
+<form method="post" action="/admin/admin-keys">
+<input type="hidden" name="_csrf" value="${esc(csrfToken)}">
+<label>Label</label>
+<input type="text" name="label" required>
+<button type="submit">Mint key</button>
+</form>
+</div>`,
+    { csrfToken },
+  );
+}
+
+/** One-time display of a session-minted key (identical custody to setup). */
+export function adminKeyMintedPage(
+  label: string,
+  keyOnce: string,
+  keyId: number,
+  csrfToken: string,
+): string {
+  return page(
+    'Admin key minted',
+    `<h1>Admin key minted</h1>
+<div class="card"><h2>Admin key (label: ${esc(label)}) — shown once, never stored</h2><div class="secret-once">${esc(keyOnce)}</div>
+<p class="muted">Store it in your password manager NOW. It cannot be retrieved again.</p></div>
+<p>Row id ${keyId}. <a href="/admin/admin-keys">Back to admin keys</a></p>`,
     { csrfToken },
   );
 }

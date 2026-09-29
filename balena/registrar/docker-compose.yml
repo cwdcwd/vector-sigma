@@ -39,8 +39,11 @@ version: "2.4"
 # OLLAMA_CLOUD_API_KEY are owner-set balenaCloud FLEET variables (the bead's
 # variable contract — fleet scope per the spec; service scope would be a
 # hardening option, noted in the README). OLLAMA_CLOUD_API_BASE ships as a
-# static structural value here (public endpoint, not a secret); override via
-# dashboard variable only if Ollama Cloud's URL ever changes.
+# STATIC value in the litellm service environment (public endpoint, not a
+# secret); override via dashboard variable only if Ollama Cloud's URL ever
+# changes. The gateway's postgres role + database are provisioned by the
+# postgres service's own wrapper image (fleet-ops-anc, 2026-09-29) — the
+# retired one-shot litellm-init service no longer exists.
 #
 # f57.13 TLS edge (rotation automated, see docs/tls-runbook.md): caddy
 # fronts the composition (registrar :443, litellm :8443, https://
@@ -56,8 +59,18 @@ version: "2.4"
 # caddy-data volume, tls-runbook.md).
 
 services:
+  # postgres: the stock 16-alpine image WRAPPED (fleet-ops-anc, owner ruling
+  # 2026-09-29 — consolidate, kill the one-shot container). The wrapper runs
+  # the provisioning SQL the retired litellm-init service ran, on every boot,
+  # idempotent — the gateway's `litellm` role + database exist before the
+  # litellm service can possibly start racing them, and the device runs one
+  # fewer container. Same base image, same volume, same healthcheck; secrets
+  # contract unchanged (POSTGRES_PASSWORD + LITELLM_PG_PASSWORD arrive as
+  # balenaCloud fleet variables, never in image layers).
   postgres:
-    image: postgres:16-alpine
+    build:
+      context: .
+      dockerfile: Dockerfile.postgres
     environment:
       # Structural, non-secret (fleet-ops-f57.8): the role + database the
       # postgres image creates at first init of the data volume. The
@@ -111,38 +124,18 @@ services:
     stop_signal: SIGTERM
     restart: always
 
-  # f57.12: one-shot provisioning of the gateway's database (idempotent role
-  # + database + least-privilege REVOKE; safe on the LIVE pgdata volume —
-  # see README "The VS gateway (LiteLLM)"). The script ships in an image so
-  # the balena supervisor and the deploy/ self-host compose run byte-identical
-  # provisioning (the supervisor does no ${VAR} substitution). Uses the
-  # POSTGRES_PASSWORD fleet var as the superuser credential and mints the
-  # `litellm` role with the LITELLM_PG_PASSWORD fleet var — same parts the
-  # litellm service's entrypoint assembles its DATABASE_URL from, so the URL
-  # and the role can never disagree (the f57.8 trap, closed by construction).
-  litellm-init:
-    build:
-      context: .
-      dockerfile: Dockerfile.litellm-init
-    environment:
-      # Structural (mirror of the postgres service's role/db — the superuser
-      # this script connects as). Secrets arrive as fleet variables:
-      # POSTGRES_PASSWORD + LITELLM_PG_PASSWORD (no static values here).
-      PGHOST: postgres
-      PGUSER: vsigma
-      PGDATABASE: vsigma
-    depends_on:
-      - postgres
-    restart: "no"
-
-  # f57.12: the VS fleet's own LiteLLM gateway — models front door + virtual
-  # keys + the /a2a/* mesh for VS devices. Same image the deploy/ self-host
-  # example builds (config baked by Dockerfile.litellm — the supervisor
-  # cannot bind-mount). f57.13 (Copilot review): NO port publish — caddy
-  # fronts the gateway at https://<TLS_HOSTNAME>:8443; devices point
-  # GATEWAY_URL / A2A_PUBLIC_URL at https://<TLS_HOSTNAME>:8443. PROXY_BASE_URL
-  # stays unset (cards advertise from the request Host header — now the
-  # TLS_HOSTNAME the edge carries; the README documents the override).
+  # f57.12 (consolidated fleet-ops-anc, 2026-09-29): the VS fleet's own
+  # LiteLLM gateway — models front door + virtual keys + the /a2a/* mesh for
+  # VS devices. Same image the deploy/ self-host example builds (config baked
+  # by Dockerfile.litellm — the supervisor cannot bind-mount). f57.13 (Copilot
+  # review): NO port publish — caddy fronts the gateway at
+  # https://<TLS_HOSTNAME>:8443; devices point GATEWAY_URL / A2A_PUBLIC_URL
+  # at https://<TLS_HOSTNAME>:8443. PROXY_BASE_URL stays unset (cards
+  # advertise from the request Host header — now the TLS_HOSTNAME the edge
+  # carries; the README documents the override). The gateway's postgres role
+  # + database are provisioned by the postgres service's own wrapper image
+  # every boot — no ordering dependency needed (the litellm entrypoint
+  # retry-cycles its DB connection).
   litellm:
     build:
       context: .
@@ -155,8 +148,12 @@ services:
       LITELLM_PG_PORT: "5432"
       LITELLM_PG_DB: litellm
       # Public structural endpoint (not a secret); owner-set fleet vars:
-      # LITELLM_MASTER_KEY, LITELLM_PG_PASSWORD, OLLAMA_CLOUD_API_KEY,
-      # OLLAMA_CLOUD_API_BASE (structural https://ollama.com/v1).
+      # LITELLM_MASTER_KEY, LITELLM_PG_PASSWORD, OLLAMA_CLOUD_API_KEY.
+      # OLLAMA_CLOUD_API_BASE ships STATIC here (anc fixes train, 2026-09-29:
+      # this line was promised in the comment but absent — its absence was
+      # the live root cause of the gateway completing against api.openai.com;
+      # the fleet var override stays as belt-and-braces).
+      OLLAMA_CLOUD_API_BASE: https://ollama.com/v1
     healthcheck:
       # Process liveness — parity with the registrar service's healthcheck
       # shape (the litellm image ships no curl/wget; /health/liveliness is

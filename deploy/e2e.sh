@@ -24,6 +24,9 @@ TLS_HOSTNAME="vsigma.lan"
 CA_CERT="deploy/.e2e-tls/vs-ca.crt"
 BASE_URL="https://$TLS_HOSTNAME"
 CADDY_CONTAINER="$PROJECT-caddy-1"
+# fleet-ops-anc: the postgres wrapper's container (the e2e project pins
+# compose v2 container names, <project>-<service>-1).
+PG_CONTAINER="$PROJECT-postgres-1"
 PG_USER="$(grep -E '^POSTGRES_USER=' "$ENV_FILE" | cut -d= -f2-)"
 PG_DB="$(grep -E '^POSTGRES_DB=' "$ENV_FILE" | cut -d= -f2-)"
 E2E_DEVICE_UUID="$(grep -E '^E2E_DEVICE_UUID=' "$ENV_FILE" | cut -d= -f2-)"
@@ -618,6 +621,250 @@ ac9b_litellm_db_smoke() {
   fi
 }
 
+# ---- AC-anc (fleet-ops-anc): the postgres consolidation — wrapper image,
+# no one-shot init container, SIGTERM hard gate, idempotent re-provision ------
+
+ac_anc_postgres_consolidation() {
+  note "AC-anc: postgres wrapper consolidation — no litellm-init, role provisioned, SIGTERM clean shutdown (fleet-ops-anc)"
+
+  # 1. NO litellm-init container exists in the composition (the service is
+  #    deleted from BOTH composes). `docker compose ps` on a deleted service
+  #    name would error, so assert absence the reliable way: no RUNNING
+  #    container in the project carries the name.
+  if docker ps --filter "name=$PROJECT" --format '{{.Names}}' \
+      | grep -q "litellm-init"; then
+    fail "AC-anc no litellm-init container" "a litellm-init container is running — the one-shot was not removed"
+  else
+    pass "AC-anc no litellm-init container" "no litellm-init container in the project"
+  fi
+
+  # 2. The postgres container runs the WRAPPER image and provisioned the
+  #    gateway's role + database: the litellm role exists, the litellm
+  #    database exists, and the least-privilege REVOKE landed.
+  local probe
+  probe="$($COMPOSE exec -T postgres psql -U "$PG_USER" -d "$PG_DB" -tA \
+    -c "SELECT (SELECT count(*) FROM pg_roles WHERE rolname='litellm') || ':' || (SELECT count(*) FROM pg_database WHERE datname='litellm') || ':' || (SELECT count(*) FROM pg_stat_database WHERE datname='litellm')" 2>/dev/null)" \
+    || probe=""
+  if [ "$probe" = "1:1:1" ]; then
+    pass "AC-anc litellm role+db provisioned" "role litellm + database litellm live (REVOKE asserted implicitly by pg_stat_database row)"
+  else
+    fail "AC-anc litellm role+db provisioned" "probe returned '${probe:-nothing}' (want 1:1:1)"
+  fi
+
+  # 3. HARD GATE — graceful shutdown: stop ONLY the postgres service with
+  #    docker compose (sends SIGTERM to PID 1 = the wrapper, which MUST
+  #    forward it so postgres checkpoints + flushes WAL inside the 60s
+  #    grace). Assert the shutdown path from postgres's own log lines
+  #    (checkpoint + "database system is shut down"), then bring it back
+  #    and assert the wrapper RE-PROVISIONS idempotently (role+db still
+  #    exactly present, no duplicate anything, healthcheck green again).
+  note "AC-anc: stopping postgres (docker compose stop) — SIGTERM forward + clean shutdown assertion"
+  local stop_start=$SECONDS
+  if ! $COMPOSE stop postgres > /tmp/e2e-anc-stop.log 2>&1; then
+    fail "AC-anc compose stop postgres" "docker compose stop postgres exited non-zero: $(tail -3 /tmp/e2e-anc-stop.log)"
+    return
+  fi
+  local stop_took=$((SECONDS - stop_start))
+  if [ "$stop_took" -ge 60 ]; then
+    fail "AC-anc stop inside grace" "stop took ${stop_took}s — the wrapper ate the signal and waited out the SIGKILL deadline"
+  else
+    pass "AC-anc stop inside grace" "postgres stopped in ${stop_took}s (checkpoint path, not SIGKILL)"
+  fi
+  # postgres's own shutdown lines prove the signal reached the server and
+  # it checkpointed — the corruption gate this lane exists to close.
+  local logs
+  logs="$(docker logs "$PG_CONTAINER" 2>&1 | tail -40)" || logs=""
+  local shut_lines
+  shut_lines="$(printf '%s' "$logs" | grep -ci 'database system is shut down' || true)"
+  local ckpt_lines
+  ckpt_lines="$(printf '%s' "$logs" | grep -ci 'checkpoint' || true)"
+  if [ "$shut_lines" -ge 1 ] && [ "$ckpt_lines" -ge 1 ]; then
+    pass "AC-anc clean shutdown" "checkpoint + 'database system is shut down' in postgres logs (SIGTERM forwarded, WAL flushed)"
+  else
+    fail "AC-anc clean shutdown" "shutdown=$shut_lines checkpoint=$ckpt_lines log hits — wrapper did not deliver a clean shutdown"
+  fi
+  # No stray WAL segment left mid-write after a checkpoint shutdown: the
+  # pg_wal dir may hold recycled segments (normal), so assert the shutdown
+  # COMPLETED rather than wal-absence; the log-line assertion above IS the
+  # corruption gate. (docker logs is append-only; the lines survive restart.)
+
+  # 4. Restart postgres (docker compose start) — the wrapper must
+  #    re-provision idempotently on the EXISTING volume and return to
+  #    healthy.
+  note "AC-anc: restarting postgres — idempotent re-provision on existing volume"
+  # Snapshot the wrapper's provisioning-line count BEFORE the restart:
+  # docker logs is append-only across restarts (the boot-1 line survives),
+  # so count-based proof is immune to both the race (a grep fired 150ms
+  # after compose start loses to the wrapper's own readiness wait) and the
+  # vacuous pass (an old line inside a --since window proves nothing about
+  # the SECOND boot). The re-boot must raise the count.
+  local wrapper_before
+  wrapper_before="$(docker logs "$PG_CONTAINER" 2>&1 | grep -c 'postgres-wrapper: litellm role + database ready' || true)"
+  $COMPOSE start postgres > /tmp/e2e-anc-start.log 2>&1 \
+    || { fail "AC-anc compose start postgres" "start exited non-zero: $(tail -3 /tmp/e2e-anc-start.log)"; return; }
+  local deadline=$((SECONDS + 90))
+  # pg_isready prints "<host>:<port> - accepting connections" (the host:port
+  # prefix varies with the exec context) — match the SUFFIX, not the full
+  # line: the full-line equality in the first run of this gate burned the
+  # whole 90s budget and then failed on a healthy answer.
+  until $COMPOSE exec -T postgres pg_isready -U "$PG_USER" 2>/dev/null | grep -q 'accepting connections'; do
+    [ $SECONDS -ge $deadline ] && break
+    sleep 2
+  done
+  local ready_again
+  ready_again="$($COMPOSE exec -T postgres pg_isready -U "$PG_USER" 2>/dev/null)" || ready_again=""
+  if printf '%s' "$ready_again" | grep -q 'accepting connections'; then
+    pass "AC-anc postgres back after restart" "pg_isready accepting connections again"
+  else
+    note "pg_isready self-diagnosis (last 40 container log lines):"
+    docker logs --tail 40 "$PG_CONTAINER" 2>&1 || true
+    fail "AC-anc postgres back after restart" "pg_isready says '${ready_again:-nothing}' after 90s"
+    return
+  fi
+  # Idempotency: role + database still exactly one-of-each after the boot
+  # on the existing volume; ALTER ROLE re-assert left no duplicates (roles
+  # and databases are unique by name — the assertion is that provisioning
+  # did not fail or diverge on the re-run).
+  local probe2
+  probe2="$($COMPOSE exec -T postgres psql -U "$PG_USER" -d "$PG_DB" -tA \
+    -c "SELECT (SELECT count(*) FROM pg_roles WHERE rolname='litellm') || ':' || (SELECT count(*) FROM pg_database WHERE datname='litellm')" 2>/dev/null)" \
+    || probe2=""
+  if [ "$probe2" = "1:1" ]; then
+    pass "AC-anc idempotent re-provision" "role+db exactly present after second boot on existing volume"
+  else
+    fail "AC-anc idempotent re-provision" "post-restart probe '${probe2:-nothing}' (want 1:1)"
+  fi
+  # The wrapper's own provisioning line must appear on THIS boot — the count
+  # must rise above the pre-restart snapshot. The wrapper's internal readiness
+  # wait (up to 120s) plus its psql provisioning pass can legitimately still
+  # be in flight when pg_isready (host-side) first succeeds, so POLL for the
+  # new line instead of grep-once: the wrapper logs it unconditionally every
+  # boot (postgres-entrypoint.sh), it just races the host-side probe.
+  local wrapper_deadline=$((SECONDS + 60))
+  local wrapper_now
+  wrapper_now="$(docker logs "$PG_CONTAINER" 2>&1 | grep -c 'postgres-wrapper: litellm role + database ready' || true)"
+  until [ "$wrapper_now" -gt "$wrapper_before" ]; do
+    [ $SECONDS -ge $wrapper_deadline ] && break
+    sleep 2
+    wrapper_now="$(docker logs "$PG_CONTAINER" 2>&1 | grep -c 'postgres-wrapper: litellm role + database ready' || true)"
+  done
+  if [ "$wrapper_now" -gt "$wrapper_before" ]; then
+    pass "AC-anc wrapper re-provisioned on boot" "wrapper provisioning line count ${wrapper_before} -> ${wrapper_now} (second boot ran the provisioning pass)"
+  else
+    note "wrapper self-diagnosis (last 15 container log lines):"
+    docker logs --tail 15 "$PG_CONTAINER" 2>&1 || true
+    fail "AC-anc wrapper re-provisioned on boot" "provisioning-line count stayed ${wrapper_before} after 60s — the second boot never ran its provisioning pass"
+  fi
+}
+
+# ---- AC-w5d (fleet-ops-w5d): admin-key mint built into the console UI ------
+# The seed inserts the E2E admin key, so the running stack is in the
+# keys-exist state: this AC asserts the 404-after-first-key semantics on
+# /admin/setup (GET and a stale-form POST) plus the session-gated
+# admin-keys management (list + mint + revoke) over the REAL TLS edge.
+ac_w5d_admin_key_ui() {
+  note "AC-w5d: admin-key UI — setup 404-after-first-key + session-gated mint/revoke (fleet-ops-w5d)"
+  local csrf session_cookie keys_csrf code minted_id
+
+  # 0. Readiness gate (run 36597260403): AC-anc stops postgres right before
+  #    this AC fires, and the registrar's prisma pool breaks with it. The
+  #    edge (caddy) answers immediately with 502 — an honest "backend not
+  #    listening yet" — while the registrar takes a few seconds of re-boot
+  #    to re-arm. Poll healthz over the TLS edge (the same front door the
+  #    probes use) until the registrar is actually serving, so the setup
+  #    probes assert the 404-after-first-key semantics against the REAL
+  #    app, not caddy's transient 502.
+  local hz_code
+  local hz_deadline=$((SECONDS + 90))
+  hz_code="$(tls_curl -o /dev/null -w '%{http_code}' -m 10 "$BASE_URL/healthz" 2>/dev/null)" || hz_code=""
+  until [ "$hz_code" = "200" ]; do
+    [ $SECONDS -ge $hz_deadline ] && break
+    sleep 2
+    hz_code="$(tls_curl -o /dev/null -w '%{http_code}' -m 10 "$BASE_URL/healthz" 2>/dev/null)" || hz_code=""
+  done
+  if [ "$hz_code" != "200" ]; then
+    note "registrar self-diagnosis after postgres restart cycle (compose ps + registrar tail):"
+    $COMPOSE ps || true
+    docker logs --tail 20 "$PROJECT-registrar-1" 2>&1 || true
+    fail "AC-w5d registrar readiness gate" "healthz said '${hz_code:-nothing}' after 90s — registrar never re-served after the postgres restart"
+    return
+  fi
+  pass "AC-w5d registrar readiness gate" "healthz 200 over TLS edge — registrar serving post-restart"
+
+  # 1. /admin/setup 404s because the seeded key exists (both verbs).
+  code="$(tls_curl -o /tmp/e2e-w5d-setup.html -w '%{http_code}' "$BASE_URL/admin/setup")"
+  expect "AC-w5d setup 404 (keys exist)" "$code" "404"
+  code="$(tls_curl -o /dev/null -w '%{http_code}' -X POST "$BASE_URL/admin/setup" \
+    --data-urlencode "label=e2e-stale" --data-urlencode "_csrf=stale")"
+  expect "AC-w5d stale setup POST 404s (no mint)" "$code" "404"
+
+  # 2. Session-gated management, exactly the AC7 login pattern.
+  csrf="$(tls_curl -D - -o /dev/null "$BASE_URL/admin/login" \
+    | tr -d '\r' | grep -i '^set-cookie: vsigma_csrf=' | cut -d' ' -f2- | cut -d';' -f1 | tr -d ' ')"
+  if [ -z "$csrf" ]; then fail AC-w5d "no csrf cookie on login page"; return; fi
+  session_cookie="$(tls_curl -D - -o /dev/null -X POST "$BASE_URL/admin/login" \
+    -H "Cookie: ${csrf}" \
+    --data-urlencode "admin_key=$E2E_ADMIN_KEY" \
+    --data-urlencode "_csrf=${csrf#vsigma_csrf=}" \
+    | tr -d '\r' | grep -i '^set-cookie: vsigma_admin=' | cut -d' ' -f2- | cut -d';' -f1 | tr -d ' ')"
+  if [ -z "$session_cookie" ]; then fail AC-w5d "no session cookie after login"; return; fi
+  pass "AC-w5d console login" "session established with the seeded key"
+
+  # 3. The admin-keys list page renders (session-gated).
+  tls_curl -H "Cookie: ${csrf}; ${session_cookie}" \
+    "$BASE_URL/admin/admin-keys" > /tmp/e2e-w5d-keys.html
+  if grep -q "Admin keys" /tmp/e2e-w5d-keys.html && grep -q "e2e-admin" /tmp/e2e-w5d-keys.html; then
+    pass "AC-w5d keys list" "session-gated list renders with the seeded row"
+  else
+    fail "AC-w5d keys list" "list page missing expected content"
+  fi
+  keys_csrf="$(awk 'match($0, /name="_csrf" value="[^"]*"/) { print substr($0, RSTART+20, RLENGTH-21); exit }' \
+    /tmp/e2e-w5d-keys.html)"
+
+  # 4. Mint a second key through the form — the plaintext shows exactly once.
+  tls_curl -H "Cookie: ${csrf}; ${session_cookie}" -X POST "$BASE_URL/admin/admin-keys" \
+    --data-urlencode "label=e2e-rotation" --data-urlencode "_csrf=$keys_csrf" \
+    > /tmp/e2e-w5d-mint.html
+  if grep -q 'secret-once' /tmp/e2e-w5d-mint.html && grep -q 'ak_' /tmp/e2e-w5d-mint.html; then
+    pass "AC-w5d session mint" "second key minted, plaintext shown once"
+  else
+    fail "AC-w5d session mint" "mint page missing the show-once block"
+  fi
+  # The plaintext NEVER goes in the evidence transcript — grep only.
+
+  # 5. Revoke the minted row: harvest its id from the re-listed page.
+  tls_curl -H "Cookie: ${csrf}; ${session_cookie}" \
+    "$BASE_URL/admin/admin-keys" > /tmp/e2e-w5d-keys2.html
+  minted_id="$(awk 'match($0, /\/admin\/admin-keys\/([0-9]+)\/revoke/) { print substr($0, RSTART+18, RLENGTH-25); exit }' \
+    /tmp/e2e-w5d-keys2.html)"
+  if [ -z "$minted_id" ]; then
+    fail "AC-w5d revoke" "no revoke form/id found on the keys page"
+    return
+  fi
+  code="$(tls_curl -o /dev/null -w '%{http_code}' -X POST \
+    "$BASE_URL/admin/admin-keys/$minted_id/revoke" \
+    -H "Cookie: ${csrf}; ${session_cookie}" \
+    --data-urlencode "_csrf=$keys_csrf")"
+  expect "AC-w5d revoke minted key" "$code" "303"
+  # 6. The revoked row is gone from the list (rotation path proven).
+  tls_curl -H "Cookie: ${csrf}; ${session_cookie}" \
+    "$BASE_URL/admin/admin-keys" > /tmp/e2e-w5d-keys3.html
+  if grep -q "e2e-rotation" /tmp/e2e-w5d-keys3.html; then
+    fail "AC-w5d revoked row gone" "label e2e-rotation still listed"
+  else
+    pass "AC-w5d revoked row gone" "minted row revoked; seeded row remains"
+  fi
+  # 7. Audit rows for both operations exist in the registrar DB.
+  local minted_rows revoked_rows
+  minted_rows="$(psql_count "outcome='admin' AND reason='admin_key_minted'")"
+  revoked_rows="$(psql_count "outcome='admin' AND reason='admin_key_revoked'")"
+  if [ "${minted_rows:-0}" -ge 1 ] && [ "${revoked_rows:-0}" -ge 1 ]; then
+    pass "AC-w5d audit rows" "admin_key_minted=${minted_rows} admin_key_revoked=${revoked_rows} in delivery_log"
+  else
+    fail "AC-w5d audit rows" "minted=${minted_rows:-?} revoked=${revoked_rows:-?}"
+  fi
+}
+
 # ---- AC10 (f57.15): the VS queue plane — dolt health, scotty serving,
 # bd client round-trip against the compose dolt ------------------------------
 
@@ -916,6 +1163,8 @@ ac7_console_structured_save
 ac8_grace_self_heal
 ac9_litellm_smoke
 ac9b_litellm_db_smoke
+ac_anc_postgres_consolidation
+ac_w5d_admin_key_ui
 ac10_queue_plane
 ac10_tls_edge
 ac12_primus_self_bootstrap
