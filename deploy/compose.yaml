@@ -215,7 +215,20 @@ services:
   # device uses — registrant-own fetches its bundle from the registrar and
   # gates the hermes service on the ready marker.
   hermes:
-    image: nousresearch/hermes-agent:v2026.9.21
+    # b1r (2026-09-29): the custom primus image — the pinned official
+    # Hermes image (the SAME v2026.9.21 tag this service pulled before)
+    # + bd 1.2.2 baked full read-write (primus is the queue CURATOR —
+    # create/close/claim beads; not scotty's bd-readonly posture) + the
+    # config-only queue join + the environment docs + the boot hook.
+    # Owner ruling: fully rebuildable from the repo with zero manual
+    # steps. Byte-parity with the balena app compose: same Dockerfile,
+    # same tag pin, same volume/env contract — one artifact, no twin
+    # drift. Build context is balena/registrar (repo-root-relative to
+    # THIS compose file — the f57.12 e5b6905 lesson: compose build
+    # contexts resolve against the compose file's dir).
+    build:
+      context: ../balena/registrar
+      dockerfile: Dockerfile.hermes
     # The image's CMD default is a bare REPL — exits on EOF with closed
     # stdin (run-3 lesson). Canonical long-run form per the upstream
     # reference compose: `gateway run`.
@@ -228,6 +241,13 @@ services:
       # cannot read the 0600 files otherwise).
       HERMES_UID: "1000"
       HERMES_GID: "1000"
+      # b1r: the in-image bd (the queue client) reads the Dolt password
+      # from BEADS_DOLT_PASSWORD — the scotty service's posture exactly:
+      # SAME secret value as the dolt service's DOLT_PASSWORD (one owner-
+      # minted secret, two env keys because bd and the dolt image read
+      # different keys). Fail-closed ${VAR:?} interpolation — without the
+      # value the container never starts half-configured.
+      BEADS_DOLT_PASSWORD: ${BEADS_DOLT_PASSWORD:?set in deploy/.env — same value as DOLT_PASSWORD}
     volumes:
       - primus-data:/data/primus
     depends_on:

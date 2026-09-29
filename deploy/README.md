@@ -81,9 +81,13 @@ Notes:
   master's UUID) and `PRIMUS_REGISTRAR_KEY` (its row's registrar key) are
   required in `deploy/.env`. The `registrant-own` service bootstraps the
   primus bundle from the registrar and gates the `hermes` service
-  (official `nousresearch/hermes-agent` image, `HERMES_HOME=/data/primus`)
+  (primus's custom image since b1r — the pinned official Hermes image
+  plus baked bd 1.2.2 + queue join + docs, `HERMES_HOME=/data/primus`)
   on the ready marker — the same chain every device uses, on the master.
-  The E2E (AC12) proves it in CI against the REAL image.
+  `BEADS_DOLT_PASSWORD` (f57.15, same value as `DOLT_PASSWORD`) now also
+  feeds the hermes service's in-image bd — the fail-closed compose
+  entry mirrors scotty's. The E2E (AC12 + AC13) proves it in CI against
+  the REAL built image.
 
 ## Postgres on an existing host (optional variant)
 

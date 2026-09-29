@@ -74,7 +74,7 @@ env).
 | `OLLAMA_CLOUD_API_KEY` | **fleet-wide** | **yes — no default** (f57.12) | Ollama Cloud credential — the gateway's model upstream (OpenAI-compatible `https://ollama.com/v1`). Held only by the gateway container; devices never see it. |
 | `DOLT_PASSWORD` | dolt + scotty | **yes — no default** (f57.15) | Dolt auth for the VS queue's app user `vs` (database `vs_ops`). The dolt image creates the user at first boot of the `doltdata` volume; VS device bd clients join with the SAME value. 600-equivalent custody. |
 | `DOLT_ROOT_PASSWORD` | dolt | **yes — no default** (f57.15) | Dolt superuser password (the image requires it to bootstrap; root stays localhost-only by image default — never a LAN login). |
-| `BEADS_DOLT_PASSWORD` | scotty | **yes — no default** (f57.15) | SAME secret value as `DOLT_PASSWORD`, under the env key bd reads (bd and the dolt image read different keys). Lets the scotty container's in-image bd join the queue read-only. |
+| `BEADS_DOLT_PASSWORD` | scotty + hermes | **yes — no default** (f57.15; hermes added b1r) | SAME secret value as `DOLT_PASSWORD`, under the env key bd reads (bd and the dolt image read different keys). Lets the scotty container's in-image bd join the queue read-only; since b1r it also reaches the hermes container's in-image bd — primus's queue CURATION client (full read-write). Fleet-scoped: it cascades to every service by default; no static value in the compose (f57.8). |
 | `PRIMUS_REGISTRAR_KEY` | registrant-own | **yes — no default** (f57.14) | The registrar key for the master device's own row (agent_name=primus). Mint/insert per the device-key flow; never reuse another row's key. Set as the `REGISTRAR_KEY` device variable (the name the vendored registrant reads — `PRIMUS_REGISTRAR_KEY` is the balenaCloud device-variable name used at the f57.14 rollout; the registrant's config layer maps it). |
 | `TLS_HOSTNAME` | **fleet-wide** | **yes — no default** (f57.13) | The master device hostname the caddy edge serves (must match the Pi-hole DNS record — see [docs/tls-runbook.md](../../docs/tls-runbook.md)). Feeds the Caddyfile's `{$TLS_HOSTNAME:vsigma.lan}` substitution. This is the ONLY TLS-related fleet variable — caddy mints and rotates its own cert/key via `tls internal`; there is no cert/key pair to paste. |
 ### Static in compose (override only if you know why)
@@ -364,12 +364,19 @@ registrar (started) → registrant-own (fetch + apply bundle) → hermes (starte
   short-form service lists; the registrant's bounded 425 retry +
   permanent-error grace poll + `restart: always` make it safe to start
   at any point in the registrar's lifecycle.
-- **`hermes`** — the official `nousresearch/hermes-agent` image
-  (version-tagged, arm64-published), `HERMES_HOME=/data/primus` on the
-  same volume. The image has NO marker gate (f57.20 finding: zero
-  `ready.marker` references anywhere in the image's v2026.9.21 source —
-  the marker gate belongs to the devices app's own `gate.sh`, not this
-  image). `HERMES_GATEWAY_BOOTSTRAP_STATE=running` starts the
+- **`hermes`** — primus's custom image (b1r): the pinned official
+  `nousresearch/hermes-agent` image (the SAME `v2026.9.21` tag this
+  service pulled before) built from `Dockerfile.hermes` with bd 1.2.2
+  baked FULL READ-WRITE (primus is the queue CURATOR — the scotty
+  `bd-readonly` wrapper posture does NOT apply here), the config-only
+  queue join (canonical project_id), the environment docs at
+  `/opt/vs/docs`, and the `03-vs-queue-join` boot hook that seeds
+  `$HERMES_HOME/vs-queue` on first boot. Owner ruling 2026-09-29:
+  fully rebuildable from the repo + a fresh release, zero manual
+  steps. `HERMES_HOME=/data/primus` on the same volume. The image has
+  NO marker gate (f57.20 finding: zero `ready.marker` references
+  anywhere in the image's v2026.9.21 source — the marker gate belongs
+  to the devices app's own `gate.sh`, not this image). `HERMES_GATEWAY_BOOTSTRAP_STATE=running` starts the
   supervised gateway on first boot (the image's first-boot-only seed
   contract); the persisted state wins on every later boot, and the
   bundle's operator-provided files are never clobbered — so an early

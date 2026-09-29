@@ -283,10 +283,18 @@ services:
   # HERMES_GATEWAY_BOOTSTRAP_STATE=running starts the supervised gateway
   # on first boot (the image contract — only seeds when no state exists).
   hermes:
-    # Official image, version-tagged (fleet pin discipline; `latest`/`main`
-    # are moving targets — the tag is the auditable lineage and arm64 is
-    # published for every tag).
-    image: nousresearch/hermes-agent:v2026.9.21
+    # b1r (2026-09-29): the custom primus image — the pinned official
+    # Hermes image (the SAME v2026.9.21 tag this service pulled before)
+    # + bd 1.2.2 baked FULL READ-WRITE (primus is the queue CURATOR;
+    # the scotty bd-readonly wrapper posture does NOT apply here) +
+    # the config-only queue join + the environment docs + the boot
+    # hook. Owner ruling: primus must be fully rebuildable from the
+    # repo + a fresh registrar release with zero manual steps. One
+    # artifact: deploy/compose.yaml builds the SAME Dockerfile — no
+    # twin drift (the FROM pin stays the parity pin both sides share).
+    build:
+      context: .
+      dockerfile: Dockerfile.hermes
     # The image's CMD default is a bare `hermes` REPL — it exits on EOF
     # when stdin closes (compose up -d). The upstream reference compose's
     # canonical long-run form (run-3 lesson): `gateway run`.
@@ -305,6 +313,16 @@ services:
       # bind-mounted-host-dir guidance).
       HERMES_UID: "1000"
       HERMES_GID: "1000"
+      # b1r: the in-image bd (the queue client) reads the Dolt password
+      # from BEADS_DOLT_PASSWORD — the scotty service's posture: SAME
+      # secret value as the dolt service's DOLT_PASSWORD (one owner-
+      # minted secret, two env keys because bd and the dolt image read
+      # different keys). It arrives as a balenaCloud FLEET variable and
+      # cascades to this service by default; no static value ships here
+      # (f57.8 — no secrets in this file, not even as stubs). If the
+      # variable is ever scoped per-service instead, hermes must be in
+      # its service list or bd cannot authenticate. NEVER baked into the
+      # image layers.
     volumes:
       - primus-data:/data/primus
     depends_on:
