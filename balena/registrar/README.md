@@ -70,12 +70,12 @@ env).
 | `POSTGRES_PASSWORD` | **fleet-wide** | **yes — no default** | Postgres role password. Fleet-scoped: both the postgres service (role creation) and the registrar service (URL part) must see the same value. **No secrets in compose or image layers.** |
 | `SESSION_SECRET` | registrar | **yes — no default** | Admin-console HMAC session secret (≥16 chars). **The registrar refuses to boot without it** — missing or short fails startup with the variable name; there is no fallback secret. Set it on the fleet before the first `registrar-v*` release ships. |
 | `LITELLM_MASTER_KEY` | **fleet-wide** | **yes — no default** (f57.12) | LiteLLM gateway master key — mints virtual keys, unlocks the Admin UI (`https://<TLS_HOSTNAME>:8443/ui`). **Must start with `sk-`** (LiteLLM requirement). 600-equivalent custody: it IS the gateway; never in image layers, compose, chat, or the database. Fleet scope per the bead's variable contract (service scope would be a hardening option — see "Gateway variable scoping" below). |
-| `LITELLM_PG_PASSWORD` | **fleet-wide** | **yes — no default** (f57.12) | Password for the gateway's dedicated least-privilege postgres role. The `litellm-init` service provisions the `litellm` role + `litellm` database on every boot and re-asserts this value (ALTER ROLE) — rotating it needs no manual psql step, just a release re-deploy or service restart. |
+| `LITELLM_PG_PASSWORD` | **fleet-wide** | **yes — no default** (f57.12) | Password for the gateway's dedicated least-privilege postgres role. The `postgres` service's wrapper image provisions the `litellm` role + `litellm` database on every boot and re-asserts this value (ALTER ROLE) — rotating it needs no manual psql step, just a release re-deploy or service restart. |
 | `OLLAMA_CLOUD_API_KEY` | **fleet-wide** | **yes — no default** (f57.12) | Ollama Cloud credential — the gateway's model upstream (OpenAI-compatible `https://ollama.com/v1`). Held only by the gateway container; devices never see it. |
 | `DOLT_PASSWORD` | dolt + scotty | **yes — no default** (f57.15) | Dolt auth for the VS queue's app user `vs` (database `vs_ops`). The dolt image creates the user at first boot of the `doltdata` volume; VS device bd clients join with the SAME value. 600-equivalent custody. |
 | `DOLT_ROOT_PASSWORD` | dolt | **yes — no default** (f57.15) | Dolt superuser password (the image requires it to bootstrap; root stays localhost-only by image default — never a LAN login). |
 | `BEADS_DOLT_PASSWORD` | scotty | **yes — no default** (f57.15) | SAME secret value as `DOLT_PASSWORD`, under the env key bd reads (bd and the dolt image read different keys). Lets the scotty container's in-image bd join the queue read-only. |
-| `PRIMUS_REGISTRAR_KEY` | registrant-own | **yes — no default** (f57.14) | The registrar key for the master device's own row (agent_name=primus). Mint/insert per the device-key flow; never reuse another row's key. |
+| `PRIMUS_REGISTRAR_KEY` | registrant-own | **yes — no default** (f57.14) | The registrar key for the master device's own row (agent_name=primus). Mint/insert per the device-key flow; never reuse another row's key. Set as the `REGISTRAR_KEY` device variable (the name the vendored registrant reads — `PRIMUS_REGISTRAR_KEY` is the balenaCloud device-variable name used at the f57.14 rollout; the registrant's config layer maps it). |
 | `TLS_HOSTNAME` | **fleet-wide** | **yes — no default** (f57.13) | The master device hostname the caddy edge serves (must match the Pi-hole DNS record — see [docs/tls-runbook.md](../../docs/tls-runbook.md)). Feeds the Caddyfile's `{$TLS_HOSTNAME:vsigma.lan}` substitution. This is the ONLY TLS-related fleet variable — caddy mints and rotates its own cert/key via `tls internal`; there is no cert/key pair to paste. |
 ### Static in compose (override only if you know why)
 
@@ -233,24 +233,35 @@ the TLS edge at `https://<TLS_HOSTNAME>:8443/ui`.
 
 ### First-boot sequence
 
-Release lands → `litellm-init` (one-shot, `restart: "no"` — a supported
-supervisor restart policy) waits for postgres, then idempotently
-provisions `CREATE ROLE litellm LOGIN` + `CREATE DATABASE litellm OWNER
-litellm`, re-asserts the role password (ALTER ROLE every boot — kills the
-pgdata password trap for this role), and revokes `PUBLIC` CONNECT on the
+Release lands → the `postgres` container boots its wrapper entrypoint
+(fleet-ops-anc): the stock postgres entrypoint starts as its child, the
+wrapper waits for readiness, then idempotently provisions
+`CREATE ROLE litellm LOGIN` + `CREATE DATABASE litellm OWNER litellm`,
+re-asserts the role password (ALTER ROLE every boot — kills the pgdata
+password trap for this role), and revokes `PUBLIC` CONNECT on the
 registrar's database (least privilege: the gateway role can reach ONLY
-its own database). → `litellm` boots, its entrypoint shim assembles
+its own database). Provisioning runs on EVERY boot — fresh volume and
+live volume alike. → `litellm` boots, its entrypoint shim assembles
 `DATABASE_URL` from the same parts (URL and role can never disagree — the
 f57.8 trap closed by construction), prisma migrates the fresh `litellm`
 database (tens of seconds), then serves. If the gateway container
 crash-loops in that window, `restart: always` closes the gap — logs name
 the missing variable if a fleet var is absent (fail-loud).
 
+The old one-shot `litellm-init` service no longer exists (owner ruling
+2026-09-29: consolidate — one less container on a resource-strapped
+device; the wrapper runs the identical SQL bytes the one-shot ran). The
+graceful-shutdown contract is a hard gate: the wrapper forwards SIGTERM
+to the stock entrypoint so postgres checkpoints and flushes WAL inside
+the 60s `stop_grace_period` — the balena supervisor's stop never
+SIGKILLs an unwarned postgres at the deadline (that is the corruption
+path this design closes).
+
 **Live-volume note:** the master device's pgdata already holds device
-bundles — a fresh initdb cannot run there and MUST NOT; `litellm-init`
+bundles — a fresh initdb cannot run there and MUST NOT; the wrapper
 operates on the live volume (idempotent SQL, no data touched outside the
-new role/database), which is precisely why the init service exists rather
-than initdb.d magic.
+new role/database), which is precisely why the provisioning lives in
+the postgres service's own wrapper rather than initdb.d magic.
 
 ### Gateway variable scoping (hardening option)
 

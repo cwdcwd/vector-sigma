@@ -16,11 +16,13 @@ deploy/
 └── README.md
 ```
 
-The `litellm` and `litellm-init` services build from
-`./balena/registrar/Dockerfile.litellm{,-init}` — the SAME images the
-balena app ships. One config artifact (`balena/registrar/litellm-config.yaml`,
-baked into the image), one env contract: only the secret delivery differs
-(`.env` here, balenaCloud dashboard variables on the device).
+The `litellm` service builds from `./balena/registrar/Dockerfile.litellm`
+and the `postgres` service from `./balena/registrar/Dockerfile.postgres`
+(the stock image + provisioning wrapper, fleet-ops-anc) — the SAME images
+the balena app ships. One config artifact
+(`balena/registrar/litellm-config.yaml`, baked into the image), one env
+contract: only the secret delivery differs (`.env` here, balenaCloud
+dashboard variables on the device).
 
 ## Self-host quickstart
 
@@ -52,10 +54,11 @@ Notes:
 - **Least privilege**: the Postgres container is dedicated to this stack
   (its own role + database). Do not point `DATABASE_URL` at a shared
   superuser-owned instance in production. The gateway follows the same
-  discipline: `litellm-init` provisions a dedicated `litellm` role that owns
-  ONLY the `litellm` database (and revokes `PUBLIC` CONNECT on the
-  registrar's database); the gateway's `DATABASE_URL` is assembled from the
-  same parts by the image's entrypoint shim — URL and role cannot disagree.
+  discipline: the postgres service's wrapper image (fleet-ops-anc)
+  provisions a dedicated `litellm` role that owns ONLY the `litellm`
+  database (and revokes `PUBLIC` CONNECT on the registrar's database);
+  the gateway's `DATABASE_URL` is assembled from the same parts by the
+  image's entrypoint shim — URL and role cannot disagree.
 - **VS gateway (f57.12 + f57.13)**: `LITELLM_MASTER_KEY` (must start `sk-`),
   `LITELLM_PG_PASSWORD`, and `OLLAMA_CLOUD_API_KEY` are required in
   `deploy/.env`. The gateway rides the caddy edge at

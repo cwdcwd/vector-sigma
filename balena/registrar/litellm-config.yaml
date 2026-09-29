@@ -18,9 +18,9 @@
 # agent registry are POSTGRES-ONLY features; sqlite would silently forfeit
 # both. The `litellm` role owns ONLY the `litellm` database and holds no
 # grants on the registrar's database (which additionally gets CONNECT revoked
-# from PUBLIC by the litellm-init service). Provisioning is done by the
-# litellm-init one-shot service in both compose files — see README "The VS
-# gateway (LiteLLM)".
+# from PUBLIC). Provisioning is done by the postgres service's own wrapper
+# image (fleet-ops-anc) on every boot in both compose files — see README
+# "The VS gateway (LiteLLM)".
 #
 # This file is baked to /app/config.yaml by Dockerfile.litellm (the balena
 # supervisor cannot bind-mount files into services). deploy/ self-host builds

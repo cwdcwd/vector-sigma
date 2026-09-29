@@ -5,9 +5,9 @@
 # Why a shim at all: the balena supervisor does NO compose interpolation, so
 # it cannot build postgres://litellm:***@postgres:5432/litellm from parts —
 # the owner would have to paste a whole URL that can silently disagree with
-# the role password the litellm-init service creates (the f57.8 trap). This
-# shim takes the SAME structural parts the init service provisions from, so
-# the URL and the role can never disagree.
+# the role password the postgres wrapper provisions (the f57.8 trap). This
+# shim takes the SAME structural parts the postgres wrapper provisions from,
+# so the URL and the role can never disagree.
 #
 # Inputs (structural parts come from the compose environment; the password is
 # a balenaCloud fleet variable on the device, .env in self-host):

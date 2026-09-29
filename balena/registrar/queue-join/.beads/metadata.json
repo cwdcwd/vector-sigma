@@ -6,6 +6,6 @@
   "dolt_server_host": "dolt",
   "dolt_server_user": "vs",
   "dolt_database": "vs_ops",
-  "project_id": "SET_BY_COORDINATOR_AFTER_FIRST_INIT — see scripts/vs-queue-bootstrap.md",
+  "project_id": "bcde5891-5482-4eb0-a223-8533504832d6",
   "dolt_server_port": 3306
 }

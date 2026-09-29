@@ -1,0 +1,22 @@
+# balena/registrar/Dockerfile.postgres — the postgres service's own image with
+# the VS gateway's database provisioning folded in (fleet-ops-anc; owner
+# ruling 2026-09-29: consolidate, kill the one-shot litellm-init container).
+#
+# The wrapper it ships runs the IDENTICAL provisioning SQL the retired
+# litellm-init service ran, on every boot, idempotent, safe on the live
+# pgdata volume (no initdb.d split: the master device's volume already
+# holds device bundles — a fresh initdb must never run there).
+#
+# Same base image as before (postgres:16-alpine), same CMD pass-through:
+# only the entrypoint is wrapped, so the stock initdb/volume semantics are
+# untouched and docker logs look like plain postgres plus wrapper lines.
+
+FROM postgres:16-alpine
+
+COPY postgres-entrypoint.sh /usr/local/bin/postgres-wrapper.sh
+RUN chmod +x /usr/local/bin/postgres-wrapper.sh
+
+# Stock args pass through: the wrapper execs nothing itself — it starts
+# the stock docker-entrypoint.sh as its child and forwards signals to it.
+ENTRYPOINT ["/usr/local/bin/postgres-wrapper.sh"]
+CMD ["postgres"]

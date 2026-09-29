@@ -17,12 +17,24 @@
 # 8443 (litellm gateway + /ui + /a2a/*); port 80 redirects.
 
 services:
+  # postgres: the stock 16-alpine image WRAPPED (fleet-ops-anc) — same image
+  # the balena app builds, one-artifact/no-twin-drift contract. The wrapper
+  # provisions the gateway's role + database on every boot (idempotent, safe
+  # on the live volume); the retired one-shot litellm-init service is gone.
   postgres:
-    image: postgres:16-alpine
+    build:
+      context: ../balena/registrar
+      dockerfile: Dockerfile.postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER:?set in deploy/.env}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in deploy/.env}
       POSTGRES_DB: ${POSTGRES_DB:?set in deploy/.env}
+      # Superuser credential for the wrapper's provisioning psql (the old
+      # one-shot read the same value; PGUSER/PGDATABASE fall back to the
+      # POSTGRES_* values the image itself consumes).
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set in deploy/.env}
+      # Password for the gateway's `litellm` role the wrapper mints.
+      LITELLM_PG_PASSWORD: ${LITELLM_PG_PASSWORD:?set in deploy/.env}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -30,36 +42,18 @@ services:
       interval: 5s
       timeout: 3s
       retries: 24
+    stop_grace_period: 60s
     restart: unless-stopped
 
-  # f57.12: one-shot provisioning of the gateway's database — idempotent,
-  # safe on every boot and on existing volumes. Same image the balena app
-  # builds; the script reads interpolated env (PGPASSWORD from .env) here.
-  # Build context = balena/registrar (relative to THIS compose file) — the
-  # same context root the balena app uses, so the Dockerfile's COPY paths
-  # resolve identically on both sides (balena remote builders receive only
-  # the app dir, so the context cannot be broader).
-  litellm-init:
-    build:
-      context: ../balena/registrar
-      dockerfile: Dockerfile.litellm-init
-    environment:
-      PGHOST: postgres
-      PGUSER: ${POSTGRES_USER:?set in deploy/.env}
-      PGDATABASE: ${POSTGRES_DB:?set in deploy/.env}
-      PGPASSWORD: ${POSTGRES_PASSWORD:?set in deploy/.env}
-      LITELLM_PG_PASSWORD: ${LITELLM_PG_PASSWORD:?set in deploy/.env}
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: "no"
-
-  # f57.12: the VS fleet's own LiteLLM gateway — same image as the balena app
-  # (config baked by Dockerfile.litellm), same env contract (passwords via
-  # .env here, balenaCloud fleet variables on the device). DATABASE_URL is
-  # assembled by the image's entrypoint shim from the parts below. Build
-  # context = balena/registrar (relative to this compose file) — same context
-  # root as the balena app build, so the Dockerfile bytes never fork.
+  # f57.12 (consolidated fleet-ops-anc, 2026-09-29): the VS fleet's own LiteLLM
+  # gateway — same image as the balena app (config baked by Dockerfile.litellm),
+  # same env contract (passwords via .env here, balenaCloud fleet variables on
+  # the device). DATABASE_URL is assembled by the image's entrypoint shim from
+  # the parts below. Build context = balena/registrar (relative to this compose
+  # file) — same context root as the balena app build, so the Dockerfile bytes
+  # never fork. The gateway's role + database are provisioned by the postgres
+  # service's own wrapper image on every boot — no ordering dependency needed
+  # (the litellm entrypoint retry-cycles its DB connection).
   litellm:
     build:
       context: ../balena/registrar
@@ -76,8 +70,9 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      litellm-init:
-        condition: service_completed_successfully
+    # f57.12 (fleet-ops-anc): the litellm-init completion gate is GONE — the
+    # postgres wrapper provisions the role+database before its own
+    # healthcheck can pass, so service_healthy is now the stronger gate.
     # f57.13 (Copilot review): NO host publish — the plaintext 127.0.0.1:4000
     # bypass is gone; the gateway is reachable only through the caddy TLS
     # edge at https://<TLS_HOSTNAME>:8443. E2E asserts it there (AC9).
