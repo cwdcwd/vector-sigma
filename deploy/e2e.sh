@@ -692,6 +692,14 @@ ac_anc_postgres_consolidation() {
   #    re-provision idempotently on the EXISTING volume and return to
   #    healthy.
   note "AC-anc: restarting postgres — idempotent re-provision on existing volume"
+  # Snapshot the wrapper's provisioning-line count BEFORE the restart:
+  # docker logs is append-only across restarts (the boot-1 line survives),
+  # so count-based proof is immune to both the race (a grep fired 150ms
+  # after compose start loses to the wrapper's own readiness wait) and the
+  # vacuous pass (an old line inside a --since window proves nothing about
+  # the SECOND boot). The re-boot must raise the count.
+  local wrapper_before
+  wrapper_before="$(docker logs "$PG_CONTAINER" 2>&1 | grep -c 'postgres-wrapper: litellm role + database ready' || true)"
   $COMPOSE start postgres > /tmp/e2e-anc-start.log 2>&1 \
     || { fail "AC-anc compose start postgres" "start exited non-zero: $(tail -3 /tmp/e2e-anc-start.log)"; return; }
   local deadline=$((SECONDS + 90))
@@ -708,6 +716,8 @@ ac_anc_postgres_consolidation() {
   if printf '%s' "$ready_again" | grep -q 'accepting connections'; then
     pass "AC-anc postgres back after restart" "pg_isready accepting connections again"
   else
+    note "pg_isready self-diagnosis (last 40 container log lines):"
+    docker logs --tail 40 "$PG_CONTAINER" 2>&1 || true
     fail "AC-anc postgres back after restart" "pg_isready says '${ready_again:-nothing}' after 90s"
     return
   fi
@@ -724,11 +734,26 @@ ac_anc_postgres_consolidation() {
   else
     fail "AC-anc idempotent re-provision" "post-restart probe '${probe2:-nothing}' (want 1:1)"
   fi
-  # The wrapper's own provisioning line must appear on the restart boot.
-  if docker logs --since 2m "$PG_CONTAINER" 2>&1 | grep -q "postgres-wrapper: litellm role + database ready"; then
-    pass "AC-anc wrapper re-provisioned on boot" "wrapper provisioning line present on the restart boot"
+  # The wrapper's own provisioning line must appear on THIS boot — the count
+  # must rise above the pre-restart snapshot. The wrapper's internal readiness
+  # wait (up to 120s) plus its psql provisioning pass can legitimately still
+  # be in flight when pg_isready (host-side) first succeeds, so POLL for the
+  # new line instead of grep-once: the wrapper logs it unconditionally every
+  # boot (postgres-entrypoint.sh), it just races the host-side probe.
+  local wrapper_deadline=$((SECONDS + 60))
+  local wrapper_now
+  wrapper_now="$(docker logs "$PG_CONTAINER" 2>&1 | grep -c 'postgres-wrapper: litellm role + database ready' || true)"
+  until [ "$wrapper_now" -gt "$wrapper_before" ]; do
+    [ $SECONDS -ge $wrapper_deadline ] && break
+    sleep 2
+    wrapper_now="$(docker logs "$PG_CONTAINER" 2>&1 | grep -c 'postgres-wrapper: litellm role + database ready' || true)"
+  done
+  if [ "$wrapper_now" -gt "$wrapper_before" ]; then
+    pass "AC-anc wrapper re-provisioned on boot" "wrapper provisioning line count ${wrapper_before} -> ${wrapper_now} (second boot ran the provisioning pass)"
   else
-    fail "AC-anc wrapper re-provisioned on boot" "no wrapper provisioning line in the restart window"
+    note "wrapper self-diagnosis (last 15 container log lines):"
+    docker logs --tail 15 "$PG_CONTAINER" 2>&1 || true
+    fail "AC-anc wrapper re-provisioned on boot" "provisioning-line count stayed ${wrapper_before} after 60s — the second boot never ran its provisioning pass"
   fi
 }
 
@@ -740,6 +765,31 @@ ac_anc_postgres_consolidation() {
 ac_w5d_admin_key_ui() {
   note "AC-w5d: admin-key UI — setup 404-after-first-key + session-gated mint/revoke (fleet-ops-w5d)"
   local csrf session_cookie keys_csrf code minted_id
+
+  # 0. Readiness gate (run 36597260403): AC-anc stops postgres right before
+  #    this AC fires, and the registrar's prisma pool breaks with it. The
+  #    edge (caddy) answers immediately with 502 — an honest "backend not
+  #    listening yet" — while the registrar takes a few seconds of re-boot
+  #    to re-arm. Poll healthz over the TLS edge (the same front door the
+  #    probes use) until the registrar is actually serving, so the setup
+  #    probes assert the 404-after-first-key semantics against the REAL
+  #    app, not caddy's transient 502.
+  local hz_code
+  local hz_deadline=$((SECONDS + 90))
+  hz_code="$(tls_curl -o /dev/null -w '%{http_code}' -m 10 "$BASE_URL/healthz" 2>/dev/null)" || hz_code=""
+  until [ "$hz_code" = "200" ]; do
+    [ $SECONDS -ge $hz_deadline ] && break
+    sleep 2
+    hz_code="$(tls_curl -o /dev/null -w '%{http_code}' -m 10 "$BASE_URL/healthz" 2>/dev/null)" || hz_code=""
+  done
+  if [ "$hz_code" != "200" ]; then
+    note "registrar self-diagnosis after postgres restart cycle (compose ps + registrar tail):"
+    $COMPOSE ps || true
+    docker logs --tail 20 "$PROJECT-registrar-1" 2>&1 || true
+    fail "AC-w5d registrar readiness gate" "healthz said '${hz_code:-nothing}' after 90s — registrar never re-served after the postgres restart"
+    return
+  fi
+  pass "AC-w5d registrar readiness gate" "healthz 200 over TLS edge — registrar serving post-restart"
 
   # 1. /admin/setup 404s because the seeded key exists (both verbs).
   code="$(tls_curl -o /tmp/e2e-w5d-setup.html -w '%{http_code}' "$BASE_URL/admin/setup")"
