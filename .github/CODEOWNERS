@@ -1,0 +1,7 @@
+# ADVISORY-ONLY — a bot cannot resolve as a code owner.
+# GitHub Apps (like vectorsigma-primus[bot]) are ignored by code-owner
+# review gates; this line documents primus's maintainer designation
+# (MAINTAINERS.md) for humans reading the repo. It is docs/optics,
+# NEVER a gate — see the branch ruleset: require_code_owner_review
+# must stay FALSE (a bot code-owner gate wedges every PR forever).
+* @vectorsigma-primus[bot]
