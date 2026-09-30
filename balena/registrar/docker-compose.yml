@@ -430,7 +430,23 @@ services:
       # interpolation — {$...} here would be eaten by the ${VAR} parser).
       # caddy:2-alpine ships curl; --insecure because THIS check is about
       # the server having a usable pair loaded, not client CA trust.
-      test: ["CMD-SHELL", "curl -fsk --resolve \"$${TLS_HOSTNAME:-vsigma.lan}:443:127.0.0.1\" \"https://$${TLS_HOSTNAME:-vsigma.lan}/healthz\" -o /dev/null || exit 1"]
+      #
+      # 1py.3 (caddy restart-loop fix): SINGLE-$ runtime expansion — never
+      # $$ here. This file is built by balena's remote builder, which does
+      # NOT de-escape compose $$ -> $ the way docker compose does: $$ is
+      # stored literally, the CMD-SHELL probe expands it to the shell PID,
+      # curl's --resolve arg is corrupted, and the supervisor restart-loops
+      # caddy ~every 95s (proven live on release 4370090, master device
+      # 13681815: 19 clean SIGTERM cycles in a 30m window; byte-exact
+      # in-container replay of the stored string -> curl RC=49, single-$
+      # control -> RC=0). The single-$ shape is already proven on THIS
+      # file's other runtime-expanded probes: postgres ${POSTGRES_USER}
+      # (line ~89) and dolt $DOLT_PASSWORD (line ~211), stable on-device
+      # for weeks. deploy/compose.yaml's twin keeps its $$ — that file is
+      # driven by docker compose, which de-escapes correctly; the two
+      # dialects MUST diverge (registrar/test/compose-dialect.test.ts pins
+      # it).
+      test: ["CMD-SHELL", "curl -fsk --resolve \"${TLS_HOSTNAME:-vsigma.lan}:443:127.0.0.1\" \"https://${TLS_HOSTNAME:-vsigma.lan}/healthz\" -o /dev/null || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
