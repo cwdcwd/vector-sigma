@@ -53,7 +53,7 @@ present on both live hosts — `crw-rw-rw- 10,200` on optimus-prime
 `6.12.94-v8` balenaOS 8.0.9 kernel — so the service spec needs no
 `devices:` passthrough.
 
-## Owner steps (once, before the first overlay release lands)
+## Owner steps (once — tailnet + keys + ACLs first; TS_AUTHKEY after the first overlay release)
 
 1. **Create the tailnet** (Tailscale admin console — owner action).
 2. **Mint the auth keys** (admin console → *Settings* → *Keys*):
@@ -82,12 +82,25 @@ present on both live hosts — `crw-rw-rw- 10,200` on optimus-prime
    explicit deny is the belt-and-braces the consult settled on.)
 4. **Set the balenaCloud variables** (dashboard → device/service
    pages):
-   - `TS_AUTHKEY` — **service-scoped to the `tailscale` service** on
-     each device (`tag:vs-master` key for the registrar device;
-     `tag:vs-agent` key for each devices-fleet device).
    - `TS_HOSTNAME` — **device-scoped**, per device: the MagicDNS
      machine name. Values already set via the balena API (2026-10-01):
      `vector-sigma` (master), `optimus-prime`.
+   - `TS_AUTHKEY` — **service-scoped to the `tailscale` service** on
+     each device (`tag:vs-master` key for the registrar device;
+     `tag:vs-agent` key for each devices-fleet device), both
+     **reusable**. SEQUENCING: a balenaCloud service-scoped variable
+     can only be created once the service exists in the fleet's
+     current release composition — so this is set AFTER the first
+     overlay release builds (step 5 of the tag flow), not before. The
+     first boot of the tailscale container without a key is benign:
+     containerboot starts tailscaled unauthenticated and waits — the
+     container is Running/healthy but not joined; the moment the key
+     lands, the supervisor recreates the container with the env and
+     the device joins. Join evidence is only expected from that point
+     on. (If you prefer zero unjoined window: set the fleet-scoped
+     `TS_AUTHKEY` BEFORE the release instead — the tailscale service
+     reads it the same way; re-scope to the service afterwards for
+     least privilege.)
 5. **Watch it join**: the tailnet device list shows both machines with
    tailnet IPs; `tailscale status` on the canary shows the join (canary
    evidence, below).
