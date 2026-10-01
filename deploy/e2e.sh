@@ -892,21 +892,43 @@ ac10_queue_plane() {
     fail "AC10 dolt healthy" "no answer to select current_timestamp() as app user"
   fi
 
-  # 2. Scotty serves: /api/projects must 200 (the picker data route; verified
-  # present at cc55734). Poll: the patched image build is cold on CI runners.
-  local deadline=$((SECONDS + 240)) code=""
-  until code="$(curl -s -o /dev/null -w '%{http_code}' -m 5 http://127.0.0.1:3306/api/projects 2>/dev/null)" \
-    && [ "$code" = "200" ]; do
+  # 2. Scotty serves — over the TLS EDGE with basic_auth (77i): the raw
+  # host :3306 publish is GONE; /api/projects must 401 anonymous and 200
+  # with the basic_auth pair through caddy at https://<TLS_HOSTNAME>:8444,
+  # and the raw in-container listener must refuse host connections
+  # (nothing publishes it anymore). The sim pair (owner/hiccup) and its
+  # bcrypt hash ship committed in deploy/.env.e2e — caddy consumed the
+  # hash at adapt time (container start), so the edge serves auth from
+  # the first request. Poll: the patched image build is cold on CI
+  # runners and caddy must mint the 8444 leaf first.
+  local deadline=$((SECONDS + 240)) code="" code401=""
+  until code401="$(curl -s -o /dev/null -w '%{http_code}' -m 5 \
+      --resolve "$TLS_HOSTNAME:8444:127.0.0.1" --cacert "$CA_CERT" \
+      "https://$TLS_HOSTNAME:8444/api/projects" 2>/dev/null)" \
+    && [ "$code401" = "401" ]; do
     [ $SECONDS -ge $deadline ] && break
     sleep 3
   done
-  if [ "$code" = "200" ]; then
-    pass "AC10 scotty serves" "http://127.0.0.1:3306/api/projects -> 200"
+  code="$(curl -s -o /dev/null -w '%{http_code}' -m 5 \
+    --resolve "$TLS_HOSTNAME:8444:127.0.0.1" --cacert "$CA_CERT" \
+    -u "owner:hiccup" \
+    "https://$TLS_HOSTNAME:8444/api/projects" 2>/dev/null)"
+  if [ "$code" = "200" ] && [ "$code401" = "401" ]; then
+    pass "AC10 scotty serves (8444 + basic_auth)" \
+      "https://$TLS_HOSTNAME:8444/api/projects -> 401 anon / 200 with owner creds"
   else
-    fail "AC10 scotty serves" "last code: ${code:-none} (deadline 240s)"
+    fail "AC10 scotty serves (8444 + basic_auth)" \
+      "anon: ${code401:-none} / authed: ${code:-none} (deadline 240s)"
     note "scotty container recent logs (self-diagnosis):"
     docker logs "$PROJECT-scotty-1" 2>&1 | tail -25 || true
     return
+  fi
+  # The raw host listener must be GONE (the 77i drop): 127.0.0.1:3306
+  # refuses connections (curl exit 7) now that nothing publishes it.
+  if ! curl -s -o /dev/null -m 5 "http://127.0.0.1:3306/api/projects" 2>/dev/null; then
+    pass "AC10 raw :3306 dropped" "http://127.0.0.1:3306/api/projects refused (host publish gone)"
+  else
+    fail "AC10 raw :3306 dropped" "http://127.0.0.1:3306/api/projects still answers — publish survived"
   fi
 
   # 3. bd round-trip against the compose dolt from the HOST, with a pinned
@@ -1271,8 +1293,13 @@ ac13_primus_queue_tooling() {
 
   # 5. scotty re-aligned: the dashboard's baked join carries the same
   #    canonical id; after canonicalization its bd connects again.
+  #    (77i: through the TLS edge + basic_auth like every host-side
+  #    consumer — the raw host :3306 path no longer exists.)
   local code
-  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:3306/api/projects || true)"
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+    --resolve "$TLS_HOSTNAME:8444:127.0.0.1" --cacert "$CA_CERT" \
+    -u "owner:hiccup" \
+    "https://$TLS_HOSTNAME:8444/api/projects" || true)"
   if [ "$code" = "200" ]; then
     pass "AC13 scotty re-aligned" "/api/projects 200 post-canonicalization — one id, every client (scotty + primus + host)"
   else

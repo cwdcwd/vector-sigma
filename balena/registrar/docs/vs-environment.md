@@ -25,7 +25,7 @@ application role; its endpoints belong to the tailnet, see
 | `postgres` | The registrar's database (`vsigma`/`vsigma`) | compose-internal only; you never talk to it directly |
 | `litellm` | The VS fleet's own LiteLLM gateway — your model front door, virtual keys, the `/a2a/*` mesh | `http://litellm:4000` (compose-internal); `https://<TLS_HOSTNAME>:8443` after the TLS flip |
 | `dolt` | The VS queue's Dolt SQL server — database `vs_ops`, user `vs` | `dolt:3306` compose-internal (your join config); devices reach `<master-LAN-IP>:3326` |
-| `scotty` | The queue's read-only dashboard UI | `http://<master-LAN-IP>:3306` on the device LAN |
+| `scotty` | The queue's read-only dashboard UI | `https://<TLS_HOSTNAME>:8444` through the caddy edge (basic_auth, user `owner`) — since 77i; the raw `:3306` LAN path is gone |
 | `hermes` | **You.** The VS coordinator Hermes runtime, `HERMES_HOME=/data/primus` | — |
 | `registrant-own` | Your identity delivery: polls the registrar, applies your bundle to the shared `primus-data` volume, watches for rotations | polls `http://registrar:3000` (compose-internal) |
 | `caddy` | The TLS edge: fronts registrar (:443) + gateway (:8443); port 80 redirects | device LAN |

@@ -98,10 +98,17 @@ services:
       dockerfile: Dockerfile.caddy
     environment:
       TLS_HOSTNAME: ${TLS_HOSTNAME:-vsigma.lan}
+      # 77i: the scotty basic_auth hash (bcrypt). The Caddyfile consumes
+      # it via {$SCOTTY_BASIC_AUTH_HASH} substitution at adapt time —
+      # NO default: an unset variable fails caddy loudly (fail-loud
+      # gate; the e2e ships the committed simulation hash in .env.e2e,
+      # production carries the owner-minted fleet variable).
+      SCOTTY_BASIC_AUTH_HASH: "${SCOTTY_BASIC_AUTH_HASH:?set SCOTTY_BASIC_AUTH_HASH (e2e ships it in deploy/.env.e2e; balena carries the fleet variable)}"
     ports:
       - "80:80"
       - "443:443"
       - "8443:8443"
+      - "8444:8444"
     volumes:
       - caddy-data:/data
     healthcheck:
@@ -196,8 +203,11 @@ services:
     depends_on:
       dolt:
         condition: service_healthy
-    ports:
-      - "3306:3306"
+    # 77i: NO host publish — scotty is fronted by caddy at
+    # https://<TLS_HOSTNAME>:8444 (basic_auth + internal CA). The raw
+    # 3306:3306 host publish is DROPPED in this same release; the
+    # compose-internal :3306 listener (healthcheck + bd bridge) is
+    # untouched.
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3306/api/projects').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
       interval: 30s
