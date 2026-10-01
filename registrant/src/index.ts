@@ -1,10 +1,10 @@
 import { loadConfig } from './config.js';
 import { run } from './run.js';
-import { SystemdTimesyncdProbe } from './clock-gate.js';
+import { HostClockProbe } from './clock-gate.js';
 
 const config = loadConfig();
 const result = await run(config, {
-  clockProbe: new SystemdTimesyncdProbe(),
+  clockProbe: new HostClockProbe(),
   fetchImpl: fetch,
 });
 

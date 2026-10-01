@@ -48,6 +48,13 @@ RUN npm install --omit=dev --no-audit --no-fund
 COPY --from=build /app/shared/dist ./shared/dist
 COPY --from=build /app/dist ./dist
 
+# fleet-ops-1py.4: build-epoch for the HostClockProbe's wall-clock
+# plausibility signal (clock-gate.ts): image build time in ms since
+# epoch. An NTP-synced host's wall clock sits at/after this value, so
+# the clock gate converges on the first poll; a no-RTC cold boot reads
+# a pre-build clock and keeps waiting for NTP exactly as before.
+RUN date +%s000 > /app/build-epoch
+
 # Data-volume mountpoint: fresh named volumes seed ownership from the
 # image path; owned by the base image's built-in node user (uid/gid
 # 1000 — fleet convention docker-base-image-builtin-user) so the
