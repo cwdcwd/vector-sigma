@@ -424,11 +424,34 @@ services:
   # restarts — without it every restart mints a NEW tailnet node
   # (containerboot's TS_STATE_DIR contract).
   #
-  # /dev/net/tun pre-flight (6c2 AC1, 2026-10-01): present on the live
-  # evidence hosts (crw-rw-rw- 10,200; module builtin to the 6.12.94-v8
-  # balenaOS 8 kernel on optimus-prime AND the master) — no devices:
-  # passthrough needed. The kernel-modules feature label stays for
-  # forward-proofing (a future host whose tun is modular).
+  # /dev/net/tun passthrough (6c2 canary fix, 2026-10-01): balenaOS
+  # containers do NOT inherit host /dev — the AC1 pre-flight proved the
+  # node present on both live hosts (crw-rw-rw- 10,200, module builtin
+  # to the 6.12.94-v8 balenaOS 8 kernel) yet the container on release
+  # 4373489 still fell back to --tun=userspace-networking
+  # (tstun: "error initializing tun dev stats polling: no such
+  # device"), which cannot accept inbound tailnet traffic. The
+  # passthrough is load-bearing, not belt-and-braces: containerboot's
+  # own ensureTunFile mknod fallback requires CAP_MKNOD, which this
+  # service deliberately does not grant. The kernel-modules feature
+  # label stays for forward-proofing (a future host whose tun is
+  # modular).
+  #
+  # TS_USERSPACE: "false" — containerboot at v1.102.5 defaults
+  # UserspaceMode TRUE (cmd/containerboot/settings.go:111 —
+  # def.Bool(os.Getenv("TS_USERSPACE"), true)); without this explicit
+  # override the passthrough alone would still boot userspace. Kernel
+  # tun is what accepts inbound tailnet connections.
+  #
+  # TS_BOOT_TIMEOUT: 24h — v1.102.5's default 60s boot deadline expires
+  # the IPN-bus watch on a keyless NeedsLogin park (containerboot exits
+  # 1, supervisor restarts — the ~61s loop pinned live on release
+  # 4373489: 157 restarts on optimus-prime, 34 on the master). A long
+  # deadline makes the keyless state a benign park instead: container
+  # Running/healthy, unjoined, until the owner's TS_AUTHKEY lands —
+  # the supervisor then recreates the container with the new env and
+  # the join evidence starts. The variable is structural (not a
+  # secret) and safe in compose.
   #
   # Healthcheck is process liveness only: join state (tailscale status
   # showing the tailnet IP) is CANARY evidence, not a healthcheck
@@ -441,8 +464,12 @@ services:
     cap_add:
       - net_admin
       - net_raw
+    devices:
+      - /dev/net/tun
     environment:
       TS_STATE_DIR: /var/lib/tailscale
+      TS_USERSPACE: "false"
+      TS_BOOT_TIMEOUT: "24h"
     volumes:
       - ts-state:/var/lib/tailscale
     labels:
