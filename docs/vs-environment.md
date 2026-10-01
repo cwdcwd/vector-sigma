@@ -12,7 +12,12 @@ zero manual steps, and this map is part of that rebuild.
 ## The composition (the master device's roster)
 
 Eight services share one Docker network; compose service names are the
-only hostnames you should ever need.
+only hostnames you should ever need. (The ninth, `tailscale`, is
+deliberately NOT on that network: `network_mode: host` — the overlay
+service runs in the host's network namespace, so it is invisible to
+compose-internal DNS and you never talk to it. It carries no
+application role; its endpoints belong to the tailnet, see
+[docs/tailscale-runbook.md](tailscale-runbook.md).)
 
 | Service | What it is | Where |
 |---|---|---|
@@ -24,6 +29,7 @@ only hostnames you should ever need.
 | `hermes` | **You.** The VS coordinator Hermes runtime, `HERMES_HOME=/data/primus` | — |
 | `registrant-own` | Your identity delivery: polls the registrar, applies your bundle to the shared `primus-data` volume, watches for rotations | polls `http://registrar:3000` (compose-internal) |
 | `caddy` | The TLS edge: fronts registrar (:443) + gateway (:8443); port 80 redirects | device LAN |
+| `tailscale` | The overlay service: joins the device to the VS tailnet so it is reachable from anywhere and off-LAN devices can reach the master | host network namespace; MagicDNS name from the device-scoped `TS_HOSTNAME` variable |
 
 ## The endpoints you use
 

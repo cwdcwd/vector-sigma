@@ -63,5 +63,66 @@ services:
     stop_signal: SIGTERM
     restart: always
 
+  # j7g phase 1a (fleet-ops-6c2): the tailscale overlay service — one
+  # private network across the registrar (master) and devices fleets, so
+  # VS devices may sit in different physical locations and still reach
+  # the master's endpoints (REGISTRAR_URL, the gateway, the queue).
+  # Per-device overlay (DECIDED, epic j7g): NO subnet routes, NO exit
+  # node; the tailnet ACLs deny the funnel node attribute for all VS
+  # tags — the overlay is reachable only from the tailnet itself, and
+  # this service publishes nothing.
+  #
+  # Image: official tailscale/tailscale at a PINNED tag (never :latest;
+  # arm64 manifest verified in the registry index 2026-10-01). Alpine-
+  # based — the kill -0 1 healthcheck shell exists.
+  # network_mode host: tailscaled manages the host netns (this is the
+  # containerboot contract shape); no ports section is meaningful under
+  # host networking and none is declared.
+  #
+  # NO ${VAR} substitution (supervisor compose): TS_AUTHKEY (per-device
+  # auth key, pre-tagged tag:vs-agent, reusable — owner-minted) arrives
+  # as a balenaCloud SERVICE-scoped variable on the tailscale service
+  # only (keeps the secret out of sibling containers), and TS_HOSTNAME
+  # (the MagicDNS machine name, e.g. the device's balena name) arrives
+  # as a DEVICE-scoped variable — never hardcoded here: the devices
+  # fleet is N devices from one compose. Both are documented in
+  # docs/balena-devices-runbook.md.
+  #
+  # ts-state volume: tailscaled identity persists across container
+  # restarts — without it every restart mints a NEW tailnet node
+  # (containerboot's TS_STATE_DIR contract).
+  #
+  # /dev/net/tun pre-flight (6c2 AC1, 2026-10-01): present on the live
+  # hosts (crw-rw-rw- 10,200; module builtin to the 6.12.94-v8
+  # balenaOS 8 kernel on optimus-prime AND the master) — no devices:
+  # passthrough needed. The kernel-modules feature label stays for
+  # forward-proofing (a future host whose tun is modular).
+  #
+  # Healthcheck is process liveness only: join state (tailscale status
+  # showing the tailnet IP) is CANARY evidence, not a healthcheck
+  # question — same marker-vs-liveness split as the rest of this app.
+  tailscale:
+    image: tailscale/tailscale:v1.102.5
+    network_mode: host
+    cap_add:
+      - net_admin
+      - net_raw
+    environment:
+      TS_STATE_DIR: /var/lib/tailscale
+    volumes:
+      - ts-state:/var/lib/tailscale
+    labels:
+      io.balena.features.kernel-modules: "1"
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    stop_grace_period: 30s
+    stop_signal: SIGTERM
+    restart: always
+
 volumes:
   agent-data:
+  # j7g 6c2: tailscaled state (tailnet identity survives restarts).
+  ts-state:

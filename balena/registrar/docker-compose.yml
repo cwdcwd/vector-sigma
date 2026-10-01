@@ -394,6 +394,68 @@ services:
     restart: always
   # ── f57.14 END ──────────────────────────────────────────────────────────────
 
+  # ── j7g phase 1a (fleet-ops-6c2): the tailscale overlay service ─────────────
+  # One private overlay network across the registrar (master) and
+  # devices fleets, so the owner reaches the management layer (gateway
+  # /ui, scotty queue UI, registrar console) from anywhere over the
+  # tailnet, and VS devices may sit in DIFFERENT PHYSICAL LOCATIONS and
+  # still bootstrap, communicate, and be coordinated by primus through
+  # the master's endpoints. Per-device overlay (DECIDED, epic j7g): NO
+  # subnet routes, NO exit node; the tailnet ACLs deny the funnel node
+  # attribute for all VS tags — the overlay is reachable only from the
+  # tailnet itself, and this service publishes nothing.
+  #
+  # Image: official tailscale/tailscale at a PINNED tag (never :latest;
+  # arm64 manifest verified in the registry index 2026-10-01). Alpine-
+  # based — the kill -0 1 healthcheck shell exists.
+  # network_mode host: tailscaled manages the host netns (this is the
+  # containerboot contract shape); no ports section is meaningful under
+  # host networking and none is declared.
+  #
+  # NO ${VAR} substitution (supervisor compose): TS_AUTHKEY (per-device
+  # auth key, pre-tagged tag:vs-master, reusable — owner-minted) arrives
+  # as a balenaCloud SERVICE-scoped variable on the tailscale service
+  # only (keeps the secret out of the sibling containers), and
+  # TS_HOSTNAME (the MagicDNS machine name, e.g. "vector-sigma") arrives
+  # as a DEVICE-scoped variable — never hardcoded here. Both documented
+  # in the README variable tables.
+  #
+  # ts-state volume: tailscaled identity persists across container
+  # restarts — without it every restart mints a NEW tailnet node
+  # (containerboot's TS_STATE_DIR contract).
+  #
+  # /dev/net/tun pre-flight (6c2 AC1, 2026-10-01): present on the live
+  # evidence hosts (crw-rw-rw- 10,200; module builtin to the 6.12.94-v8
+  # balenaOS 8 kernel on optimus-prime AND the master) — no devices:
+  # passthrough needed. The kernel-modules feature label stays for
+  # forward-proofing (a future host whose tun is modular).
+  #
+  # Healthcheck is process liveness only: join state (tailscale status
+  # showing the tailnet IP) is CANARY evidence, not a healthcheck
+  # question — same marker-vs-liveness split as the rest of this
+  # composition (the 1py.3 lesson: a probe-based check can restart-loop
+  # a healthy container; the join signal is external canary evidence).
+  tailscale:
+    image: tailscale/tailscale:v1.102.5
+    network_mode: host
+    cap_add:
+      - net_admin
+      - net_raw
+    environment:
+      TS_STATE_DIR: /var/lib/tailscale
+    volumes:
+      - ts-state:/var/lib/tailscale
+    labels:
+      io.balena.features.kernel-modules: "1"
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    stop_grace_period: 30s
+    stop_signal: SIGTERM
+    restart: always
+
   # f57.13: the TLS edge — caddy fronts the whole composition per the baked
   # Caddyfile (registrar :443, litellm :8443, 80 -> 308 redirect). TLS_HOSTNAME
   # is a fleet variable consumed by caddy's own {$VAR:default} substitution
@@ -456,6 +518,8 @@ services:
 
 volumes:
   pgdata:
+  # j7g 6c2: tailscaled state (tailnet identity survives restarts).
+  ts-state:
   # f57.13 (Caddy-internal-CA rewrite): Caddy's self-generated CA key +
   # leaf certs live here (/data/caddy/pki/...). Must persist across
   # releases — wiping it forces a CA roll (docs/tls-runbook.md "CA roll").

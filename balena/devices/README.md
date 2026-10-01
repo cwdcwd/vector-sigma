@@ -7,7 +7,7 @@ balena remote builders when a `devices-v*` tag is pushed
 
 ```
 balena/devices/
-├── docker-compose.yml   # agent + registrant, shared volume, healthchecks
+├── docker-compose.yml   # agent + registrant + tailscale overlay, shared volume, healthchecks
 ├── agent/
 │   ├── Dockerfile       # placeholder runtime image (swap point)
 │   └── gate.sh          # blocks on /data/agent/ready.marker, then execs
@@ -53,18 +53,24 @@ the versions match the root lockfile.
 
 ## Runtime configuration
 
-No `environment:` entries — balena compose performs **no variable
+No `${VAR}` substitution — balena compose performs **no variable
 substitution**, and every runtime value arrives as a balenaCloud
 dashboard variable (`REGISTRAR_URL`, `REGISTRAR_KEY` per device;
 `BALENA_DEVICE_UUID` auto-injected). The full table:
-[balena-devices-runbook.md](../docs/balena-devices-runbook.md).
+[balena-devices-runbook.md](../docs/balena-devices-runbook.md). The
+`tailscale` service is the one structural exception: it carries the
+single static `TS_STATE_DIR` env entry (its state path — structural,
+not a secret); its auth key and MagicDNS name arrive the same
+dashboard-variable way (`TS_AUTHKEY` service-scoped to tailscale,
+`TS_HOSTNAME` device-scoped — see the tailscale runbook).
 
 ## Layout constraints honored
 
 - compose-file **v2.4** semantics (balena's base): no v3 fields used;
   `depends_on` is not used at all (the supervisor orders container
   starts itself, and the agent's gate makes ordering explicit anyway).
-- **Named volume only** (`agent-data`) — no bind mounts.
+- **Named volume only** (`agent-data`; `ts-state` on the tailscale
+  service) — no bind mounts.
 - Healthchecks are **process liveness** (`kill -0 1`): they catch
   alive-but-broken containers and exec-arch mismatches, but never gate
   on the ready marker (an unprovisioned device legitimately has none).

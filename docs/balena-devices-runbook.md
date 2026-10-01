@@ -12,6 +12,7 @@ Everything here is a UI-only, one-time-per-device workflow on the balenaCloud da
 |---|---|---|
 | `agent` | built from `balena/devices/agent/` (placeholder runtime) | Your agent runtime. Entrypoint blocks on `/data/agent/ready.marker` — no identity, no start. Swap the runtime via a fleet PR when ready. |
 | `registrant` | built from `balena/devices/registrant/` (vendored workspace sources) | Bootstraps identity: clock gate → registrar fetch → 0600 bundle write → ready marker → resident rotation watcher. |
+| `tailscale` | `tailscale/tailscale:v1.102.5` (pinned official image) | The VS tailnet overlay (j7g phase 1a): joins the device to the private tailnet — off-LAN devices reach the master's endpoints, and the device is reachable from the tailnet. Host network namespace, publishes nothing; funnel is ACL-denied. See [tailscale-runbook.md](tailscale-runbook.md). |
 
 Both share the named volume `agent-data`, mounted at `/data/agent`. Identity lives on the data partition: a reflash re-fetches and the device is itself again.
 
@@ -40,6 +41,8 @@ Both share the named volume `agent-data`, mounted at `/data/agent`. Identity liv
 | `CLOCK_GATE_TIMEOUT_MS` | device or fleet | no | Max NTP wait before best-effort proceed (default 600000). |
 | `WATCH_INTERVAL_MS` | device or fleet | no | Rotation-watch poll interval (default 300000). |
 | `DATA_DIR` | — | — | Fixed to `/data/agent` by the app; do not set. |
+| `TS_AUTHKEY` | **service** (`tailscale`) | yes (overlay) | Per-device tailscale auth key (owner-minted, pre-tagged `tag:vs-agent`, reusable). **Service-scoped to the tailscale service only** — keeps the secret out of sibling containers. See [tailscale-runbook.md](tailscale-runbook.md). |
+| `TS_HOSTNAME` | device | yes (overlay) | The device's MagicDNS machine name on the VS tailnet (e.g. `optimus-prime`). Set via the balena API 2026-10-01: vector-sigma (master) / optimus-prime. Never hardcoded in the compose — the devices fleet is N devices from one compose. |
 
 ## Releases
 
