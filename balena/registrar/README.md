@@ -17,7 +17,7 @@ Deployed fleet: `g_c_d/vector-sigma-master`.
 
 ```
 balena/registrar/
-├── docker-compose.yml        # registrar + postgres
+├── docker-compose.yml        # registrar + postgres + gateway + queue + primus + caddy + tailscale
 ├── README.md
 └── registrar/                 # VENDORED workspace sources (context dir)
     ├── Dockerfile            # multi-stage: build → runtime (non-root)
@@ -77,6 +77,8 @@ env).
 | `BEADS_DOLT_PASSWORD` | scotty + hermes | **yes — no default** (f57.15; hermes added b1r) | SAME secret value as `DOLT_PASSWORD`, under the env key bd reads (bd and the dolt image read different keys). Lets the scotty container's in-image bd join the queue read-only; since b1r it also reaches the hermes container's in-image bd — primus's queue CURATION client (full read-write). Fleet-scoped: it cascades to every service by default; no static value in the compose (f57.8). |
 | `PRIMUS_REGISTRAR_KEY` | registrant-own | **yes — no default** (f57.14) | The registrar key for the master device's own row (agent_name=primus). Mint/insert per the device-key flow; never reuse another row's key. Set as the `REGISTRAR_KEY` device variable (the name the vendored registrant reads — `PRIMUS_REGISTRAR_KEY` is the balenaCloud device-variable name used at the f57.14 rollout; the registrant's config layer maps it). |
 | `TLS_HOSTNAME` | **fleet-wide** | **yes — no default** (f57.13) | The master device hostname the caddy edge serves (must match the Pi-hole DNS record — see [docs/tls-runbook.md](../../docs/tls-runbook.md)). Feeds the Caddyfile's `{$TLS_HOSTNAME:vsigma.lan}` substitution. This is the ONLY TLS-related fleet variable — caddy mints and rotates its own cert/key via `tls internal`; there is no cert/key pair to paste. |
+| `TS_AUTHKEY` | **service** (`tailscale`) | **yes — no default** (j7g 6c2) | Per-device tailscale auth key (owner-minted, pre-tagged `tag:vs-master`, reusable). **Service-scoped to the tailscale service only** — keeps the secret out of sibling containers. Custody: 600-equivalent, never in image layers or compose. See [docs/tailscale-runbook.md](../../docs/tailscale-runbook.md). |
+| `TS_HOSTNAME` | device | **yes — no default** (j7g 6c2) | The master device's MagicDNS machine name on the VS tailnet (e.g. `vector-sigma`; already set via the balena API 2026-10-01). Device-scoped so the value composes cleanly across future fleet members. |
 ### Static in compose (override only if you know why)
 
 | Variable | Service | Value | Purpose |
