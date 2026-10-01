@@ -1,10 +1,10 @@
 import { afterAll, describe, expect, it } from 'vitest';
-import { mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { IdentityStore } from '../src/identity-store.js';
-import { waitForClock, ClockGateTimeout, StaticProbe } from '../src/clock-gate.js';
+import { waitForClock, ClockGateTimeout, StaticProbe, HostClockProbe } from '../src/clock-gate.js';
 import { loadConfig } from '../src/config.js';
 import type { IdentityBundle } from '@vector-sigma/shared';
 
@@ -88,6 +88,89 @@ describe('clock gate', () => {
         sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
       }),
     ).rejects.toThrow(ClockGateTimeout);
+  });
+
+  // fleet-ops-1py.4 regression: the AC the lane exists for. The old
+  // SystemdTimesyncdProbe could never observe sync on balenaOS 8
+  // (chronyd host, no timesyncd flag, no /run bind mount), so EVERY
+  // container start paid the full 600s. HostClockProbe must converge
+  // on the first poll when the wall clock is at/after the baked build
+  // epoch — the state of every NTP-synced host.
+  it('AC1py.4: converges on the first poll on a synced host — no 600s timeout', async () => {
+    const dir = await tempDataDir();
+    const epochPath = path.join(dir, 'build-epoch');
+    await writeFile(epochPath, `${Date.now()}\n`);
+    const waits: number[] = [];
+    await waitForClock({
+      probe: new HostClockProbe({
+        epochPaths: [epochPath],
+        timesyncdFlagPaths: [], // hermetic: force the epoch signal
+      }),
+      timeoutMs: 600_000,
+      onWait: (e) => waits.push(e),
+      sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    });
+    expect(waits).toEqual([]); // zero waits: instant convergence
+  });
+});
+
+describe('clock gate probe (HostClockProbe, fleet-ops-1py.4)', () => {
+  it('wall clock at/after the baked build epoch reads synchronized (chronyd host: no flag needed)', async () => {
+    const dir = await tempDataDir();
+    const epochPath = path.join(dir, 'build-epoch');
+    await writeFile(epochPath, '1759300000000\n');
+    const probe = new HostClockProbe({
+      epochPaths: [epochPath],
+      timesyncdFlagPaths: [], // hermetic: force the epoch signal
+      now: () => 1759300000001,
+    });
+    expect(await probe.isSynchronized()).toBe(true);
+  });
+
+  it('pre-epoch wall clock (no-RTC cold boot: 1970 or shutdown skew) stays unsynchronized', async () => {
+    const dir = await tempDataDir();
+    const epochPath = path.join(dir, 'build-epoch');
+    await writeFile(epochPath, '1759300000000\n');
+    const probe = new HostClockProbe({
+      epochPaths: [epochPath],
+      timesyncdFlagPaths: [], // hermetic: force the epoch signal
+      now: () => 86_400_000,
+    });
+    expect(await probe.isSynchronized()).toBe(false);
+  });
+
+  it('systemd-timesyncd flag, when exposed, still reports synchronized', async () => {
+    const dir = await tempDataDir();
+    const flag = path.join(dir, 'synchronized');
+    await writeFile(flag, '');
+    const probe = new HostClockProbe({
+      timesyncdFlagPaths: [flag],
+      epochPaths: [],
+      now: () => 86_400_000,
+    });
+    expect(await probe.isSynchronized()).toBe(true);
+  });
+
+  it('no flag and no readable epoch file => false (fail-safe: keep waiting, gate fails open)', async () => {
+    const dir = await tempDataDir();
+    const probe = new HostClockProbe({
+      timesyncdFlagPaths: [path.join(dir, 'no-flag')],
+      epochPaths: [path.join(dir, 'no-epoch')],
+      now: () => Date.now(),
+    });
+    expect(await probe.isSynchronized()).toBe(false);
+  });
+
+  it('garbage epoch file is ignored, not trusted (fail-safe on parse)', async () => {
+    const dir = await tempDataDir();
+    const epochPath = path.join(dir, 'build-epoch');
+    await writeFile(epochPath, 'not-a-number\n');
+    const probe = new HostClockProbe({
+      epochPaths: [epochPath],
+      timesyncdFlagPaths: [], // hermetic: force the epoch signal
+      now: () => Date.now(),
+    });
+    expect(await probe.isSynchronized()).toBe(false);
   });
 });
 
