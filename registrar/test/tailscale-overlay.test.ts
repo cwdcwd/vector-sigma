@@ -26,11 +26,24 @@ import { describe, expect, it } from 'vitest';
  *     MagicDNS name) arrive as balenaCloud dashboard variables — never in
  *     this file, not even as stubs (f57.8: no secrets in compose),
  *   - no container_name (the balena supervisor rejects it),
- *   - no devices: passthrough — /dev/net/tun is PRESENT on both live
- *     hosts (6c2 AC1 pre-flight, 2026-10-01: crw-rw-rw- 10,200, module
- *     builtin to 6.12.94-v8 on optimus-prime and the master), so the
- *     bead's conditional add does not fire; pin the absence so a future
- *     re-add is a deliberate, evidenced decision,
+ *   - devices: passthrough for /dev/net/tun — the AC1 pre-flight checked
+ *     the HOST node, but balenaOS containers do NOT inherit host /dev
+ *     (falsified live on release 4373489: containerboot fell back to
+ *     --tun=userspace-networking, tstun "no such device" — inbound
+ *     tailnet traffic impossible). The passthrough is load-bearing:
+ *     containerboot's own ensureTunFile mknod fallback needs CAP_MKNOD,
+ *     which this service deliberately does not grant,
+ *   - TS_USERSPACE: "false" — containerboot at v1.102.5 defaults
+ *     UserspaceMode TRUE (cmd/containerboot/settings.go:111,
+ *     def.Bool(os.Getenv("TS_USERSPACE"), true)); the passthrough alone
+ *     would still boot userspace. "false" parses via strconv.ParseBool
+ *     (util/def/def.go),
+ *   - TS_BOOT_TIMEOUT: structural long boot deadline — v1.102.5's 60s
+ *     default IPN-bus watch expires on a keyless NeedsLogin park and
+ *     exits 1 → supervisor restart-loop ~61s (pinned live: 157 restarts
+ *     on optimus-prime, 34 on the master). A long park keeps the
+ *     container Running until the owner's TS_AUTHKEY lands (the
+ *     supervisor recreates the container with the new env),
  *   - process-liveness healthcheck (kill -0 1) — join state is canary
  *     evidence (`tailscale status` shows the tailnet IP), not a
  *     healthcheck question, same marker-vs-liveness split as the rest
@@ -97,7 +110,7 @@ describe.each(composes)('tailscale overlay service: %s', (rel) => {
     expect(ts).toMatch(/^      - net_raw$/m);
   });
 
-  it('ships only structural env — TS_STATE_DIR; secrets arrive as dashboard variables', () => {
+  it('ships only structural env (TS_STATE_DIR, TS_USERSPACE, TS_BOOT_TIMEOUT); secrets arrive as dashboard variables', () => {
     expect(ts).toMatch(/^      TS_STATE_DIR: \/var\/lib\/tailscale$/m);
     // f57.8: no secrets in compose — not even as empty stubs.
     expect(ts).not.toMatch(/TS_AUTHKEY/);
@@ -122,8 +135,25 @@ describe.each(composes)('tailscale overlay service: %s', (rel) => {
     expect(ts).not.toMatch(/^\s*ports:/m);
   });
 
-  it('needs no devices: passthrough — /dev/net/tun verified present on both hosts (AC1)', () => {
-    expect(ts).not.toMatch(/^\s*devices:/m);
+  it('ships the /dev/net/tun passthrough (balenaOS containers do not inherit host /dev)', () => {
+    // Host pre-flight is not container fact: on release 4373489 the
+    // host had /dev/net/tun yet the container fell back to
+    // --tun=userspace-networking ("tstun: no such device"). Inbound
+    // tailnet traffic needs kernel tun — the passthrough is required.
+    expect(ts).toMatch(/^    devices:$/m);
+    expect(ts).toMatch(/^      - \/dev\/net\/tun$/m);
+  });
+
+  it('forces kernel tun with TS_USERSPACE=false (containerboot defaults userspace TRUE at v1.102.5)', () => {
+    expect(ts).toMatch(/^      TS_USERSPACE: "false"$/m);
+  });
+
+  it('parks keyless boots instead of crashlooping (TS_BOOT_TIMEOUT beats the 60s default)', () => {
+    // v1.102.5 default: the IPN-bus watch dies at 60s on a keyless
+    // NeedsLogin park → exit 1 → supervisor restart-loop. A long
+    // structural deadline keeps the container Running until the
+    // owner's TS_AUTHKEY lands (recreate + join).
+    expect(ts).toMatch(/^      TS_BOOT_TIMEOUT: "24h"$/m);
   });
 
   it('healthchecks process liveness only (join state is canary evidence)', () => {
