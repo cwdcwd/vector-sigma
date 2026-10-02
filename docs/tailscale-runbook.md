@@ -17,9 +17,10 @@ Per-device tailscale overlay, NOT a subnet router advertising the LAN
 
 - **No subnet routes, no exit node.** Blast radius = the tailnet's
   device IPs only.
-- **Funnel denied.** The tailnet ACLs explicitly deny the funnel node
-  attribute for all VS tags — no VS service is ever exposed to the
-  internet. The overlay is reachable only from the tailnet itself.
+- **Funnel denied.** The tailnet ACLs grant no `funnel` node
+  attribute to any VS tag — funnel is opt-in, so the omission IS the
+  deny — no VS service is ever exposed to the internet. The overlay is
+  reachable only from the tailnet itself.
 - **MagicDNS name is the canonical fleet endpoint** (`REGISTRAR_URL`
   etc. flip to it in phase 1b, canary-verified —
   [fleet-ops-lrb](https://github.com/cwdcwd/vector-sigma)); per-device
@@ -68,8 +69,14 @@ exit-1 restart-loop instead of a benign park).
    - one key pre-tagged `tag:vs-master` (the registrar device), and
    - one key pre-tagged `tag:vs-agent` (every devices-fleet device),
    - both **reusable**.
-3. **Write the ACLs** (admin console → *Access Controls*): deny the
-   `funnel` attribute for all VS tags. Example policy:
+3. **Write the ACLs** (admin console → *Access Controls*): funnel is
+   opt-in — an attribute a policy never grants is denied, so the
+   belt-and-braces deny is simply to **omit any `funnel` nodeAttr
+   entirely** (the original example's explicit-deny block used an
+   invalid shape — an `app` object whose `tailscale.com/what` value was
+   a string, which the console rejects with an unmarshal error —
+   verified live 2026-10-02: the pasted policy throws before it can
+   save). Example policy (the shape the owner has live on the tailnet):
 
    ```json
    {
@@ -78,16 +85,19 @@ exit-1 restart-loop instead of a benign park).
        "tag:vs-agent": ["autogroup:admin"]
      },
      "acls": [
-       { "action": "accept", "src": ["autogroup:member"], "dst": ["tag:vs-master:*", "tag:vs-agent:*"] }
-     ],
-     "nodeAttrs": [
-       { "target": ["*"], "attr": ["funnel"], "app": { "tailscale.com/what": "denied" } }
+       { "action": "accept", "src": ["autogroup:member"], "dst": ["tag:vs-master:*", "tag:vs-agent:*"] },
+       { "action": "accept", "src": ["tag:vs-agent"], "dst": ["tag:vs-master:*"] }
      ]
    }
    ```
 
-   (The default ACL may already deny funnel for new tailnets; the
-   explicit deny is the belt-and-braces the consult settled on.)
+   The second rule is required: **tagged nodes are not members** — the
+   `autogroup:member` src matches the owner's user, never the
+   `tag:vs-agent` devices, so without the tag→tag accept the two nodes
+   cannot talk to each other over the tailnet (the first overlay
+   activation proved it: control-plane pongs while the data plane
+   stayed dark). The owner's live policy already carries it; this
+   example now matches.
 4. **Set the balenaCloud variables** (dashboard → device/service
    pages):
    - `TS_HOSTNAME` — **device-scoped**, per device: the MagicDNS
