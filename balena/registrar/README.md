@@ -79,6 +79,7 @@ env).
 | `TLS_HOSTNAME` | **fleet-wide** | **yes — no default** (f57.13) | The master device hostname the caddy edge serves (must match the Pi-hole DNS record — see [docs/tls-runbook.md](../../docs/tls-runbook.md)). Feeds the Caddyfile's `{$TLS_HOSTNAME:vsigma.lan}` substitution. This is the ONLY TLS-related fleet variable — caddy mints and rotates its own cert/key via `tls internal`; there is no cert/key pair to paste. |
 | `TS_AUTHKEY` | **service** (`tailscale`) | **yes — no default** (j7g 6c2) | Per-device tailscale auth key (owner-minted, pre-tagged `tag:vs-master`, reusable). **Service-scoped to the tailscale service only** — keeps the secret out of sibling containers. Custody: 600-equivalent, never in image layers or compose. See [docs/tailscale-runbook.md](../../docs/tailscale-runbook.md). |
 | `TS_HOSTNAME` | device | **yes — no default** (j7g 6c2) | The master device's MagicDNS machine name on the VS tailnet (e.g. `vector-sigma`; already set via the balena API 2026-10-01). Device-scoped so the value composes cleanly across future fleet members. |
+| `SCOTTY_BASIC_AUTH_HASH` | caddy | **yes — no default** (j7g 77i) | The scotty queue UI's basic_auth credential: the bcrypt hash of the owner's chosen password, minted with `caddy hash-password --plaintext` (or any bcrypt tool). The Caddyfile's `{$SCOTTY_BASIC_AUTH_HASH}` substitution consumes it at adapt time; an unset/empty variable fails caddy's boot LOUDLY — set it on the fleet BEFORE tagging the release carrying the 8444 fronting. Never the plaintext in any variable; 600-equivalent custody. The UI answers at `https://<TLS_HOSTNAME>:8444` with user `owner`. |
 ### Static in compose (override only if you know why)
 
 | Variable | Service | Value | Purpose |
@@ -110,9 +111,13 @@ Since f57.13 the composition's published surface is the **caddy TLS
 edge**: `https://<TLS_HOSTNAME>/` (port 443) for the admin console + API,
 `https://<TLS_HOSTNAME>:8443/` for the VS gateway, and port 80 is a 308
 redirect to https — the registrar and litellm containers no longer publish
-host ports directly. The balenaCloud public URL tunnels device port 80
-and therefore lands on the redirect: plain-HTTP console access through
-the tunnel is dead by design (use https from a trusted host; see
+host ports directly. Since 77i the scotty queue UI is fronted there too,
+at `https://<TLS_HOSTNAME>:8444/` with basic_auth (user `owner`); the raw
+`http://<master-LAN-IP>:3306` dashboard path is GONE (dropped in the same
+release — it was the composition's widest exposure, an unauthenticated
+read-only UI on the LAN). The balenaCloud public URL tunnels device port 80
+and therefore lands on the redirect: plain-HTTP console access through the
+tunnel is dead by design (use https from a trusted host; see
 [docs/tls-runbook.md](../../docs/tls-runbook.md)).
 
 > **Deploy sequencing (read before tagging a release):** the composition's

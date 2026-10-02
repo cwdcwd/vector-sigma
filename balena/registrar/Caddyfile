@@ -71,10 +71,25 @@ http://:80 {
 	reverse_proxy litellm:4000
 }
 
-# --- Scotty UI (placeholder — lands with the queue bead, f57.15) ----------
-# Uncomment when the scotty service exists; same internal-CA pattern:
+# --- Scotty queue UI: fronted behind the TLS edge on 8444 (f57.15 + 77i) --
+# Was raw unauthenticated HTTP on host :3306 — the composition's widest
+# exposure. Now: same internal-CA pattern as the other fronted services,
+# PLUS basic_auth (D2 green-lit — covers an ACL misconfiguration on an
+# otherwise unauthenticated read-only UI).
 #
-# {$TLS_HOSTNAME:vsigma.lan}:8444 {
-# 	tls internal
-# 	reverse_proxy scotty:8080
-# }
+# The bcrypt hash arrives as the SCOTTY_BASIC_AUTH_HASH fleet variable
+# (owner-minted via `caddy hash-password --plaintext`; the README table).
+# NO default: an unset/empty variable fails caddy's adapt LOUDLY at boot
+# — a deliberate fail-loud gate (LITELLM_MASTER_KEY precedent: the
+# variable is set on the fleet BEFORE the release carrying this stanza
+# is tagged). Never a plaintext or literal hash in this file.
+#
+# Upstream is the in-container scotty:3306 (compose network) — NOT the
+# drifted scotty:8080 from the old placeholder.
+{$TLS_HOSTNAME:vsigma.lan}:8444 {
+	tls internal
+	basic_auth {
+		owner {$SCOTTY_BASIC_AUTH_HASH}
+	}
+	reverse_proxy scotty:3306
+}

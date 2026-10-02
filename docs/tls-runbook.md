@@ -144,3 +144,10 @@ exposure, or wiping a device for a clean start)
   caddy's redirect-to-TLS: plain-HTTP console access through the tunnel
   is dead by design. Use https from a trusted host, or enable the
   public-URL toggle only for the https port if you need remote access.
+- **Edge routing map (since 77i)**: `https://<TLS_HOSTNAME>:443` =
+  registrar (admin console + API); `:8443` = the VS gateway
+  (`/health/*`, `/ui`, `/v1/*`, `/a2a/*`); `:8444` = the scotty queue
+  UI with basic_auth (user `owner` — the hash arrives as the
+  `SCOTTY_BASIC_AUTH_HASH` fleet variable; never a plaintext anywhere).
+  The raw `http://<master-LAN-IP>:3306` scotty path no longer exists;
+  the dolt server keeps its `:3326` LAN publish (bd clients, not HTTP).

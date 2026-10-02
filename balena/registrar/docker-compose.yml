@@ -240,10 +240,13 @@ services:
       # read different env keys). NEVER baked into the image (f57.8).
     depends_on:
       - dolt
-    ports:
-      # LAN dashboard (the queue UI): devices/owner reach it at
-      # http://<master-LAN-IP>:3306 — the Cabal dashboard's port posture.
-      - "3306:3306"
+    # 77i: NO host publish — scotty is fronted by caddy at
+    # https://<TLS_HOSTNAME>:8444 (basic_auth + the internal CA). The
+    # raw 3306:3306 host publish was the composition's widest exposure
+    # (unauthenticated read-only UI on the LAN) and is DROPPED in this
+    # same release. The compose-internal :3306 listener is untouched:
+    # the healthcheck below and scotty's own bd bridge ride the compose
+    # network, never the host publish.
     healthcheck:
       # HTTP liveness: scotty serves /api/projects (the project picker's data
       # route — verified present at cc55734; there is no /api/doctor route)
@@ -502,11 +505,14 @@ services:
       TLS_HOSTNAME: vsigma.lan
     ports:
       # The composition's TLS front door. 443 = registrar (admin + API);
-      # 8443 = the VS gateway (gateway + /ui + /a2a/*). Port 80 serves only
-      # the 308 redirect to https.
+      # 8443 = the VS gateway (gateway + /ui + /a2a/*); 8444 = the scotty
+      # queue UI (basic_auth + the internal CA — 77i; raw host :3306 was
+      # the composition's widest exposure and is DROPPED in the same
+      # release). Port 80 serves only the 308 redirect to https.
       - "80:80"
       - "443:443"
       - "8443:8443"
+      - "8444:8444"
     volumes:
       - caddy-data:/data
     healthcheck:
