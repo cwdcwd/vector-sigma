@@ -138,6 +138,59 @@ Phase 1b (MagicDNS endpoint flip, fleet-ops-lrb) and phase 2 (caddy
 retirement, fleet-ops-lnf) are separate, gated lanes — phase 1a does
 not flip any endpoint.
 
+## Phase 1b: the MagicDNS endpoint flip (fleet-ops-lrb)
+
+The canary (2026-10-02, evidence on the lane bead) DECIDED the
+mechanism — URLs keep the canonical MagicDNS name; in-container
+resolution is PINNED, not resolved:
+
+- **Why pinned**: the container DNS chain (embedded 127.0.0.11 →
+  host dnsmasq → upstream) has **no ts.net route**, and the tailscale
+  resolver at `100.100.100.100` serves ONLY tailnet names (it refuses
+  everything else with SERVFAIL — no global resolvers are configured
+  tailnet-wide). `accept-dns=true` **cannot fix this**: tailscaled
+  runs in its own mount namespace and would rewrite only its own
+  container's `resolv.conf`, never the host dnsmasq chain the other
+  containers inherit. A plan-B per-device `REGISTRAR_URL=<tailnet-IP>`
+  was REJECTED by the same canary verdict: it drags an explicit
+  Host/SNI story into the app (Node derives `servername` from the URL
+  host — an IP host means cert mismatch against any name cert) and
+  multiplies variables per device. The pin achieves the same
+  reachability with zero app changes.
+- **What ships in the release** (repo-side, this lane):
+  1. **Caddy aliases** — all three fronted sites (443 registrar,
+     8443 gateway, 8444 scotty) gain the master's MagicDNS FQDN as a
+     second site address via the `{$TS_MASTER_DNS:<default>}`
+     substitution — provision-then-flip (the f57.9 hazard class): the
+     edge serves the name BEFORE any device points at it. The AC2
+     pre-flip canary proved the hazard live (TLS alert 80 on 443/8443
+     for the MagicDNS SNI).
+  2. **extra_hosts pins** — the literal pair
+     `vector-sigma.tailb7207e.ts.net:100.124.197.78` on exactly the
+     URL consumers: devices compose `agent` + `registrant` (the
+     `REGISTRAR_URL` flip), registrar compose `hermes` (the
+     `GATEWAY_URL`/`A2A_PUBLIC_URL` flip). `extra_hosts` is
+     supervisor-supported (the docs.balena.io compose-fields table);
+     it has no `${VAR}` path under the supervisor, so the pair is a
+     structural literal (never a secret; the tailnet is ACL-gated).
+     The pin test pins all three sites.
+- **Owner/coordinator steps, in order** (after the release ships):
+  1. Set `TS_MASTER_DNS` **fleet-wide on the registrar fleet** if the
+     baked default is ever wrong (structural — the default mirrors
+     the live value; the fleet variable wins).
+  2. Owner tags `registrar-v*` → master pins the release → **verify
+     the alias first** (provision-then-flip): SNI probe
+     `https://vector-sigma.tailb7207e.ts.net/healthz` must answer
+     200 with the internal CA. THEN tag `devices-v*`.
+  3. Coordinator flips the fleet variables (balena MCP):
+     devices fleet `REGISTRAR_URL=https://vector-sigma.tailb7207e.ts.net`;
+     the gateway/A2A variables on the master per the f57.12 runbook
+     naming (`GATEWAY_URL`, `A2A_PUBLIC_URL`).
+  4. Verification (the lane's remaining ACs): a device bootstraps
+     end-to-end via the MagicDNS URL (registrant fetch + rotation
+     watcher, no more ENOTFOUND); no LAN regression
+     (`vectorsigma.lan` still serves).
+
 ## Canary evidence (per device, per release)
 
 - [ ] `tailscale` container **Running** and healthy (process-liveness
