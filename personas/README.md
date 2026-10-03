@@ -51,9 +51,9 @@ personas/<slug>/persona.json   # canonical fields (see below)
   receives its soul only through its identity bundle
   (docs/vs-environment.md's boundary holds).
 - **Owner sign-off gates the roster.** A persona lands on a device only
-  after lazybaer approves its soul text; library changes land via PR,
+  after the owner approves its soul text; library changes land via PR,
   like everything else in this repo.
-- **Environment facts stay out.** Per-fleet suffixes (VS composition,
+- **Environment facts stay out.** Per-fleet suffixes (composition maps,
   queue conventions, owner-exception classes) are environment, not
   persona; they compose at selection time if ever wanted, not in these
   files.
@@ -61,17 +61,24 @@ personas/<slug>/persona.json   # canonical fields (see below)
   collide with any live agent's name — A2A `trusted_peers` keys on agent
   names, so a colliding persona is a mesh collision, not just a human
   one. Reaffirmed 2026-10-03 (primus → alpha-trion realignment).
+- **The library is fleet-agnostic.** Souls reference no deployment,
+  coordinator, or owner by name — any fleet running vector-sigma can
+  adopt these personas unchanged. Fleet-specific routing (who
+  coordinates, who is trusted) is per-device delivery detail, set in the
+  console at device creation, never in persona text.
 
 ## Provenance
 
-Drafted by ultronbot under owner green-light 2026-10-02 (roster: "optimus
+Souls drafted for the 2026-10-02 owner green-light (roster: "optimus
 prime, wheel jack, bumblebee, grimlock, etc"; roles: "tester, reviewer,
-red teamer, etc"; souls: "You draft them up"). Ultra Magnus added by
-ultronbot to cover the reviewer role the named roster lacked — vetoable.
-The architect persona was first drafted as "primus"; realigned to Alpha
-Trion on 2026-10-03 when the owner flagged the collision with the live
-VS coordinator agent primus — the live agent keeps its name, the persona
-does not. In G1 canon Alpha Trion is the eldest engineer and the keeper
-of Vector Sigma, this repo's namesake.
-House style follows the Cabal souls (directness clause + ADR 0001
-coordinator-authority mirror), adapted per character.
+red teamer, etc"; souls: "You draft them up"). Ultra Magnus added to
+cover the reviewer role the named roster lacked — vetoable. The
+architect persona was first drafted as "primus"; realigned to Alpha
+Trion on 2026-10-03 on the owner's call, to avoid colliding with a live
+coordinator agent of that name — the live agent keeps its name, the
+persona does not. In G1 canon Alpha Trion is the eldest engineer and the
+keeper of Vector Sigma, this repo's namesake.
+House style: a directness clause (match reply length to the weight of
+the ask; no filler) + a generic coordinator-authority mirror, adapted
+per character. The library is deliberately fleet-agnostic — no fleet,
+owner, or coordinator names appear in persona text.
