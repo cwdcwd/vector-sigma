@@ -39,7 +39,7 @@ personas/<slug>/persona.json   # canonical fields (see below)
 | [bumblebee](bumblebee/) | tester | Prove behavior with evidence, never assert it |
 | [ultra-magnus](ultra-magnus/) | reviewer | Verify claims against the artifact; approve only what is proven |
 | [grimlock](grimlock/) | red-teamer | Break it before the adversary does |
-| [primus](primus/) | architect | Systems that outlive any one agent |
+| [alpha-trion](alpha-trion/) | architect | Systems that outlive any one agent |
 
 ## Rules
 
@@ -57,6 +57,10 @@ personas/<slug>/persona.json   # canonical fields (see below)
   queue conventions, owner-exception classes) are environment, not
   persona; they compose at selection time if ever wanted, not in these
   files.
+- **Persona names stay unique across the fleet.** A persona slug must not
+  collide with any live agent's name — A2A `trusted_peers` keys on agent
+  names, so a colliding persona is a mesh collision, not just a human
+  one. Reaffirmed 2026-10-03 (primus → alpha-trion realignment).
 
 ## Provenance
 
@@ -64,5 +68,10 @@ Drafted by ultronbot under owner green-light 2026-10-02 (roster: "optimus
 prime, wheel jack, bumblebee, grimlock, etc"; roles: "tester, reviewer,
 red teamer, etc"; souls: "You draft them up"). Ultra Magnus added by
 ultronbot to cover the reviewer role the named roster lacked — vetoable.
+The architect persona was first drafted as "primus"; realigned to Alpha
+Trion on 2026-10-03 when the owner flagged the collision with the live
+VS coordinator agent primus — the live agent keeps its name, the persona
+does not. In G1 canon Alpha Trion is the eldest engineer and the keeper
+of Vector Sigma, this repo's namesake.
 House style follows the Cabal souls (directness clause + ADR 0001
 coordinator-authority mirror), adapted per character.
