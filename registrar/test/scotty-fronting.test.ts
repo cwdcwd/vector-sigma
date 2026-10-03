@@ -50,13 +50,15 @@ const caddyfile = stripComments(
 
 describe('Caddyfile: scotty fronted on 8444 (77i)', () => {
   it('has a live scotty site stanza (the placeholder is gone)', () => {
-    expect(caddyfile).toMatch(/\{\$TLS_HOSTNAME:vsigma\.lan\}:8444 \{/);
+    expect(caddyfile).toMatch(
+      /\{\$TLS_HOSTNAME:vsigma\.lan\}:8444, \{\$TS_MASTER_DNS:[^}]+\}:8444 \{/,
+    );
     expect(caddyfile).not.toMatch(/# \{\$TLS_HOSTNAME:vsigma\.lan\}:8444/);
   });
 
   it('serves scotty over the internal CA (tls internal)', () => {
     const stanza = caddyfile.match(
-      /\{\$TLS_HOSTNAME:vsigma\.lan\}:8444 \{[\s\S]*?\n\}/,
+      /\{\$TLS_HOSTNAME:vsigma\.lan\}:8444, \{\$TS_MASTER_DNS:[^}]+\}:8444 \{[\s\S]*?\n\}/,
     );
     expect(stanza).not.toBeNull();
     expect(stanza![0]).toMatch(/\ttls internal/);

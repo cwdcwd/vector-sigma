@@ -5,13 +5,14 @@
 #   https://<master-hostname>:443  -> registrar (admin console + /v1 API)
 #   https://<master-hostname>:8443  -> litellm (gateway /ui, /v1/*, /a2a/*,
 #                                     /health/*)
+#   https://<master-hostname>:8444  -> scotty queue UI (basic_auth)
 #
 # NOT fronted (deliberate, per the Cabal precedent — LAN-internal services
 # stay off the edge):
 #   postgres, litellm-init — compose-internal only.
 #   dolt (when the queue bead lands)  — the fleet's shared queue DB is
 #     fleet-internal traffic; it gets no edge exposure. The Scotty UI (when
-#     it lands) is fronted here — see the placeholder stanza below.
+#     it lands) is fronted here — see the scotty stanza below.
 #
 # Site address: the hostname arrives as the TLS_HOSTNAME environment
 # variable (a balenaCloud fleet variable on the device, --env-file value in
@@ -28,6 +29,37 @@
 # Internal CA" so the fleet keeps its own identity in served certs (not
 # Caddy's generic default) — devices still trust it via VS_CA_CERT_B64,
 # extracted once from the caddy-data volume (docs/tls-runbook.md).
+#
+# MagicDNS overlay fronting (j7g phase 1b, fleet-ops-lrb): each fronted
+# site gains the master's MagicDNS FQDN as a SECOND site address —
+# provision-then-flip (the f57.9 hazard class): caddy must serve the
+# name (site alias + internal-CA leaf) BEFORE any device's
+# REGISTRAR_URL flips to it. This ships one release AHEAD of the
+# fleet-wide variable flip; the AC2 pre-flip canary (lrb thread,
+# 2026-10-02) proved the pre-provision state — TLS alert 80 on
+# 443/8443 for the MagicDNS SNI — and these aliases are the fix.
+# Same blocks, same handlers: the fronting is provably identical on
+# both names.
+#
+# The MagicDNS name arrives as the TS_MASTER_DNS environment variable
+# (a balenaCloud fleet variable on the device, --env-file value in the
+# deploy/ self-host example): the master's FULL MagicDNS FQDN, e.g.
+# vector-sigma.tailb7207e.ts.net. Same shape as TLS_HOSTNAME: the
+# {$TS_MASTER_DNS:vector-sigma.tailb7207e.ts.net} default mirrors the
+# structural compose env value, and the fleet variable wins when set.
+# The name is STRUCTURAL, not a secret — the phase-1b extra_hosts pins
+# already carry it literally in both balena composes (extra_hosts has
+# no variable path under the supervisor; the lrb canary DECIDED that
+# mechanism), so baking the same default here adds no new exposure;
+# the tailnet itself is ACL-gated.
+#
+# In-container resolution of the MagicDNS name is pinned via
+# extra_hosts in the consuming services' compose stanzas (the lrb
+# canary verdict: the container DNS chain — embedded 127.0.0.11 ->
+# host dnsmasq -> upstream — has no ts.net route, and accept-dns
+# cannot reach the host dnsmasq chain from tailscaled's own mount
+# namespace; the static pin is the DECIDED flip mechanism —
+# docs/tailscale-runbook.md § phase 1b).
 {
 	pki {
 		ca local {
@@ -51,7 +83,7 @@ http://:80 {
 }
 
 # --- registrar: admin console + /v1 API on 443 ----------------------------
-{$TLS_HOSTNAME:vsigma.lan} {
+{$TLS_HOSTNAME:vsigma.lan}, {$TS_MASTER_DNS:vector-sigma.tailb7207e.ts.net} {
 	tls internal
 
 	# The registrar derives nothing from X-Forwarded-* today (LAN-only
@@ -62,7 +94,7 @@ http://:80 {
 }
 
 # --- VS gateway (LiteLLM): gateway + /ui + /a2a/* on 8443 -----------------
-{$TLS_HOSTNAME:vsigma.lan}:8443 {
+{$TLS_HOSTNAME:vsigma.lan}:8443, {$TS_MASTER_DNS:vector-sigma.tailb7207e.ts.net}:8443 {
 	tls internal
 
 	# LiteLLM derives agent-card URLs from the request Host header;
@@ -86,7 +118,7 @@ http://:80 {
 #
 # Upstream is the in-container scotty:3306 (compose network) — NOT the
 # drifted scotty:8080 from the old placeholder.
-{$TLS_HOSTNAME:vsigma.lan}:8444 {
+{$TLS_HOSTNAME:vsigma.lan}:8444, {$TS_MASTER_DNS:vector-sigma.tailb7207e.ts.net}:8444 {
 	tls internal
 	basic_auth {
 		owner {$SCOTTY_BASIC_AUTH_HASH}

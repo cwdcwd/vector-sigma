@@ -328,6 +328,17 @@ services:
       # image layers.
     volumes:
       - primus-data:/data/primus
+    # j7g phase 1b (fleet-ops-lrb): static hosts pin for the master's OWN
+    # MagicDNS FQDN. Primus's config references the gateway/A2A endpoints
+    # (GATEWAY_URL, A2A_PUBLIC_URL per the f57.12 runbook naming) — those
+    # flip to the MagicDNS name in phase 1b, and this container's DNS chain
+    # (embedded 127.0.0.11 -> host dnsmasq -> upstream) has NO ts.net route
+    # (the lrb canary verdict; accept-dns cannot reach the host dnsmasq
+    # chain from tailscaled's own mount namespace). Same literal pair as
+    # the devices compose's agent/registrant pins — the runbook's phase-1b
+    # owner step names all three sites — docs/tailscale-runbook.md.
+    extra_hosts:
+      - "vector-sigma.tailb7207e.ts.net:100.124.197.78"
     depends_on:
       - registrant-own
     healthcheck:
@@ -503,6 +514,12 @@ services:
       # Structural (Caddyfile {$TLS_HOSTNAME:vsigma.lan} default mirrors it;
       # the fleet var wins when set).
       TLS_HOSTNAME: vsigma.lan
+      # j7g phase 1b (fleet-ops-lrb): the master's MagicDNS FQDN for the
+      # overlay site aliases (Caddyfile {$TS_MASTER_DNS:...} substitution —
+      # same mechanism and default shape as TLS_HOSTNAME above; the fleet
+      # variable wins when set). STRUCTURAL, not a secret — the phase-1b
+      # extra_hosts pins carry the same name literally in both composes.
+      TS_MASTER_DNS: vector-sigma.tailb7207e.ts.net
     ports:
       # The composition's TLS front door. 443 = registrar (admin + API);
       # 8443 = the VS gateway (gateway + /ui + /a2a/*); 8444 = the scotty

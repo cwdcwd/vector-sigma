@@ -43,6 +43,7 @@ Both share the named volume `agent-data`, mounted at `/data/agent`. Identity liv
 | `DATA_DIR` | — | — | Fixed to `/data/agent` by the app; do not set. |
 | `TS_AUTHKEY` | **service** (`tailscale`) | yes (overlay) | Per-device tailscale auth key (owner-minted, pre-tagged `tag:vs-agent`, reusable). **Service-scoped to the tailscale service only** — keeps the secret out of sibling containers. See [tailscale-runbook.md](tailscale-runbook.md). |
 | `TS_HOSTNAME` | device | yes (overlay) | The device's MagicDNS machine name on the VS tailnet (e.g. `optimus-prime`). Set via the balena API 2026-10-01: vector-sigma (master) / optimus-prime. Never hardcoded in the compose — the devices fleet is N devices from one compose. |
+| `REGISTRAR_URL` (phase 1b flip) | device | — | After the phase-1b release ships, the coordinator flips this to `https://vector-sigma.tailb7207e.ts.net` (the master's MagicDNS FQDN — [tailscale-runbook.md](tailscale-runbook.md) § phase 1b). The compose already pins that name to the master's tailnet IP (`extra_hosts` on `agent` + `registrant`) so in-container resolution works with NO ts.net route in the container DNS chain; no device-local action needed. |
 
 ## Releases
 

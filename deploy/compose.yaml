@@ -98,6 +98,14 @@ services:
       dockerfile: Dockerfile.caddy
     environment:
       TLS_HOSTNAME: ${TLS_HOSTNAME:-vsigma.lan}
+      # j7g phase 1b (fleet-ops-lrb): the master's MagicDNS FQDN for the
+      # overlay site aliases — same baked Caddyfile as the balena app
+      # (one artifact, no drift; {$TS_MASTER_DNS:...} substitution at
+      # adapt time). The self-host world has no tailnet, so the default
+      # is an inert name the edge never serves traffic on; a self-hoster
+      # who actually joins a tailnet overrides it with their master's
+      # real MagicDNS FQDN (deploy/README.md).
+      TS_MASTER_DNS: ${TS_MASTER_DNS:-vector-sigma.tailb7207e.ts.net}
       # 77i: the scotty basic_auth hash (bcrypt). The Caddyfile consumes
       # it via {$SCOTTY_BASIC_AUTH_HASH} substitution at adapt time —
       # NO default: an unset variable fails caddy loudly (fail-loud
