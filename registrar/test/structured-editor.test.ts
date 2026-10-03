@@ -320,4 +320,79 @@ describe('Admin console — structured bundle editor (f57.11)', () => {
     );
     expect(status.bundle_version).toBe(3);
   });
+
+  it('persona picker: editor page embeds the advisory picker and its data island (zbq.2)', async () => {
+    await seedDevice(env.db, { uuid: env.device.uuid, hash: env.device.hash, bundle: SECRET_BUNDLE });
+    const c = await loginClient();
+    const page = await c.get(`/admin/devices/${env.device.uuid}/bundle`);
+    expect(page.status).toBe(200);
+    // The picker select is pure UI: no name attribute means it never
+    // submits anything — persona selection only fills form inputs
+    // client-side, and the save path is unchanged.
+    expect(page.html).toContain('<select id="persona-select">');
+    expect(page.html).not.toMatch(/<select[^>]*\sname=/);
+    // Advisory copy states the review-and-edit contract
+    expect(page.html).toContain('Persona pre-fill (advisory)');
+    // One option per library persona, plus the disabled-style placeholder
+    for (const slug of ['alpha-trion', 'bumblebee', 'grimlock', 'optimus-prime', 'ultra-magnus', 'wheeljack']) {
+      expect(page.html).toContain(`<option value="${slug}">`);
+    }
+    expect(page.html).toContain('<option value="">— pick a persona (optional) —</option>');
+    // Data island: non-executing JSON block, parses to the full library,
+    // carries no raw `<` (cannot terminate the block early), and the
+    // soul text survives the escape round-trip byte-exact.
+    const m = page.html.match(
+      /<script type="application\/json" id="persona-library-data">([\s\S]*?)<\/script>/,
+    );
+    expect(m).not.toBeNull();
+    const island = m![1];
+    expect(island.includes('<')).toBe(false);
+    const library = JSON.parse(island) as Array<{ slug: string; soul_contents: string; extra_env: Record<string, string> }>;
+    expect(library.map((p) => p.slug).sort()).toEqual([
+      'alpha-trion', 'bumblebee', 'grimlock', 'optimus-prime', 'ultra-magnus', 'wheeljack',
+    ]);
+    const wheeljack = library.find((p) => p.slug === 'wheeljack')!;
+    expect(wheeljack.soul_contents).toContain('You are Wheeljack, of Transformers G1 fame');
+    expect(typeof wheeljack.extra_env).toBe('object');
+    // The island carries only non-secret persona content
+    expect(island).not.toContain('sk-');
+    expect(island).not.toContain('xoxb-');
+    // Fleet-agnostic console content (owner ruling, zbq epic)
+    expect(/doombot|ultronbot|kangbot|thanosbot|lazybaer/i.test(page.html)).toBe(false);
+  });
+
+  it('persona picker: a save from a persona-prefilled form rides the unchanged rotate path', async () => {
+    // The picker is client-side only; the server never sees a persona
+    // field. Prove the contract end-to-end: a form whose four identity
+    // fields carry exactly what a persona fill would set saves through
+    // the ONE rotate path and lands byte-exact canonical renders —
+    // identical semantics to a hand-typed form.
+    await seedDevice(env.db, { uuid: env.device.uuid, hash: env.device.hash, bundle: SECRET_BUNDLE });
+    const c = await loginClient();
+    const csrf = await c.csrfFrom(`/admin/devices/${env.device.uuid}/bundle`);
+    const form = baseForm('2');
+    form._csrf = csrf;
+    const { PERSONA_LIBRARY } = await import('../src/persona-library.js');
+    const optimus = PERSONA_LIBRARY.find((p) => p.slug === 'optimus-prime')!;
+    const extraLines = Object.entries(optimus.extra_env).map(([k, v]) => `${k}=${v}`).join('\n');
+    Object.assign(form, {
+      structured_agent_name: optimus.slug,
+      structured_model_route: optimus.model_route,
+      structured_extra_env: extraLines,
+      structured_soul_contents: optimus.soul_contents,
+    });
+    const res = await c.postForm(`/admin/devices/${env.device.uuid}/bundle`, form);
+    expect(res.status).toBe(303);
+    const bundle = await deliveredBundle();
+    const byPath = new Map(bundle.files.map((f) => [f.path, f.content]));
+    expect(byPath.get('SOUL.md')).toBe(optimus.soul_contents);
+    expect(byPath.get('config/agent.env')).toBe(
+      'AGENT_NAME=optimus-prime\nGATEWAY_API_KEY=old-gateway-key\nMODEL_ROUTE=ollama-cloud/glm-5.3\n',
+    );
+    // No new form field reached the server: the bundle carries only the
+    // canonical files, and nothing else changed.
+    expect(bundle.files.map((f) => f.path).sort()).toEqual(
+      ['SOUL.md', 'config/agent.env', 'config/secrets.env'].sort(),
+    );
+  });
 });

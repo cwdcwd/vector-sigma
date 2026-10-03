@@ -112,6 +112,16 @@ CREATE TABLE admin_keys (
   fields share one file. A raw file upload with the same canonical name
   replaces the rendered section and the form marks the field
   "overridden by uploaded file".
+- Persona pre-fill picker (fleet-ops-zbq.2): the editor offers the repo's
+  persona library (`personas/`, embedded at build time as a generated
+  registrar source — no runtime fetch). Selecting a persona fills the
+  four non-secret identity fields (agent name, model route, extra env,
+  soul) client-side; the select itself never submits. Advisory only:
+  the operator reviews and edits before save, secrets are never touched,
+  and the save path is the same rotate core — bundle contract and wire
+  stay v1, existing devices and raw uploads unaffected. Library edits
+  regenerate the embed (`node scripts/generate-persona-library.mjs`);
+  CI pins the embed byte-identical to `personas/`.
 - Secret fields write-only: masked on display, never rendered into HTML;
   blank means keep existing.
 - Bundle save = version bump + slot armed + audit row — same code path

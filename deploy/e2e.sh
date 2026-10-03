@@ -431,6 +431,74 @@ e2e-pem
   '; then PASS=$((PASS+5)); else FAIL=$((FAIL+5)); fi
 }
 
+# AC7b: persona pre-fill picker (fleet-ops-zbq.2) — the editor page carries
+# the advisory picker and its embedded (build-time) library. Asserted from
+# the outside like every other AC: options for every library persona, the
+# JSON data island parses and matches the repo's personas/, the select
+# never submits (no name attribute), and the page stays fleet-agnostic.
+# The FILL itself is browser-side; AC7 already proves the save path is the
+# one structured-fields -> canonical-files -> rotate core, unchanged.
+ac7b_persona_picker() {
+  note "AC7b: persona pre-fill picker renders with the embedded library (zbq.2)"
+  local csrf session_cookie editor_html
+  csrf="$(tls_curl -D - -o /dev/null "$BASE_URL/admin/login" \
+    | tr -d '\r' | grep -i '^set-cookie: vsigma_csrf=' | cut -d' ' -f2- | cut -d';' -f1 | tr -d ' ')"
+  if [ -z "$csrf" ]; then fail AC7b "no csrf cookie on login page"; return; fi
+  session_cookie="$(tls_curl -D - -o /dev/null -X POST "$BASE_URL/admin/login" \
+    -H "Cookie: ${csrf}" \
+    --data-urlencode "admin_key=$E2E_ADMIN_KEY" \
+    --data-urlencode "_csrf=${csrf#vsigma_csrf=}" \
+    | tr -d '\r' | grep -i '^set-cookie: vsigma_admin=' | cut -d' ' -f2- | cut -d';' -f1 | tr -d ' ')"
+  if [ -z "$session_cookie" ]; then fail AC7b "no session cookie after login"; return; fi
+  tls_curl -H "Cookie: ${csrf}; ${session_cookie}" \
+    "$BASE_URL/admin/devices/$E2E_DEVICE_UUID/bundle" > /tmp/e2e-persona-editor.html
+  editor_html=/tmp/e2e-persona-editor.html
+  if [ ! -s "$editor_html" ]; then fail AC7b "editor page fetch empty"; return; fi
+  # 1. advisory copy + unnamed select (never submits)
+  if grep -q 'Persona pre-fill (advisory)' "$editor_html" \
+     && grep -q '<select id="persona-select">' "$editor_html" \
+     && ! grep -Eq '<select[^>]* name=' "$editor_html"; then
+    pass "AC7b picker select" "advisory picker present, no name attribute (never submits)"
+  else
+    fail "AC7b picker select" "advisory copy or unnamed select missing"
+  fi
+  # 2. option coverage — every repo persona slug appears as an option
+  local slug missing=""
+  for slug in alpha-trion bumblebee grimlock optimus-prime ultra-magnus wheeljack; do
+    grep -q "<option value=\"$slug\">" "$editor_html" || missing="$missing $slug"
+  done
+  if [ -z "$missing" ]; then
+    pass "AC7b option coverage" "all six library personas offered"
+  else
+    fail "AC7b option coverage" "missing options:$missing"
+  fi
+  # 3. data island: JSON parses, matches the repo's personas/ directory,
+  #    carries no raw `<` (cannot terminate the block), no secret markers,
+  #    no fleet names. Node does the parse + comparison.
+  if node -e '
+    const fs = require("fs");
+    const html = fs.readFileSync("/tmp/e2e-persona-editor.html", "utf8");
+    const m = html.match(/<script type="application\/json" id="persona-library-data">([\s\S]*?)<\/script>/);
+    if (!m) { console.error("no data island"); process.exit(1); }
+    if (m[1].includes("<")) { console.error("raw < inside island"); process.exit(1); }
+    const lib = JSON.parse(m[1]);
+    const slugs = lib.map((p) => p.slug).sort().join(",");
+    const want = ["alpha-trion","bumblebee","grimlock","optimus-prime","ultra-magnus","wheeljack"].sort().join(",");
+    if (slugs !== want) { console.error("slugs " + slugs); process.exit(1); }
+    for (const marker of ["sk-", "xoxb-", "BEGIN RSA PRIVATE KEY", "GATEWAY_API_KEY="]) {
+      if (m[1].includes(marker)) { console.error("secret marker " + marker); process.exit(1); }
+    }
+    if (/doombot|ultronbot|kangbot|thanosbot|lazybaer/i.test(m[1])) { console.error("fleet name in island"); process.exit(1); }
+    const soul = lib.find((p) => p.slug === "optimus-prime").soul_contents;
+    const disk = fs.readFileSync("personas/optimus-prime/SOUL.md", "utf8");
+    if (soul !== disk) { console.error("soul text drift vs personas/"); process.exit(1); }
+  ' 2>/dev/null; then
+    pass "AC7b data island" "valid JSON, byte-matches personas/, non-secret, fleet-agnostic"
+  else
+    fail "AC7b data island" "island parse/content check failed"
+  fi
+}
+
 # AC8: grace-path device — 403 on pending row stays RESIDENT (no crash
 # loop), ACTION REQUIRED line present in logs, then the console fix
 # activates the row and the resident poll SELF-HEALS (bundle delivered,
@@ -1326,6 +1394,7 @@ ac4_status_version
 ac5_audit_complete
 ac6_volume_state
 ac7_console_structured_save
+ac7b_persona_picker
 ac8_grace_self_heal
 ac9_litellm_smoke
 ac9b_litellm_db_smoke
