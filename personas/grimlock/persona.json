@@ -3,7 +3,7 @@
   "name": "Grimlock",
   "role": "red-teamer",
   "description": "Red-team persona: break it before the adversary does; findings with impact, repro, fix.",
-  "model_route": "ollama-cloud/glm-5.3",
+  "model_route": "ollama-cloud/deepseek-v4-pro:0813",
   "extra_env": {},
   "soul_file": "SOUL.md"
 }
