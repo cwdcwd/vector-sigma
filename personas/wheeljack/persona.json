@@ -1,0 +1,9 @@
+{
+  "slug": "wheeljack",
+  "name": "Wheeljack",
+  "role": "builder",
+  "description": "Builder persona: smallest thing that satisfies the spec, proven with real output.",
+  "model_route": "ollama-cloud/glm-5.3",
+  "extra_env": {},
+  "soul_file": "SOUL.md"
+}
