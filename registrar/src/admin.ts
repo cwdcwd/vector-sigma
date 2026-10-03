@@ -163,6 +163,39 @@ export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): v
 
   app.get('/admin/static/editor.js', async (_req, reply) => {
     const script = `(() => {
+  // Persona pre-fill picker (fleet-ops-zbq.2): advisory only. The select
+  // has no name attribute and never submits; picking a persona loads its
+  // library defaults into the four non-secret identity fields and fires
+  // real 'input' events so the diff preview island below reflects the
+  // fill without duplicating any logic. Secret fields are never touched;
+  // the server-side save path is unchanged (structured fields ->
+  // canonical files -> rotate, one code path).
+  const personaData = document.getElementById('persona-library-data');
+  const personaSelect = document.getElementById('persona-select');
+  if (personaData && personaSelect) {
+    let personas = [];
+    try { personas = JSON.parse(personaData.textContent || '[]'); } catch (e) { personas = []; }
+    const byName = (n) => document.getElementsByName(n)[0];
+    const fill = (name, value) => {
+      const el = byName(name);
+      if (!el) return;
+      el.value = value;
+      el.dispatchEvent(new Event('input', { bubbles: false }));
+    };
+    personaSelect.addEventListener('change', () => {
+      const slug = personaSelect.value;
+      if (!slug) return; // "— pick —" placeholder: no-op, never clears operator edits
+      const persona = personas.find((p) => p && p.slug === slug);
+      if (!persona) return;
+      fill('structured_agent_name', persona.slug || '');
+      fill('structured_model_route', persona.model_route || '');
+      const extra = persona.extra_env && typeof persona.extra_env === 'object'
+        ? Object.keys(persona.extra_env).map((k) => k + '=' + persona.extra_env[k]).join('\\n')
+        : '';
+      fill('structured_extra_env', extra);
+      fill('structured_soul_contents', persona.soul_contents || '');
+    });
+  }
   const preview = document.getElementById('diff-preview');
   if (!preview) return;
   const out = document.getElementById('diff-out');

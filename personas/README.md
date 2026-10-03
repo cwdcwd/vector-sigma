@@ -66,6 +66,13 @@ personas/<slug>/persona.json   # canonical fields (see below)
   adopt these personas unchanged. Fleet-specific routing (who
   coordinates, who is trusted) is per-device delivery detail, set in the
   console at device creation, never in persona text.
+- **Regenerating the console embed.** The admin console serves this
+  library from a build-time embed (a generated registrar source
+  compiled into the shipped image — no runtime fetch). After any edit
+  under `personas/`, run `node scripts/generate-persona-library.mjs` and
+  commit the regenerated `registrar/src/persona-library.ts`; CI pins
+  the embed byte-identical to this directory, so a skipped regen fails
+  the build instead of drifting.
 
 ## Provenance
 

@@ -1,4 +1,5 @@
 import type { StructuredFields } from './structured-fields.js';
+import { PERSONA_LIBRARY, type PersonaPreset } from './persona-library.js';
 
 /**
  * HTML rendering for the admin console. Zero-framework, server-rendered,
@@ -233,16 +234,47 @@ export interface StructuredFieldRow {
 }
 
 export const STRUCTURED_FIELD_ROWS: StructuredFieldRow[] = [
-  { name: 'agent_name', label: 'Agent name', canonical: 'config/agent.env', secret: false, multiline: false, placeholder: 'doombot', hint: 'Rendered as the AGENT_NAME= line of config/agent.env.' },
+  { name: 'agent_name', label: 'Agent name', canonical: 'config/agent.env', secret: false, multiline: false, placeholder: 'agent-name', hint: 'Rendered as the AGENT_NAME= line of config/agent.env.' },
   { name: 'model_route', label: 'Model route', canonical: 'config/agent.env', secret: false, multiline: false, placeholder: 'openai/gpt-5.2' },
   { name: 'gateway_api_key', label: 'Gateway API key', canonical: 'config/agent.env', secret: true, multiline: false, placeholder: 'sk-…', hint: 'Write-only: blank keeps the existing value.' },
   { name: 'extra_env', label: 'Extra env (KEY=VALUE lines)', canonical: 'config/agent.env', secret: false, multiline: true, placeholder: 'LOG_LEVEL=debug\nA2A_UUID=…' },
   { name: 'soul_contents', label: 'SOUL.md contents', canonical: 'SOUL.md', secret: false, multiline: true, placeholder: '# SOUL\n\nYou are …' },
   { name: 'a2a_identity_key', label: 'A2A identity key', canonical: 'config/a2a.json', secret: true, multiline: false, placeholder: 'a2a-key…', hint: 'Write-only: blank keeps the existing value. Devices mesh through the master gateway (/a2a/* pass-through): set A2A_PUBLIC_URL on the device to http://<master-LAN-IP>:4000 — see balena/registrar/README.md.' },
-  { name: 'a2a_trusted_peers', label: 'A2A trusted peers', canonical: 'config/a2a.json', secret: false, multiline: true, placeholder: 'ultronbot\nkangbot', hint: 'One agent id per line. Peer traffic rides the master device gateway at /a2a/* (fleet-ops-f57.12): each device points A2A_PUBLIC_URL at http://<master-LAN-IP>:4000 so its card is served by the VS gateway, not ai.lan.' },
+  { name: 'a2a_trusted_peers', label: 'A2A trusted peers', canonical: 'config/a2a.json', secret: false, multiline: true, placeholder: 'peer-a\npeer-b', hint: 'One agent id per line. Peer traffic rides the master device gateway at /a2a/* (fleet-ops-f57.12): each device points A2A_PUBLIC_URL at http://<master-LAN-IP>:4000 so its card is served by the VS gateway, not ai.lan.' },
   { name: 'slack_bot_token', label: 'Slack bot token', canonical: 'config/secrets.env', secret: true, multiline: false, placeholder: 'xoxb-…', hint: 'Write-only: blank keeps the existing value.' },
   { name: 'github_app_pem', label: 'GitHub App PEM', canonical: 'config/github-app.pem', secret: true, multiline: true, placeholder: '-----BEGIN RSA PRIVATE KEY-----\n…\n-----END RSA PRIVATE KEY-----', hint: 'Write-only: blank keeps the existing value.' },
 ];
+
+/**
+ * Persona pre-fill picker (fleet-ops-zbq.2), rendered from the embedded
+ * library (persona-library.ts, generated from personas/). Advisory only:
+ * the select carries NO name attribute, so it never submits anything —
+ * the operator's browser fills the four non-secret identity fields and
+ * the existing structured-fields -> canonical-files -> rotate save path
+ * is untouched. Secrets are never offered and never touched.
+ *
+ * The data island is a non-executing JSON block (CSP script-src 'self'
+ * allows it — same shape as JSON-LD): `<` is escaped to a \\u003c escape
+ * inside the serialized string so no text can ever terminate the block
+ * early, and JSON.parse of textContent restores the exact bytes.
+ */
+function personaPicker(): string {
+  if (PERSONA_LIBRARY.length === 0) return '';
+  const options = PERSONA_LIBRARY.map(
+    (p) => `<option value="${esc(p.slug)}">${esc(p.name)} — ${esc(p.description)}</option>`,
+  ).join('\n');
+  const island = JSON.stringify(PERSONA_LIBRARY).replace(/</g, '\\u003c');
+  return `<fieldset class="persona-picker">
+<legend>Persona pre-fill (advisory)</legend>
+<p class="muted">Pick a library persona to load its defaults into the four identity fields below — agent name, model route, extra env, SOUL. Review and edit before saving: the fill is a starting point, never a contract. Secret fields are never touched.</p>
+<label for="persona-select">Persona</label>
+<select id="persona-select">
+<option value="">— pick a persona (optional) —</option>
+${options}
+</select>
+<script type="application/json" id="persona-library-data">${island}</script>
+</fieldset>`;
+}
 
 export function bundleEditorPage(v: EditorView): string {
   const existingRows = v.existing
@@ -294,6 +326,7 @@ ${v.error ? `<p class="danger">${esc(v.error)}</p>` : ''}
 <input type="hidden" name="_csrf" value="${esc(v.csrfToken)}">
 <input type="hidden" name="existing_count" value="${v.existing.length}">
 <input type="hidden" name="new_count" value="3">
+${personaPicker()}
 <fieldset>
 <legend>Structured identity</legend>
 <p class="muted">Fields below render to their canonical files via fixed templates. A raw file upload with the same canonical name replaces the rendered section.</p>
