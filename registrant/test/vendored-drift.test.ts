@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -91,6 +91,10 @@ const vendoredFiles = [
   // the master image's vendored set (curator + master map):
   ['docs/queue-conventions.md', 'balena/registrar/docs/queue-conventions.md'],
   ['docs/vs-environment.md', 'balena/registrar/docs/vs-environment.md'],
+  // e5o.4: the A2A operational conventions doc ships in BOTH images
+  // (role-neutral — correct for master and device alike).
+  ['docs/a2a-conventions.md', 'balena/devices/docs/a2a-conventions.md'],
+  ['docs/a2a-conventions.md', 'balena/registrar/docs/a2a-conventions.md'],
   // j7g.1: the A2A mesh wiring hook ships in THREE places — deploy/
   // (canonical), the devices agent image, and the registrar's primus
   // image — one file, three COPY targets, byte-pinned (the vs-entrypoint
@@ -152,8 +156,10 @@ describe('balena vendored sources', () => {
 
     // The device map must carry the worker identity framing, never the
     // coordinator's: "You are primus" anywhere in the devices vendored
-    // docs is the shipped defect verbatim.
-    for (const doc of ['device-environment.md', 'queue-conventions.md']) {
+    // docs is the shipped defect verbatim. Swept across EVERY file the
+    // devices image vendors (a2a-conventions, future additions) — a
+    // hardcode list would let a new vendored doc reintroduce the defect.
+    for (const doc of readdirSync(devicesDocs)) {
       const body = readFileSync(path.join(devicesDocs, doc), 'utf8');
       expect(
         body.includes('You are primus'),
