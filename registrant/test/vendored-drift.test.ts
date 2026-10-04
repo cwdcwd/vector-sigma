@@ -95,6 +95,11 @@ const vendoredFiles = [
   // (role-neutral — correct for master and device alike).
   ['docs/a2a-conventions.md', 'balena/devices/docs/a2a-conventions.md'],
   ['docs/a2a-conventions.md', 'balena/registrar/docs/a2a-conventions.md'],
+  // e5o.6: the gateway ops runbook ships in BOTH images too (the
+  // owner + the master coordinator are its audience, but device
+  // agents run the read-only probes) — one doc, one truth.
+  ['docs/gateway-ops.md', 'balena/registrar/docs/gateway-ops.md'],
+  ['docs/gateway-ops.md', 'balena/devices/docs/gateway-ops.md'],
   // j7g.1: the A2A mesh wiring hook ships in THREE places — deploy/
   // (canonical), the devices agent image, and the registrar's primus
   // image — one file, three COPY targets, byte-pinned (the vs-entrypoint

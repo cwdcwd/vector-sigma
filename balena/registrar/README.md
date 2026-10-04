@@ -357,6 +357,11 @@ is asserted externally: the deploy E2E smoke (AC9) polls
 https://<TLS_HOSTNAME>:8443/health/liveliness` from any LAN host (or
 the balenaCloud public URL path if the owner enables it).
 
+The daily health pass, fallback verification, and the live-vs-file
+discipline live in [docs/gateway-ops.md](../../docs/gateway-ops.md)
+(fleet-ops-e5o.6): process liveness alone is a heartbeat, not health —
+the pass asserts a real completion through a working key on top.
+
 ## The VS queue (dolt + scotty) — f57.15
 
 The master composition also carries the VS fleet's own work queue:
