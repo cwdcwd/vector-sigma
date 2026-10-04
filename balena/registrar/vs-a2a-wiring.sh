@@ -41,7 +41,6 @@
 #   4. TLS trust: RETIRED with the internal CA (lnf, phase 2) — the edge
 #      serves Let's Encrypt certificates (publicly trusted, stock stores
 #      verify them); no trust provisioning runs in this hook anymore.
-#      stacks. No TLS provisioning — see 4.
 #
 # CONTRACTS THIS HOOK HONORS:
 #   - s6-overlay cont-init via /command/with-contenv (the 03-vs-queue-join
