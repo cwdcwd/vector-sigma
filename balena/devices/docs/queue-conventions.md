@@ -1,5 +1,5 @@
 # VS Queue Conventions (fleet-ops-f57.15) — the Vector Sigma mirror of the
-# Cabal fleet's FLEET.md queue discipline.
+# origin fleet's FLEET.md queue discipline.
 
 The VS queue lives in the master device's `dolt` container (database
 `vs_ops`). It is the VS fleet's ONLY work queue. primus (the VS coordinator
@@ -8,7 +8,7 @@ Hermes, fleet-ops-f57.14) is the **queue curator** — its SOUL says so.
 ## Structure
 
 - **One EPIC per project/workstream.** All work beads are children of their
-  project's epic, labeled `area:<project>`. (Owner ruling 2026-09-18, Cabal
+  project's epic, labeled `area:<project>`. (Owner ruling 2026-09-18, origin-fleet
   precedent — `fleet/conventions/beads-epic-structure`.)
 - Epics are created by the coordinator (primus); builders file discovered
   work as children of the relevant epic.
@@ -43,19 +43,19 @@ Hermes, fleet-ops-f57.14) is the **queue curator** — its SOUL says so.
   the minted project_id is a fleet contract. **Never re-init.**
 - Peer clients silence bd auto-backup noise (`bd config set backup.enabled
   false`) — server-mode workspaces cannot use it anyway; the DB-host client
-  keeps it (Cabal convention `bd-autobackup-server-mode`).
+  keeps it (origin-fleet convention `bd-autobackup-server-mode`).
 
 ## Cross-fleet rule (owner ruling, hard boundary)
 
-**The VS queue and the Cabal queue are SEPARATE.** primus (VS coordinator)
-and ultronbot (Cabal coordinator) contact each other A2A agent-to-agent —
-NEVER through shared-queue writes. No VS agent writes to the Cabal's
-`fleet_ops` database; no Cabal agent writes to `vs_ops`. Coordination
+**The VS queue and the origin queue are SEPARATE.** primus (VS coordinator)
+and the origin-fleet coordinator contact each other A2A agent-to-agent —
+NEVER through shared-queue writes. No VS agent writes to the origin fleet's
+`fleet_ops` database; no origin-fleet agent writes to `vs_ops`. Coordination
 crossings happen over A2A, exactly as this bead was dispatched.
 
 ## Read-only dashboard
 
 The Scotty UI serves the queue read-only (two-layer posture:
 `SCOTTY_READ_ONLY=1` + the `bd-readonly` BD_BIN wrapper). Writes go through
-bd clients, never through the dashboard — the Cabal runbook posture
+bd clients, never through the dashboard — the origin-fleet runbook posture
 (fleet-ops-8ea).

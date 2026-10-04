@@ -5,11 +5,11 @@ repo artifacts: the seed graph (`initial-beads.json`) plus this procedure.
 The seed is run ONCE by **primus** (the VS coordinator, the queue curator)
 with his baked `bd` — no other agent runs it, and the owner hands primus
 the go via Slack DM after this PR merges. Cross-fleet boundary holds: no
-Cabal agent writes to `vs_ops`.
+origin-fleet agent writes to `vs_ops`.
 
 ## What lands on the queue
 
-One **umbrella epic per active VS workstream** (Cabal mirror,
+One **umbrella epic per active VS workstream** (origin-fleet mirror,
 `fleet/conventions/beads-epic-structure`): `vs-queue`,
 `vs-registrar`, `vs-devices`, `vs-ops` — all labeled `area:<x>`,
 assigned `primus`, and **staying open forever** (umbrellas collect future
@@ -84,7 +84,7 @@ runs `bd init`.
 
    Then post the evidence to the VS queue's own thread: `bd status` /
    `bd list --json` output showing epic + children with parent-child
-   edges, authored `primus`. Kangbot-style verification: at least one
+   edges, authored `primus`. Independent verification: at least one
    bead authored primus, the epics open, the four lanes in place.
 
 ## Idempotency

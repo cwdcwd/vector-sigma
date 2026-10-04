@@ -1,7 +1,7 @@
 # balena/registrar/litellm-config.yaml — the vector-sigma fleet's OWN LiteLLM
 # gateway config (fleet-ops-f57.12, owner ruling 2026-09-20 "option 1": the VS
 # master device runs identity + gateway + mesh on its own hardware; the VS
-# fleet never couples to the Cabal's ai.lan — clean-start principle).
+# fleet never couples to the origin fleet's ai.lan — clean-start principle).
 #
 # STRUCTURAL config only — no secrets in this file or in any image layer (VS
 # security model). Every secret below is read from the environment at boot:
@@ -41,7 +41,7 @@ model_list:
       model: openai/glm-5.2
       api_base: os.environ/OLLAMA_CLOUD_API_BASE
       api_key: os.environ/OLLAMA_CLOUD_API_KEY
-  # Wildcard pass-through (mirrors the Cabal's ai.lan shape): routes any other
+  # Wildcard pass-through (mirrors the origin fleet's gateway shape): routes any other
   # model name to Ollama Cloud's OpenAI-compatible /v1 endpoint. It ROUTES but
   # cannot failover — never list "*" as a fallback target (j9f).
   - model_name: "*"

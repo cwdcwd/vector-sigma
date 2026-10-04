@@ -13,7 +13,7 @@ index 2c18912..e72f692 100644
    // client-side project visit leaking into the next one.
 -  return <Suspense fallback={<div className="p-6 text-sm">Loading project…</div>}><AppShell key={projectId} projectId={projectId} /></Suspense>;
 +  //
-+  // NOTE (fleet patch, doombot 2026-09-17, bead fleet-ops-8ea): no Suspense
++  // NOTE (fleet patch, 2026-09-17, bead fleet-ops-8ea): no Suspense
 +  // boundary here. A pending boundary's server content is swapped in by
 +  // React's completeBoundary, which schedules via requestAnimationFrame —
 +  // an event that never fires in a hidden (background) tab, so deep links
@@ -43,7 +43,7 @@ index 0cf30fb..a6d7113 100644
 - * back and forward navigation.
 + * Read and update state in the current URL without navigating away.
 + *
-+ * NOTE (fleet patch, doombot 2026-09-17, bead fleet-ops-8ea): this previously
++ * NOTE (fleet patch, 2026-09-17, bead fleet-ops-8ea): this previously
 + * called Next's `useSearchParams()`, which forces the whole AppShell subtree
 + * into a pending Suspense boundary (CSR bailout). The boundary swap is
 + * scheduled via requestAnimationFrame, which NEVER fires in a hidden tab —

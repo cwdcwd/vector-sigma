@@ -18,26 +18,26 @@ function contentsOf(files: ReturnType<typeof renderCanonicalFiles>): Map<string,
 describe('structured-fields — renderCanonicalFiles (f57.11)', () => {
   it('renders the full field set into the five canonical files (no prior bundle)', () => {
     const out = renderCanonicalFiles({
-      agent_name: 'doombot',
+      agent_name: 'agent-a',
       model_route: 'openai/gpt-5.2',
       gateway_api_key: 'sk-gateway-secret',
-      extra_env: 'LOG_LEVEL=debug\nA2A_UUID=doombot-1',
+      extra_env: 'LOG_LEVEL=debug\nA2A_UUID=agent-a-1',
       soul_contents: '# SOUL\n\nYou are Doom.\n',
       a2a_identity_key: 'a2a-identity-secret',
-      a2a_trusted_peers: 'ultronbot\nkangbot, thanosbot',
+      a2a_trusted_peers: 'peer-a\npeer-b, peer-c',
       slack_bot_token: 'xoxb-slack-secret',
       github_app_pem: '-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----\n',
     });
     const byPath = contentsOf(out);
 
     expect(byPath.get(AGENT_ENV)).toBe(
-      'AGENT_NAME=doombot\nMODEL_ROUTE=openai/gpt-5.2\nGATEWAY_API_KEY=sk-gateway-secret\nLOG_LEVEL=debug\nA2A_UUID=doombot-1\n',
+      'AGENT_NAME=agent-a\nMODEL_ROUTE=openai/gpt-5.2\nGATEWAY_API_KEY=sk-gateway-secret\nLOG_LEVEL=debug\nA2A_UUID=agent-a-1\n',
     );
     expect(byPath.get(CANONICAL_PATHS.soul)).toBe('# SOUL\n\nYou are Doom.\n');
     const a2a = JSON.parse(byPath.get(CANONICAL_PATHS.a2a) ?? '{}');
     expect(a2a).toEqual({
       identity_key: 'a2a-identity-secret',
-      trusted_peers: ['ultronbot', 'kangbot', 'thanosbot'],
+      trusted_peers: ['peer-a', 'peer-b', 'peer-c'],
     });
     expect(byPath.get(CANONICAL_PATHS.secretsEnv)).toBe('SLACK_BOT_TOKEN=xoxb-slack-secret\n');
     expect(byPath.get(CANONICAL_PATHS.githubAppPem)).toContain('BEGIN RSA PRIVATE KEY');
@@ -65,8 +65,8 @@ describe('structured-fields — renderCanonicalFiles (f57.11)', () => {
   it('blank secret field keeps the existing value line (field-level keep)', () => {
     const existing = new Map([[AGENT_ENV, 'GATEWAY_API_KEY=sk-previous\n']]);
     // agent_name set, gateway blank → gateway line survives the save
-    const out = renderCanonicalFiles({ agent_name: 'doombot' }, existing);
-    expect(contentsOf(out).get(AGENT_ENV)).toBe('GATEWAY_API_KEY=sk-previous\nAGENT_NAME=doombot\n');
+    const out = renderCanonicalFiles({ agent_name: 'agent-a' }, existing);
+    expect(contentsOf(out).get(AGENT_ENV)).toBe('GATEWAY_API_KEY=sk-previous\nAGENT_NAME=agent-a\n');
   });
 
   it('set secret field replaces its line in place', () => {
@@ -79,9 +79,9 @@ describe('structured-fields — renderCanonicalFiles (f57.11)', () => {
     const existing = new Map([
       [CANONICAL_PATHS.a2a, JSON.stringify({ identity_key: 'old', custom: 'kept' }, null, 2) + '\n'],
     ]);
-    const out = renderCanonicalFiles({ a2a_trusted_peers: 'kangbot' }, existing);
+    const out = renderCanonicalFiles({ a2a_trusted_peers: 'peer-b' }, existing);
     const a2a = JSON.parse(contentsOf(out).get(CANONICAL_PATHS.a2a) ?? '{}');
-    expect(a2a).toEqual({ identity_key: 'old', custom: 'kept', trusted_peers: ['kangbot'] });
+    expect(a2a).toEqual({ identity_key: 'old', custom: 'kept', trusted_peers: ['peer-b'] });
   });
 
   it('j7g.1: a2a_public_url renders into a2a.json and merges like the other a2a keys', () => {

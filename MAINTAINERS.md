@@ -22,7 +22,7 @@ commits, reviews-at-head) — nothing further is needed for that grant.
 
 ## Humans
 
-The repo owner (lazybaer) retains final authority over everything
+The repo owner retains final authority over everything
 documented above; primus's curator role operates under the
 owner-exception classes (credential writes, secret handling, package
 installs, and mutations of its own config or SOUL are never agent

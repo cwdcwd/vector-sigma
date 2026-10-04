@@ -4,7 +4,7 @@ Registrar + Postgres + the VS fleet's own LiteLLM gateway (f57.12), on
 balenaOS. The app runs on the `registrar` balena fleet (1 device: Raspberry
 Pi 5, aarch64) — the vector-sigma master device. Per the owner ruling
 (2026-09-20, "option 1"): the VS fleet runs identity AND gateway AND mesh
-on its own hardware; it never couples to the Cabal's ai.lan (clean-start
+on its own hardware; it never couples to the origin fleet's ai.lan (clean-start
 principle). The gateway serves the models front door, virtual keys, and the
 /a2a/* agent mesh — devices point `GATEWAY_URL` and `A2A_PUBLIC_URL` at
 `https://<TLS_HOSTNAME>:8443`.
@@ -55,7 +55,7 @@ the root lockfile instead.
 
 ## Runtime configuration
 
-Owner-set surface is **two secrets** (lazybaer ruling, 2026-09-19:
+Owner-set surface is **two secrets** (owner ruling, 2026-09-19:
 "There should actually be very little set from the outside by
 myself"). Everything structural ships in the compose file as static
 environment entries; balenaCloud **dashboard variables override** the
@@ -275,7 +275,7 @@ needed; the service reads them the same way.
 ### A2A mesh through the gateway
 
 The gateway serves `/a2a/*` pass-through natively (same pattern ai.lan
-serves the Cabal): each VS device's Hermes points `A2A_PUBLIC_URL` at
+serves the origin fleet): each VS device's Hermes points `A2A_PUBLIC_URL` at
 `https://<TLS_HOSTNAME>:8443`, and its agent card is served by the VS
 gateway — peer traffic rides the master device, never ai.lan. The
 structured bundle editor's A2A fields (`a2a_identity_key`,
@@ -434,7 +434,7 @@ The bundle IS the config delivery:
 | Bundle file | Hermes consumer |
 |---|---|
 | `config/agent.env` | `AGENT_NAME=primus`, `MODEL_ROUTE`, `GATEWAY_API_KEY`, + `GATEWAY_URL` pointing at the composition's litellm (`http://litellm:4000` compose-internal today; `https://<TLS_HOSTNAME>:8443` after the TLS flip — same sequencing as the devices fleet) |
-| `config/secrets.env` | `SLACK_BOT_TOKEN` etc. (owner-side custody, per the Cabal pattern) |
+| `config/secrets.env` | `SLACK_BOT_TOKEN` etc. (owner-side custody, per the origin-fleet pattern) |
 | `SOUL.md` | The VS coordinator SOUL: queue curator (docs/queue-conventions.md), cross-fleet contact A2A-only, credential/install/self-config mutations owner-gated (the ADR-0001 clause mirror) |
 | `config/a2a.json` | `identity_key` + `trusted_peers` + `public_url` + `peer_tokens` (the mesh — j7g.1) |
 | `config/github-app.pem` | GitHub App credential (owner-side custody) |

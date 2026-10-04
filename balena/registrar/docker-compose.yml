@@ -167,12 +167,12 @@ services:
     restart: always
 
   # ── f57.15 BEGIN: the VS fleet's own queue plane (dolt + scotty) ────────────
-  # Provenance: mirrors the Cabal's central-Dolt + Scotty stack (fleet proven:
+  # Provenance: mirrors the origin fleet's central-Dolt + Scotty stack (fleet proven:
   # central Dolt :3326, scotty v0.3.0 cc55734 + the 8ea deep-link patch, bd
   # pinned at 1.2.2, BD_BIN read-only wrapper + SCOTTY_READ_ONLY=1 two-layer
   # posture). Owner ruling: VS queue is fully self-contained — VS devices run
   # bd clients against THIS dolt; cross-fleet coordination (primus <->
-  # ultronbot) is A2A only, never shared-queue writes.
+  # the origin-fleet coordinator) is A2A only, never shared-queue writes.
   dolt:
     image: dolthub/dolt-sql-server:2.3.5
     environment:
@@ -192,7 +192,7 @@ services:
       # Published to the device LAN: VS device bd clients reach the master
       # over the LAN exactly like REGISTRAR_URL (owner ruling: devices run bd
       # clients against it). Not reachable off-LAN: the balenaCloud public-URL
-      # feature tunnels device port 80 ONLY (f57.9). Cabal precedent: central
+      # feature tunnels device port 80 ONLY (f57.9). origin-fleet precedent: central
       # Dolt :3326 serving every fleet client.
       - "3326:3306"
     healthcheck:
@@ -222,7 +222,7 @@ services:
       context: .
       dockerfile: Dockerfile.scotty
     environment:
-      # Two-layer read-only posture (Cabal runbook, fleet-ops-8ea):
+      # Two-layer read-only posture (origin-fleet runbook, fleet-ops-8ea):
       #   layer 1: SCOTTY_READ_ONLY=1 — scotty refuses project writes
       #   layer 2: BD_BIN wrapper (baked into the image; see bd-readonly)
       SCOTTY_READ_ONLY: "1"
