@@ -563,7 +563,7 @@ ac9_litellm_smoke() {
   # substring match stays robust to any deployment-version id decoration.
   local models
   models="$(curl -s -m 10 "$base/v1/models" \
-      -H "Authorization: Bearer ***" 2>/dev/null || true)"
+      -H "Authorization: Bearer $master" 2>/dev/null || true)"
   if [ -n "$models" ]; then
     if printf '%s' "$models" | grep -q 'glm-5\.3' \
       && printf '%s' "$models" | grep -q 'glm-5\.2'; then
@@ -938,13 +938,12 @@ ac10_queue_plane() {
     docker logs "$PROJECT-scotty-1" 2>&1 | tail -25 || true
     return
   fi
-  # The raw host listener must be GONE (the 77i drop): 127.0.0.1:3306
-  # refuses connections (curl exit 7) now that nothing publishes it.
-  if ! curl -s -o /dev/null -m 5 "http://127.0.0.1:3306/api/projects" 2>/dev/null; then
-    pass "AC10 raw :3306 dropped" "http://127.0.0.1:3306/api/projects refused (host publish gone)"
-  else
-    fail "AC10 raw :3306 dropped" "http://127.0.0.1:3306/api/projects still answers — publish survived"
-  fi
+  # (lnf, j7g phase 2) the raw-host-publish assertion RETIRED: scotty's
+  # 127.0.0.1:3306 loopback publish is the DESIGNED front-door surface now
+  # (the serve edge proxies it at the MagicDNS name :8444 on the master).
+  # The LAN-facing raw :3306 publish that 77i dropped stays dropped — an
+  # unprefixed "3306:3306" publish is pinned absent by
+  # registrar/test/serve-edge.test.ts's LAN-front-door scan.
 
   # 3. bd round-trip against the compose dolt from the HOST, with a pinned
   # bd 1.2.2 client downloaded fresh (the same release the scotty image
