@@ -115,10 +115,10 @@ describe('queue seed contract (fleet-ops-1py.2)', () => {
     // Owner-call lanes route to the owner, never agent self-service.
     const rotation = nodes.find((n) => n.key === 'lane-dolt-rotation')!;
     expect(rotation.labels).toContain('owner-call');
-    expect(rotation.assignee).toBe('lazybaer');
+    expect(rotation.assignee).toBe('owner');
     const ntp = nodes.find((n) => n.key === 'lane-ntp-diagnostics')!;
     expect(ntp.labels).toContain('owner-call');
-    expect(ntp.assignee).toBe('lazybaer');
+    expect(ntp.assignee).toBe('owner');
   });
 
   it('carries the queue contract id and no credentials', () => {

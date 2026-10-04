@@ -366,14 +366,14 @@ ac7_console_structured_save() {
     --data-urlencode "existing_content_0=" \
     --data-urlencode "existing_path_1=config/secrets.env" \
     --data-urlencode "existing_content_1=" \
-    --data-urlencode "structured_agent_name=doombot-e2e" \
+    --data-urlencode "structured_agent_name=vs-agent-e2e" \
     --data-urlencode "structured_model_route=openai/gpt-5.2" \
     --data-urlencode "structured_gateway_api_key=sk-e2e-gateway" \
     --data-urlencode "structured_extra_env=LOG_LEVEL=debug" \
     --data-urlencode "structured_soul_contents=# E2E Soul" \
     --data-urlencode "structured_a2a_identity_key=a2a-e2e-key" \
-    --data-urlencode "structured_a2a_trusted_peers=ultronbot
-kangbot" \
+    --data-urlencode "structured_a2a_trusted_peers=peer-a
+peer-b" \
     --data-urlencode "structured_a2a_public_url=https://vsigma.lan:8443" \
     --data-urlencode "structured_a2a_peer_tokens=primus:a2a-e2e-key" \
     --data-urlencode "structured_slack_bot_token=xoxb-e2e-slack" \
@@ -412,22 +412,22 @@ e2e-pem
   node -e '
     const d = JSON.parse(process.argv[1]);
     const checks = [
-      ["agent.env merged render", d.agentEnv.includes("AGENT_NAME=doombot-e2e") && d.agentEnv.includes("GATEWAY_API_KEY=sk-e2e-gateway") && d.agentEnv.includes("MODEL_ROUTE=openai/gpt-5.2") && d.agentEnv.includes("LOG_LEVEL=debug") && d.agentEnv.includes("SOURCE=vector-sigma-e2e")],
+      ["agent.env merged render", d.agentEnv.includes("AGENT_NAME=vs-agent-e2e") && d.agentEnv.includes("GATEWAY_API_KEY=sk-e2e-gateway") && d.agentEnv.includes("MODEL_ROUTE=openai/gpt-5.2") && d.agentEnv.includes("LOG_LEVEL=debug") && d.agentEnv.includes("SOURCE=vector-sigma-e2e")],
       ["secrets.env line-merge", d.secretsEnv.includes("SLACK_BOT_TOKEN=xoxb-e2e-slack") && d.secretsEnv.includes("SIMULATED_SECRET=e2e-rotate-me")],
       ["SOUL.md verbatim", d.soul.includes("# E2E Soul")],
-      ["a2a.json object render", (d.a2a.includes("a2a-e2e-key") && d.a2a.includes("ultronbot") && d.a2a.includes("kangbot") && d.a2a.includes("https://vsigma.lan:8443") && d.a2a.includes("peer_tokens"))],
+      ["a2a.json object render", (d.a2a.includes("a2a-e2e-key") && d.a2a.includes("peer-a") && d.a2a.includes("peer-b") && d.a2a.includes("https://vsigma.lan:8443") && d.a2a.includes("peer_tokens"))],
       ["github-app.pem verbatim", d.pem.includes("BEGIN RSA PRIVATE KEY")],
     ];
     for (const [name, ok] of checks) console.log("[e2e] " + (ok ? "PASS" : "FAIL") + " AC7 " + name + (ok ? " — ok" : " — got " + JSON.stringify(d)));
   ' "$out" | while IFS= read -r line; do printf '%s\n' "$line"; done
   if printf '%s' "$out" | node -e '
     const d = JSON.parse(require("fs").readFileSync(0, "utf8"));
-    const ok = d.agentEnv.includes("AGENT_NAME=doombot-e2e") && d.agentEnv.includes("GATEWAY_API_KEY=sk-e2e-gateway")
+    const ok = d.agentEnv.includes("AGENT_NAME=vs-agent-e2e") && d.agentEnv.includes("GATEWAY_API_KEY=sk-e2e-gateway")
       && d.agentEnv.includes("MODEL_ROUTE=openai/gpt-5.2") && d.agentEnv.includes("LOG_LEVEL=debug")
       && d.agentEnv.includes("SOURCE=vector-sigma-e2e")
       && d.secretsEnv.includes("SLACK_BOT_TOKEN=xoxb-e2e-slack") && d.secretsEnv.includes("SIMULATED_SECRET=e2e-rotate-me")
       && d.soul.includes("# E2E Soul")
-      && d.a2a.includes("a2a-e2e-key") && d.a2a.includes("ultronbot") && d.a2a.includes("kangbot")
+      && d.a2a.includes("a2a-e2e-key") && d.a2a.includes("peer-a") && d.a2a.includes("peer-b")
       && d.pem.includes("BEGIN RSA PRIVATE KEY");
     process.exit(ok ? 0 : 1);
   '; then PASS=$((PASS+5)); else FAIL=$((FAIL+5)); fi

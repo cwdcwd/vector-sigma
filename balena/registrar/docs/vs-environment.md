@@ -97,10 +97,10 @@ require the owner directly. Route them to the owner; never self-apply.
 
 ## Cross-fleet rule (hard boundary)
 
-The VS queue and the Cabal queue are SEPARATE. Contact with ultronbot
-(the Cabal coordinator) is **A2A agent-to-agent only** — never
-shared-queue writes. No VS agent writes the Cabal's `fleet_ops`; no
-Cabal agent writes your `vs_ops`. Coordination crossings happen over
+The VS queue and the origin queue are SEPARATE. Contact with the origin-fleet coordinator
+is **A2A agent-to-agent only** — never
+shared-queue writes. No VS agent writes the origin fleet's `fleet_ops`; no
+origin-fleet agent writes your `vs_ops`. Coordination crossings happen over
 A2A, exactly as the lane that built this image was dispatched.
 
 ## The A2A mesh (j7g.1)

@@ -4,7 +4,7 @@ One-time bring-up of the Vector Sigma fleet's own work queue: the Dolt server
 container on the master device + `bd` server-mode clients + the Scotty
 dashboard. Owner ruling: **the VS queue is fully self-contained** — VS devices
 run bd clients against the master's Dolt; cross-fleet coordination
-(primus ↔ ultronbot) is A2A agent-to-agent, NEVER through each other's queues.
+(primus ↔ the origin-fleet coordinator) is A2A agent-to-agent, NEVER through each other's queues.
 
 ## The composition
 
@@ -22,8 +22,8 @@ Both balena (`balena/registrar/docker-compose.yml`) and self-host
 `bd init --server` does not merely configure the local client — it generates a
 fresh project_id and REWRITES the shared database's project_id with it. Every
 other client whose metadata points at the previous id is silently locked out.
-This is the exact root cause of the 2026-09-09 fleet lockout (doombot's init
-stamped the DB; kangbot's later init overwrote it, locking doombot out).
+This is the exact root cause of the 2026-09-09 fleet lockout (one agent's init
+stamped the DB; a second agent's later init overwrote it, locking the first out).
 
 Rules, verbatim from the fleet contract:
 
@@ -115,7 +115,7 @@ Nothing to bootstrap — the image is self-contained:
   is baked in-repo with the canonical id (fleet-ops-anc, 2026-09-29) —
   the image bakes the file as-is, no post-init edit is needed anymore.
 
-## Queue conventions (the VS mirror of the Cabal's FLEET.md)
+## Queue conventions (the VS mirror of the origin fleet's FLEET.md)
 
 See `docs/queue-conventions.md`.
 
@@ -125,7 +125,7 @@ See `docs/queue-conventions.md`.
   makes device-side bd clients load-bearing ("VS devices run bd clients
   against it"); an unpublished port would break the core queue contract. Not
   reachable off-LAN: balenaCloud's public-URL feature tunnels device port 80
-  ONLY (fleet-ops-f57.9). Matches the Cabal precedent (central Dolt at LAN
+  ONLY (fleet-ops-f57.9). Matches the origin-fleet precedent (central Dolt at LAN
   :3326 serving every fleet bd client).
 - **Scotty :3306 published to the device LAN** — the queue UI for the owner
   and VS agents; same LAN-only posture.

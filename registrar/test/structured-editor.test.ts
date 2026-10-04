@@ -110,13 +110,13 @@ describe('Admin console — structured bundle editor (f57.11)', () => {
     const form = baseForm('2');
     form._csrf = csrf;
     Object.assign(form, {
-      structured_agent_name: 'doombot',
+      structured_agent_name: 'agent-a',
       structured_model_route: 'openai/gpt-5.2',
       structured_gateway_api_key: 'sk-new-gateway',
       structured_extra_env: 'LOG_LEVEL=debug',
       structured_soul_contents: '# SOUL\n\nYou are Doom.\n',
       structured_a2a_identity_key: 'a2a-key-new',
-      structured_a2a_trusted_peers: 'ultronbot\nkangbot',
+      structured_a2a_trusted_peers: 'peer-a\npeer-b',
       structured_a2a_public_url: 'https://vector-sigma.tailb7207e.ts.net:8443',
       structured_a2a_peer_tokens: 'primus:sk-e2e-primus\nwheeljack:sk-e2e-wheeljack',
       structured_slack_bot_token: 'xoxb-new-slack',
@@ -142,14 +142,14 @@ describe('Admin console — structured bundle editor (f57.11)', () => {
     // Field-level merge with the prior agent.env: AGENT_NAME and
     // GATEWAY_API_KEY lines replaced in place, MODEL_ROUTE + extras appended.
     expect(byPath.get('config/agent.env')).toBe(
-      'AGENT_NAME=doombot\nGATEWAY_API_KEY=sk-new-gateway\nMODEL_ROUTE=openai/gpt-5.2\nLOG_LEVEL=debug\n',
+      'AGENT_NAME=agent-a\nGATEWAY_API_KEY=sk-new-gateway\nMODEL_ROUTE=openai/gpt-5.2\nLOG_LEVEL=debug\n',
     );
     expect(byPath.get('SOUL.md')).toBe('# SOUL\n\nYou are Doom.\n');
     expect(byPath.get('config/a2a.json')).toBe(
       JSON.stringify(
         {
           identity_key: 'a2a-key-new',
-          trusted_peers: ['ultronbot', 'kangbot'],
+          trusted_peers: ['peer-a', 'peer-b'],
           public_url: 'https://vector-sigma.tailb7207e.ts.net:8443',
           peer_tokens: { primus: 'sk-e2e-primus', wheeljack: 'sk-e2e-wheeljack' },
         },
@@ -184,7 +184,7 @@ describe('Admin console — structured bundle editor (f57.11)', () => {
           content: JSON.stringify(
             {
               identity_key: 'live-identity-key',
-              trusted_peers: ['ultronbot', 'kangbot'],
+              trusted_peers: ['peer-a', 'peer-b'],
               public_url: 'https://vector-sigma.tailb7207e.ts.net:8443',
               peer_tokens: { primus: 'live-peer-token' },
             },
@@ -209,7 +209,7 @@ describe('Admin console — structured bundle editor (f57.11)', () => {
     expect(page.html).toContain('value="row-agent-name"');
     expect(page.html).toContain('value="ollama/glm-5.3"');
     expect(page.html).toContain('# Current soul');
-    expect(page.html).toContain('ultronbot\nkangbot');
+    expect(page.html).toContain('peer-a\npeer-b');
     // j7g.1: the non-secret public_url pre-fills from the current a2a.json
     expect(page.html).toContain('value="https://vector-sigma.tailb7207e.ts.net:8443"');
     // extra_env pre-fill carries the non-managed lines
@@ -260,7 +260,7 @@ describe('Admin console — structured bundle editor (f57.11)', () => {
     form._csrf = csrf;
     form.existing_content_0 = 'AGENT_NAME=manual-override\n'; // same canonical path
     Object.assign(form, {
-      structured_agent_name: 'doombot',
+      structured_agent_name: 'agent-a',
       structured_model_route: 'openai/gpt-5.2',
       structured_slack_bot_token: 'xoxb-new-slack',
     });
@@ -328,7 +328,7 @@ describe('Admin console — structured bundle editor (f57.11)', () => {
     const csrf = await c.csrfFrom(`/admin/devices/${env.device.uuid}/bundle`);
     const form = baseForm('2');
     form._csrf = csrf;
-    Object.assign(form, { structured_agent_name: 'doombot' });
+    Object.assign(form, { structured_agent_name: 'agent-a' });
     const res = await c.postForm(`/admin/devices/${env.device.uuid}/bundle`, form);
     expect(res.status).toBe(303);
     const status = asStatusBody(

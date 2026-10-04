@@ -16,7 +16,7 @@
 # bd itself rewrites the store on any invocation, so the wrapper also keeps the
 # binary path fixed (argv[0] discipline) — scotty passes no PATH-dependent name.
 #
-# Mirrors the Cabal dashboard posture (fleet-ops-8ea runbook: BD_BIN read-only
+# Mirrors the origin fleet's dashboard posture (fleet-ops-8ea runbook: BD_BIN read-only
 # wrapper + SCOTTY_READ_ONLY=1; scotty v0.3.0 cc55734 + 8ea deep-link patch).
 
 set -u

@@ -4,8 +4,8 @@
 #   - Bead Me Up Scotty v0.3.0 = cc55734df9ba44262b34a2133f0f10f410021e19
 #     (tag 12de35a9; verified 2026-09-21: v0.3.0's tag object points at cc55734)
 #   - the fleet's 8ea deep-link patch (hydrated-tab hang, fleet-ops-8ea:
-#     sha256 1bdd684884bb0a63ec1f48c41666c4e2809b4dbc6522dc7600db3f60cea8bc93,
-#     5243B/122L, verified byte-exact this session; applies clean to cc55734)
+#     sha256 8f75790df31eda440666a3ca97fafbdaa249741c3de49a345ffcea53ee9f9b37,
+#     5227B/122L, verified byte-exact this session; applies clean to cc55734)
 #   - bd CLI pinned at 1.2.2 (fleet convention fleet/conventions/bd-version-pin:
 #     bd 1.3.x auto-migrates the shared Dolt schema and would lock out every
 #     other client — NEVER bump past the fleet pin; upstream Dockerfile defaults
@@ -36,7 +36,7 @@ RUN git clone --quiet --no-checkout https://github.com/brendan-appstart/bead-me-
     && test "$(git rev-parse HEAD)" = "${SCOTTY_SHA}"
 # Apply the fleet's 8ea patch (vendored in-repo; hash-checked at build start).
 COPY scotty-8ea-deep-link.patch /tmp/scotty-8ea-deep-link.patch
-RUN sha256sum /tmp/scotty-8ea-deep-link.patch | grep -q '^1bdd684884bb0a63ec1f48c41666c4e2809b4dbc6522dc7600db3f60cea8bc93' \
+RUN sha256sum /tmp/scotty-8ea-deep-link.patch | grep -q '^8f75790df31eda440666a3ca97fafbdaa249741c3de49a345ffcea53ee9f9b37' \
     && cd /scotty/src \
     && git apply --check /tmp/scotty-8ea-deep-link.patch \
     && git apply /tmp/scotty-8ea-deep-link.patch

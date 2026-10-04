@@ -7,7 +7,7 @@
 #                                     /health/*)
 #   https://<master-hostname>:8444  -> scotty queue UI (basic_auth)
 #
-# NOT fronted (deliberate, per the Cabal precedent — LAN-internal services
+# NOT fronted (deliberate, per the origin-fleet precedent — LAN-internal services
 # stay off the edge):
 #   postgres, litellm-init — compose-internal only.
 #   dolt (when the queue bead lands)  — the fleet's shared queue DB is
