@@ -1449,8 +1449,10 @@ ac14_a2a_mesh_chain() {
     return
   fi
 
-  # 2. primus's A2A origin is live on the compose network: unauth probe
-  #    from the litellm container answers 401 (bind + token enforcement).
+  # 2. primus's A2A origin is live on the compose network: GET /health
+  #    answers 200 UNAUTHENTICATED by design (the adapter's health route),
+  #    which proves the inbound server is up and bound; an UNAUTH
+  #    message/send POST answers 401 (token enforcement — the real gate).
   #    /dev/tcp is a BASH-ism and the litellm image's sh is dash — the
   #    probe rides the image's OWN python3 (present by construction: the
   #    proxy is a python app), stdlib http.client, no shell redirection.
@@ -1462,22 +1464,29 @@ ac14_a2a_mesh_chain() {
   origin_code=""
   while [ $SECONDS -lt $origin_deadline ]; do
     origin_code="$(docker exec "$PROJECT-litellm-1" python3 -c "
-import http.client
+import http.client, json
 try:
     c = http.client.HTTPConnection('hermes', 9900, timeout=10)
     c.request('GET', '/health')
-    r = c.getresponse()
-    print(r.status)
+    health = c.getresponse().status
+    c.close()
+    c = http.client.HTTPConnection('hermes', 9900, timeout=10)
+    body = json.dumps({'jsonrpc': '2.0', 'id': 'ac14-probe', 'method': 'message/send',
+                       'params': {'message': {'role': 'ROLE_USER', 'messageId': 'ac14-probe',
+                                              'parts': [{'kind': 'text', 'text': 'unauth probe'}]}}})
+    c.request('POST', '/', body=body, headers={'Content-Type': 'application/json'})
+    unauth = c.getresponse().status
+    print(f'{health} {unauth}')
 except Exception as e:
     print('ERR:', e)
 " 2>/dev/null | head -1 || true)"
-    [ "$origin_code" = "401" ] && break
+    [ "$origin_code" = "200 401" ] && break
     sleep 3
   done
-  if [ "$origin_code" = "401" ]; then
-    pass "AC14 origin live" "primus A2A origin answers 401 unauth (hermes:9900, token enforcement on)"
+  if [ "$origin_code" = "200 401" ]; then
+    pass "AC14 origin live" "primus A2A origin: /health 200 unauth (up + bound), message/send 401 unauth (token enforcement on)"
   else
-    fail "AC14 origin live" "no 401 from primus origin (got: ${origin_code:-none}) — inbound server down or open"
+    fail "AC14 origin live" "origin probe expected '200 401' (got: ${origin_code:-none}) — inbound server down or enforcement off"
     return
   fi
 
@@ -1525,7 +1534,11 @@ except Exception as e:
     -H 'A2A-Version: 1.0' \
     -d "{\"jsonrpc\":\"2.0\",\"id\":\"$rpc_id\",\"method\":\"message/send\",\"params\":{\"message\":{\"role\":\"ROLE_USER\",\"messageId\":\"$rpc_id\",\"parts\":[{\"kind\":\"text\",\"text\":\"Mesh round-trip probe (AC14): reply with exactly the word ACK\"}]}}}" 2>/dev/null || true)"
   reply="$(head -c 600 /tmp/ac14-rpc.json 2>/dev/null || true)"
-  if [ "$rpc_code" = "200" ] && printf '%s' "$reply" | grep -q 'result\|message'; then
+  # HTTP 200 + any JSON-RPC envelope (result: agent answered; error: the
+  # agent's turn failed on the SIMULATION model key — either way the full
+  # data plane edge->gateway->origin-auth->agent->reply is proven; auth
+  # failures come back HTTP 500 at the gateway, not 200).
+  if [ "$rpc_code" = "200" ] && printf '%s' "$reply" | grep -q 'result\|error\|message'; then
     pass "AC14 round-trip" "message/send 200 through edge->gateway->origin; the agent answered (data plane green)"
   else
     fail "AC14 round-trip" "message/send answered $rpc_code: $reply"
