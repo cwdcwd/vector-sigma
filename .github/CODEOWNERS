@@ -1,7 +1,16 @@
 # ADVISORY-ONLY — a bot cannot resolve as a code owner.
 # GitHub Apps (like vectorsigma-primus[bot]) are ignored by code-owner
-# review gates; this line documents primus's maintainer designation
-# (MAINTAINERS.md) for humans reading the repo. It is docs/optics,
+# review gates; the lines below document maintainer designations
+# (MAINTAINERS.md) for humans reading the repo. They are docs/optics,
 # NEVER a gate — see the branch ruleset: require_code_owner_review
 # must stay FALSE (a bot code-owner gate wedges every PR forever).
+#
+# Per-agent App identities (fleet-ops-e5o.5): every VS agent with repo
+# write access gets its OWN advisory line here, added by the PR that
+# follows the owner minting that agent's App (naming convention:
+# App VectorSigma-<AgentName> -> login vectorsigma-<agent-slug>[bot];
+# registry table in MAINTAINERS.md). One line per minted agent, e.g.
+#   * @vectorsigma-<agent-slug>[bot]
+# — advisory exactly like primus's line below; a bot can never hold an
+# enforced maintainer role.
 * @vectorsigma-primus[bot]
