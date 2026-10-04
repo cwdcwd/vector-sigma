@@ -77,6 +77,17 @@ const vendoredFiles = [
   // f57.13: the CA shim ships in BOTH the deploy/ image and the balena
   // devices registrant image — one file, two COPY targets, byte-pinned.
   ['deploy/vs-entrypoint.sh', 'balena/devices/registrant/vs-entrypoint.sh'],
+  // j7g.1: the devices app vendors the queue docs (the Dockerfile.agent-
+  // hermes COPY docs surface) — byte-pinned to docs/ at the repo root,
+  // same pattern as the registrar app's vendored docs.
+  ['docs/queue-conventions.md', 'balena/devices/docs/queue-conventions.md'],
+  ['docs/vs-environment.md', 'balena/devices/docs/vs-environment.md'],
+  // j7g.1: the A2A mesh wiring hook ships in THREE places — deploy/
+  // (canonical), the devices agent image, and the registrar's primus
+  // image — one file, three COPY targets, byte-pinned (the vs-entrypoint
+  // pattern).
+  ['deploy/vs-a2a-wiring.sh', 'balena/devices/agent/vs-a2a-wiring.sh'],
+  ['deploy/vs-a2a-wiring.sh', 'balena/registrar/vs-a2a-wiring.sh'],
 ] as const;
 
 describe('balena vendored sources', () => {

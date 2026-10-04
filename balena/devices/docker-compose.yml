@@ -19,20 +19,31 @@ version: "2.4"
 
 services:
   agent:
+    # j7g.1 (the runtime swap): the real agent runtime — the pinned
+    # official Hermes image (the b1r forward shape, now the build) with
+    # bd 1.2.2 baked read-write, the identity gate, and the A2A mesh
+    # wiring hook. The placeholder image (balena/devices/agent/Dockerfile,
+    # node heartbeat) is RETIRED by this lane: the engineering spec's
+    # "real runtime is a fleet PR" clause resolves HERE.
     build:
-      context: ./agent
-      dockerfile: Dockerfile
-    # The image's gate.sh entrypoint blocks on /data/agent/ready.marker
-    # before exec'ing this command as the agent runtime.
-    command:
-      - node
-      - -e
-      - |
-        console.log('[agent] identity verified — agent runtime placeholder active');
-        process.title = 'vector-sigma-agent';
-        setInterval(() => {
-          console.log('[agent] heartbeat');
-        }, 30000);
+      context: .
+      dockerfile: Dockerfile.agent-hermes
+    # The canonical long-run form (the upstream reference compose's shape,
+    # the b1r run-3 lesson — a bare REPL exits on EOF with closed stdin).
+    command: ["gateway", "run"]
+    # The gate (ENTRYPOINT) blocks on /data/agent/ready.marker before
+    # exec'ing the image's own entrypoint dispatcher.
+    environment:
+      # State on the shared agent-data volume; the runtime reads the
+      # registrant-written (uid 1000) bundle under this home (the b1r
+      # HERMES_UID remap mechanism — without it the default uid 10000
+      # cannot read the 0600 bundle files).
+      HERMES_HOME: /data/agent
+      HERMES_UID: "1000"
+      HERMES_GID: "1000"
+      # The gateway comes up on first boot (the image's first-boot-only
+      # seed contract; the persisted state wins on every later boot).
+      HERMES_GATEWAY_BOOTSTRAP_STATE: running
     volumes:
       - agent-data:/data/agent
     # j7g phase 1b (fleet-ops-lrb): static hosts pin for the master's

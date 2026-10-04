@@ -1,53 +1,78 @@
-# balena/devices/Dockerfile.agent-hermes — FORWARD-SHAPE ONLY
-# (fleet-ops-b1r, owner flag: "will also affect the registrant fleet").
+# balena/devices/Dockerfile.agent-hermes — the VS devices agent runtime
+# (fleet-ops-j7g.1: the runtime swap this file's b1r forward shape
+# documented — "when the swap lands, this file becomes the build").
 #
-# This Dockerfile is a DOCUMENTED COPY of the registrar app's primus
-# image pattern (balena/registrar/Dockerfile.hermes). It is NOT BUILT
-# TODAY: the devices app's agent runtime stays the placeholder
-# (balena/devices/agent/Dockerfile — node:22-bookworm-slim + gate.sh)
-# until the real hermes runtime swap lands in its own lane, per the
-# bead's explicit "do NOT build the devices runtime" clause.
-#
-# When the swap lands, this file becomes the build: switch the devices
-# docker-compose.yml agent service from `image:`/placeholder build to
-#
-#     build:
-#       context: .
-#       dockerfile: Dockerfile.agent-hermes
-#
-# and the SAME additions the registrar's primus image carries apply:
-#   1. bd 1.2.2 baked FULL READ-WRITE (the scotty tarball+sha256
-#      pattern VERBATIM — ARG BD_VERSION=1.2.2, uname -m arch case
-#      [legacy-builder-safe, no TARGETARCH], checksums.txt-verified,
-#      fail-loud). Devices are queue WORKERS, not curators — still
-#      read-write (they claim + comment + close), just not scotty's
-#      bd-readonly wrapper posture.
-#   2. A queue-join config at /opt/vs/queue-join/.beads (config-only
-#      join; canonical project_id from the coordinator — the fleet
-#      contract; NEVER a device-side bd init).
-#   3. The same docs (queue-conventions.md + a per-device environment
-#      map) at /opt/vs/docs.
-#   4. The same boot hook shape (vs-queue-join.sh as
-#      /etc/cont-init.d/03-vs-queue-join) — with dolt_server_host set
-#      to the master's LAN address (or LAN hostname), NOT the compose
-#      service name: devices reach the master dolt over the LAN at
-#      <master-LAN-IP>:3326, exactly as scripts/vs-queue-bootstrap.md
-#      documents.
-#   5. The join differs from primus's in exactly TWO fields:
-#      dolt_server_host (<master-LAN-IP> — fleet variable, never
-#      baked) and dolt_server_port (3326, the LAN-published port).
-#
-# Until that lane exists, this file documents the pattern so the
-# runtime swap lands ready: same supply-chain posture, same boot-hook
-# contract, same docs posture — one pattern, two apps.
+# The pinned official Hermes image (SAME v2026.9.21 tag as the master's
+# primus image — the parity pin; do NOT bump independently) plus:
+#   1. bd 1.2.2 baked FULL READ-WRITE (the scotty tarball+sha256 supply-
+#      chain pattern VERBATIM — ARG BD_VERSION=1.2.2, arch derived from
+#      uname -m [legacy-builder-safe; NO TARGETARCH — the f57.21 guard],
+#      checksums.txt-verified, fail-loud). Devices are queue WORKERS, not
+#      curators — still read-write (claim + comment + close), never the
+#      scotty bd-readonly wrapper posture.
+#   2. The identity gate (gate.sh — the placeholder image's own contract,
+#      kept): no ready marker, no agent. It wraps the image's ENTRYPOINT
+#      so the official bootstrap chain (s6 /init -> cont-init.d ->
+#      main-wrapper) runs ONLY once identity exists — the same marker gate
+#      as the placeholder, now guarding the real runtime.
+#   3. The A2A mesh wiring hook (agent/vs-a2a-wiring.sh as
+#      /etc/cont-init.d/04-vs-a2a-wiring — the j7g.1 CODE contract):
+#      derives the runtime env (model route, gateway URL+key, A2A
+#      identity/trusted-peers/public-url/peer-tokens, TLS CA) from the
+#      registrar-delivered bundle on EVERY boot, so mesh rotations land
+#      with no hands. Runs AFTER 01-hermes-setup (stage2 seeds .env when
+#      absent; this hook then merges the bundle lines INTO it).
+#   4. The queue join is DELIVERED, not baked: devices are queue workers
+#      whose join differs per deployment (dolt host/port arrive via the
+#      bundle's extra_env BEADS_* keys, per the runbook) — the b1r primus
+#      bake was master-specific (compose-service dolt host, baked join);
+#      a baked join here would freeze a device-specific dolt host into
+#      an N-device image. NEVER a device-side bd init (the 2026-09-09
+#      lockout class).
+#   5. The device environment map + queue conventions at /opt/vs/docs
+#      (vendored at build time — the vendored-drift pattern; docs/ at
+#      the repo root is the source of truth).
 
-# The pin stays the official-image tag current at the swap (do not
-# bump past the fleet's parity pin without a fleet PR).
 FROM nousresearch/hermes-agent:v2026.9.21
 
-# [FORWARD-SHAPE] The bake steps land with the runtime-swap lane:
-# bd 1.2.2 (scotty tarball+sha256 pattern), queue-join, docs, and the
-# 03-vs-queue-join boot hook — see the block comment above and
-# balena/registrar/Dockerfile.hermes for the live pattern.
-RUN echo "forward-shape only — build the real runtime in the devices runtime-swap lane (fleet-ops-b1r §6)" \
-    && echo "see balena/registrar/Dockerfile.hermes for the pattern this file will copy"
+# ── bd 1.2.2: prebuilt release binary (Dockerfile.scotty/harness pattern) ──
+# Pinned per the fleet convention (fleet/conventions/bd-version-pin: bd
+# 1.3.x auto-migrates the shared Dolt schema and would lock out every
+# 1.2.2 client — NEVER bump past the fleet pin).
+ARG BD_VERSION=1.2.2
+RUN arch="$(uname -m)" \
+    && case "$arch" in \
+         aarch64) arch=arm64 ;; \
+         x86_64) arch=amd64 ;; \
+         *) echo "ERROR (j7g.1): unsupported build host uname -m '${arch}' — expected aarch64 or x86_64; refusing to guess the bd release asset (Dockerfile.agent-hermes)" 1>&2; exit 1 ;; \
+       esac \
+    && tarball="beads_${BD_VERSION}_linux_${arch}.tar.gz" \
+    && curl -fsSL -o /tmp/checksums.txt "https://github.com/gastownhall/beads/releases/download/v${BD_VERSION}/checksums.txt" \
+    && curl -fsSL -o "/tmp/${tarball}" "https://github.com/gastownhall/beads/releases/download/v${BD_VERSION}/${tarball}" \
+    && want="$(grep -F "${tarball}" /tmp/checksums.txt | cut -d' ' -f1)" \
+    && { [ -n "$want" ] || { echo "ERROR (j7g.1): checksums.txt at bd ${BD_VERSION} has no entry for ${tarball} — refusing to install an unverified binary (Dockerfile.agent-hermes)" 1>&2; exit 1; }; } \
+    && got="$(sha256sum "/tmp/${tarball}" | cut -d' ' -f1)" \
+    && { [ "$want" = "$got" ] || { echo "ERROR (j7g.1): sha256 mismatch for ${tarball}: want ${want}, got ${got} — refusing to install (Dockerfile.agent-hermes)" 1>&2; exit 1; }; } \
+    && tar -xzf "/tmp/${tarball}" -C /tmp \
+    && mv /tmp/bd /usr/local/bin/bd \
+    && chmod 0755 /usr/local/bin/bd \
+    && rm -f "/tmp/${tarball}" /tmp/checksums.txt
+
+# ── The identity gate (the placeholder image's own contract, kept) ────────
+COPY agent/gate.sh /usr/local/bin/gate.sh
+RUN chmod 0755 /usr/local/bin/gate.sh
+
+# ── The A2A wiring hook (cont-init, AFTER stage2's 01-hermes-setup) ──────
+COPY agent/vs-a2a-wiring.sh /etc/cont-init.d/04-vs-a2a-wiring
+RUN chmod 0755 /etc/cont-init.d/04-vs-a2a-wiring
+
+# ── Docs (vendored; source of truth = docs/ at the repo root) ─────────────
+COPY docs /opt/vs/docs
+
+# ── The identity gate as ENTRYPOINT ────────────────────────────────────────
+# The upstream image's ENTRYPOINT is the dispatcher; this image's gate
+# REPLACES it — identity first, then the gate execs the dispatcher so
+# the official bootstrap chain (s6 /init -> cont-init.d, including the
+# 04-vs-a2a-wiring hook) runs only once identity exists. The gate execs
+# (never forks), so the dispatcher stays PID 1 under balena.
+ENTRYPOINT ["/usr/local/bin/gate.sh"]

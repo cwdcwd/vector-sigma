@@ -71,7 +71,7 @@ function baseForm(existingCount: string): Record<string, string> {
 }
 
 describe('Admin console — structured bundle editor (f57.11)', () => {
-  it('renders the structured section on the editor page with all nine fields', async () => {
+  it('renders the structured section on the editor page with all eleven fields', async () => {
     await seedDevice(env.db, { uuid: env.device.uuid, hash: env.device.hash, bundle: SECRET_BUNDLE });
     const c = await loginClient();
     const page = await c.get(`/admin/devices/${env.device.uuid}/bundle`);
@@ -84,6 +84,8 @@ describe('Admin console — structured bundle editor (f57.11)', () => {
       'structured_soul_contents',
       'structured_a2a_identity_key',
       'structured_a2a_trusted_peers',
+      'structured_a2a_public_url',
+      'structured_a2a_peer_tokens',
       'structured_slack_bot_token',
       'structured_github_app_pem',
     ]) {
@@ -115,6 +117,8 @@ describe('Admin console — structured bundle editor (f57.11)', () => {
       structured_soul_contents: '# SOUL\n\nYou are Doom.\n',
       structured_a2a_identity_key: 'a2a-key-new',
       structured_a2a_trusted_peers: 'ultronbot\nkangbot',
+      structured_a2a_public_url: 'https://vector-sigma.tailb7207e.ts.net:8443',
+      structured_a2a_peer_tokens: 'primus:sk-e2e-primus\nwheeljack:sk-e2e-wheeljack',
       structured_slack_bot_token: 'xoxb-new-slack',
       structured_github_app_pem: '-----BEGIN RSA PRIVATE KEY-----\nxyz\n-----END RSA PRIVATE KEY-----\n',
     });
@@ -143,7 +147,12 @@ describe('Admin console — structured bundle editor (f57.11)', () => {
     expect(byPath.get('SOUL.md')).toBe('# SOUL\n\nYou are Doom.\n');
     expect(byPath.get('config/a2a.json')).toBe(
       JSON.stringify(
-        { identity_key: 'a2a-key-new', trusted_peers: ['ultronbot', 'kangbot'] },
+        {
+          identity_key: 'a2a-key-new',
+          trusted_peers: ['ultronbot', 'kangbot'],
+          public_url: 'https://vector-sigma.tailb7207e.ts.net:8443',
+          peer_tokens: { primus: 'sk-e2e-primus', wheeljack: 'sk-e2e-wheeljack' },
+        },
         null,
         2,
       ) + '\n',
@@ -172,7 +181,16 @@ describe('Admin console — structured bundle editor (f57.11)', () => {
         {
           path: 'config/a2a.json',
           mode: '0600' as const,
-          content: JSON.stringify({ identity_key: 'live-identity-key', trusted_peers: ['ultronbot', 'kangbot'] }, null, 2) + '\n',
+          content: JSON.stringify(
+            {
+              identity_key: 'live-identity-key',
+              trusted_peers: ['ultronbot', 'kangbot'],
+              public_url: 'https://vector-sigma.tailb7207e.ts.net:8443',
+              peer_tokens: { primus: 'live-peer-token' },
+            },
+            null,
+            2,
+          ) + '\n',
         },
         { path: 'config/secrets.env', mode: '0600' as const, content: 'SLACK_BOT_TOKEN=live-slack-token\n' },
         { path: 'config/github-app.pem', mode: '0600' as const, content: '-----BEGIN RSA PRIVATE KEY-----\nlive\n-----END RSA PRIVATE KEY-----\n' },
@@ -192,6 +210,8 @@ describe('Admin console — structured bundle editor (f57.11)', () => {
     expect(page.html).toContain('value="ollama/glm-5.3"');
     expect(page.html).toContain('# Current soul');
     expect(page.html).toContain('ultronbot\nkangbot');
+    // j7g.1: the non-secret public_url pre-fills from the current a2a.json
+    expect(page.html).toContain('value="https://vector-sigma.tailb7207e.ts.net:8443"');
     // extra_env pre-fill carries the non-managed lines
     expect(page.html).toContain('LOG_LEVEL=info');
     // Secrets NEVER render — not as value=, not anywhere. (The PEM input's
@@ -201,6 +221,8 @@ describe('Admin console — structured bundle editor (f57.11)', () => {
     expect(page.html).not.toContain('live-identity-key');
     expect(page.html).not.toContain('live-slack-token');
     expect(page.html).not.toContain('-----BEGIN RSA PRIVATE KEY-----\nlive');
+    // j7g.1: peer tokens are secret — never rendered as value or anywhere
+    expect(page.html).not.toContain('live-peer-token');
     // Secret inputs render with an empty value attribute
     expect(page.html).toContain(
       'type="password" name="structured_gateway_api_key" data-path="config/agent.env" placeholder="sk-…" value=""',

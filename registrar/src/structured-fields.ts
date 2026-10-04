@@ -15,6 +15,8 @@
  *   soul_contents     -> SOUL.md            (verbatim)
  *   a2a_identity_key  -> config/a2a.json   (identity_key property, secret)
  *   a2a_trusted_peers -> config/a2a.json   (trusted_peers list)
+ *   a2a_public_url    -> config/a2a.json   (public_url property, fleet-ops-j7g.1)
+ *   a2a_peer_tokens   -> config/a2a.json   (peer_tokens map, secret — fleet-ops-j7g.1)
  *   slack_bot_token   -> config/secrets.env (SLACK_BOT_TOKEN=..., secret)
  *   github_app_pem    -> config/github-app.pem (verbatim PEM, secret)
  *
@@ -47,6 +49,8 @@ export const FIELD_NAMES = [
   'soul_contents',
   'a2a_identity_key',
   'a2a_trusted_peers',
+  'a2a_public_url',
+  'a2a_peer_tokens',
   'slack_bot_token',
   'github_app_pem',
 ] as const;
@@ -56,6 +60,7 @@ export type StructuredFieldName = (typeof FIELD_NAMES)[number];
 export const SECRET_FIELDS: ReadonlySet<StructuredFieldName> = new Set([
   'gateway_api_key',
   'a2a_identity_key',
+  'a2a_peer_tokens',
   'slack_bot_token',
   'github_app_pem',
 ]);
@@ -69,6 +74,8 @@ export interface StructuredFields {
   soul_contents?: string;
   a2a_identity_key?: string;
   a2a_trusted_peers?: string;
+  a2a_public_url?: string;
+  a2a_peer_tokens?: string;
   slack_bot_token?: string;
   github_app_pem?: string;
 }
@@ -113,6 +120,20 @@ export class InvalidExtraEnvError extends Error {
       `extra_env line is not KEY=VALUE (got: ${line.slice(0, 80)}) — fix the line or start it with # to comment it out`,
     );
     this.name = 'InvalidExtraEnvError';
+  }
+}
+
+/**
+ * Malformed name:key line in a2a_peer_tokens — save is refused with this
+ * (fleet-ops-j7g.1). The console surfaces the error to the operator rather
+ * than silently dropping a mesh identity entry.
+ */
+export class InvalidPeerTokenLineError extends Error {
+  constructor(public readonly line: string) {
+    super(
+      `a2a_peer_tokens line is not name:key (got: ${line.slice(0, 80)}) — one peer per line, name is [A-Za-z0-9_-], or start the line with # to comment it out`,
+    );
+    this.name = 'InvalidPeerTokenLineError';
   }
 }
 
@@ -162,6 +183,8 @@ export function buildFormPreFill(
   // SOUL.md: verbatim non-secret content.
   preFill.soul_contents = current.get(CANONICAL_PATHS.soul) ?? '';
   // config/a2a.json: trusted peers one per line; identity key is secret.
+  // j7g.1: public_url is non-secret (the served edge) — pre-filled so the
+  // operator can see and edit the mesh endpoint on the device.
   const a2a = current.get(CANONICAL_PATHS.a2a);
   if (a2a !== undefined) {
     try {
@@ -171,6 +194,9 @@ export function buildFormPreFill(
         preFill.a2a_trusted_peers = peers
           .filter((p): p is string => typeof p === 'string')
           .join('\n');
+      }
+      if (typeof obj.public_url === 'string' && obj.public_url !== '') {
+        preFill.a2a_public_url = obj.public_url;
       }
     } catch {
       // Raw-uploaded a2a.json that is not an object: no peers pre-fill;
@@ -252,7 +278,12 @@ export function renderCanonicalFiles(
   // ---- config/a2a.json: object-merge (set keys override, blank keys keep).
   const identityKey = fields.a2a_identity_key?.trim() ?? '';
   const peersRaw = fields.a2a_trusted_peers?.trim() ?? '';
-  if (identityKey !== '' || peersRaw !== '') {
+  const publicUrl = fields.a2a_public_url?.trim() ?? '';
+  // j7g.1: cross-agent identity staging — "name:key" lines (the OTHER mesh
+  // agents' keys this agent presents when calling them), rendered into the
+  // peer_tokens object. Secret field: write-only, blank = keep existing.
+  const peerTokensRaw = fields.a2a_peer_tokens?.trim() ?? '';
+  if (identityKey !== '' || peersRaw !== '' || publicUrl !== '' || peerTokensRaw !== '') {
     let obj: Record<string, unknown> = {};
     const prev = existing.get(CANONICAL_PATHS.a2a);
     if (prev !== undefined) {
@@ -273,6 +304,20 @@ export function renderCanonicalFiles(
         .split(/[,\n]/)
         .map((p) => p.trim())
         .filter((p) => p.length > 0);
+    }
+    if (publicUrl !== '') obj.public_url = publicUrl;
+    if (peerTokensRaw !== '') {
+      const tokens: Record<string, string> = {};
+      for (const line of trimmedLines(fields.a2a_peer_tokens)) {
+        if (line.startsWith('#')) continue;
+        const colon = line.indexOf(':');
+        if (colon <= 0) throw new InvalidPeerTokenLineError(line);
+        const name = line.slice(0, colon).trim();
+        const token = line.slice(colon + 1).trim();
+        if (!/^[A-Za-z0-9_-]+$/.test(name) || token === '') throw new InvalidPeerTokenLineError(line);
+        tokens[name] = token;
+      }
+      obj.peer_tokens = tokens;
     }
     out.push({
       path: CANONICAL_PATHS.a2a,

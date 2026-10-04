@@ -279,9 +279,31 @@ serves the Cabal): each VS device's Hermes points `A2A_PUBLIC_URL` at
 `https://<TLS_HOSTNAME>:8443`, and its agent card is served by the VS
 gateway — peer traffic rides the master device, never ai.lan. The
 structured bundle editor's A2A fields (`a2a_identity_key`,
-`a2a_trusted_peers`) document this in their hints; full mesh wiring
-(peer token staging, card registration) is the follow-up bead's lane,
-provisioned once the gateway serves. No `PROXY_BASE_URL` is set: with no
+`a2a_trusted_peers`, and since j7g.1 `a2a_public_url` +
+`a2a_peer_tokens`) document this in their hints; the DEVICE-SIDE wiring
+lands with j7g.1:
+
+- **Bundle contract**: `config/a2a.json` carries `identity_key` (the
+  agent's own mesh key), `trusted_peers` (the resolved identities that
+  may run tasks), `public_url` (the mesh edge — the master gateway's
+  served edge), and `peer_tokens` (name→key: the OTHER mesh agents'
+  keys this agent accepts inbound).
+- **Runtime derivation** (the 04-vs-a2a-wiring boot hook, baked into
+  BOTH Hermes images — primus's and the devices' agent): the hook
+  re-derives `A2A_PEER_TOKENS`, `A2A_TRUSTED_PEERS`,
+  `A2A_PUBLIC_URL`, `A2A_OWN_IDENTITY_KEY`, `A2A_HOST/PORT` and the
+  config.yaml `a2a_agents` section from the bundle on EVERY boot — a
+  mesh rotation the console delivers lands on the next container
+  recreate with zero hands. No identity in the bundle ⇒ the inbound
+  server stays OFF (bind-safety).
+- **Gateway registration**: each agent's row on the VS gateway
+  (`POST /v1/agents`, master-key auth) carries
+  `agent_card_params.url` = the agent's A2A origin and
+  `extra_headers: ["Authorization"]` — the proxy forwards the CALLER's
+  credential upstream, so the mesh needs no stored secret on the row:
+  a caller presenting peer X's key is X at the target.
+
+No `PROXY_BASE_URL` is set: with no
 reverse proxy in front, LiteLLM derives card URLs from the request Host
 header — correct on a plain-HTTP LAN; set it as a dashboard variable
 only if a proxy ever fronts the gateway.
@@ -310,8 +332,18 @@ once the new one exists).
    ai.lan side).
 5. Point the device bundle at the new gateway: registrar bundle
    `config/agent.env` gains `GATEWAY_URL=https://<TLS_HOSTNAME>:8443`
-   and `config/a2a.json` documents `A2A_PUBLIC_URL` per the editor hints;
-   full device-side wiring rides the follow-up bead.
+   and `config/a2a.json` documents `A2A_PUBLIC_URL` per the editor hints
+   (the `a2a_public_url` structured field, j7g.1). The device-side
+   wiring — the 04-vs-a2a-wiring boot hook (bundle → runtime env +
+   config.yaml) — ships in BOTH Hermes images since j7g.1; the mesh
+   round-trip is the e2e's AC14.
+6. **j7g.1 mesh rows**: for each mesh agent, register its card row —
+   `POST /v1/agents` with the master key,
+   `agent_card_params.url` = the agent's A2A origin (`http://<agent-host>:9900`
+   compose-internal for primus; the device LAN/tailnet address for a
+   device), and `extra_headers: ["Authorization"]` so the proxy forwards
+   each caller's own credential (per-caller identity — the ai.lan
+   shape; no secret stored on the row).
 
 ### Gateway health
 
@@ -402,7 +434,7 @@ The bundle IS the config delivery:
 | `config/agent.env` | `AGENT_NAME=primus`, `MODEL_ROUTE`, `GATEWAY_API_KEY`, + `GATEWAY_URL` pointing at the composition's litellm (`http://litellm:4000` compose-internal today; `https://<TLS_HOSTNAME>:8443` after the TLS flip — same sequencing as the devices fleet) |
 | `config/secrets.env` | `SLACK_BOT_TOKEN` etc. (owner-side custody, per the Cabal pattern) |
 | `SOUL.md` | The VS coordinator SOUL: queue curator (docs/queue-conventions.md), cross-fleet contact A2A-only, credential/install/self-config mutations owner-gated (the ADR-0001 clause mirror) |
-| `config/a2a.json` | `identity_key` + `trusted_peers` (the mesh; peer token staging rides the follow-up bead) |
+| `config/a2a.json` | `identity_key` + `trusted_peers` + `public_url` + `peer_tokens` (the mesh — j7g.1) |
 | `config/github-app.pem` | GitHub App credential (owner-side custody) |
 
 The image's stage2 hook seeds `config.yaml` / `.env` / `SOUL.md` only

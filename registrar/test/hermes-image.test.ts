@@ -144,6 +144,23 @@ describe('primus image contract (fleet-ops-b1r)', () => {
     expect(hook).toMatch(/bd version 1\.2\.2/);
   });
 
+  it('j7g.1: the A2A mesh wiring hook is baked as cont-init 04- (primus is a mesh member)', () => {
+    expect(dockerfileCode).toMatch(/COPY vs-a2a-wiring\.sh \/etc\/cont-init\.d\/04-vs-a2a-wiring/);
+    expect(dockerfileCode).toMatch(/chmod 0755 \/etc\/cont-init\.d\/04-vs-a2a-wiring/);
+    const wiring = readFileSync(path.join(appDir, 'vs-a2a-wiring.sh'), 'utf8');
+    expect(wiring).toMatch(/^#!\/command\/with-contenv sh/);
+    // The CODE contract: bundle files -> runtime env + managed config.yaml.
+    expect(wiring).toMatch(/A2A_PEER_TOKENS/);
+    expect(wiring).toMatch(/A2A_OWN_IDENTITY_KEY/);
+    expect(wiring).toMatch(/A2A_PUBLIC_URL/);
+    expect(wiring).toMatch(/a2a_agents/);
+    // Bind-safety: no identity in the bundle => inbound stays OFF.
+    expect(wiring).toMatch(/A2A inbound stays OFF/);
+    // FAIL-SOFT: never brick the agent (comment-stripped scan).
+    const wiringCode = stripComments(wiring);
+    expect(wiringCode).not.toMatch(/exit [1-9]/);
+  });
+
   it('both composes build the same Dockerfile.hermes (one artifact, no twin drift)', () => {
     const balenaBlock = serviceBlock(balenaCompose, 'hermes');
     const deployBlock = serviceBlock(deployCompose, 'hermes');
@@ -186,13 +203,30 @@ describe('primus image contract (fleet-ops-b1r)', () => {
     expect(e2e).toMatch(/bcde5891-5482-4eb0-a223-8533504832d6/);
   });
 
-  it('devices app carries the runtime-swap forward shape', () => {
+  it('devices app carries the runtime-swap image, now the LIVE build (j7g.1)', () => {
     expect(existsSync(path.join(repoRoot, 'balena/devices/Dockerfile.agent-hermes'))).toBe(true);
-    const forward = readFileSync(
+    const agentHermes = readFileSync(
       path.join(repoRoot, 'balena/devices/Dockerfile.agent-hermes'),
       'utf8',
     );
-    expect(forward).toMatch(/FROM nousresearch\/hermes-agent:v2026\.9\.21/);
-    expect(forward).toMatch(/FORWARD-SHAPE ONLY/);
+    expect(agentHermes).toMatch(/FROM nousresearch\/hermes-agent:v2026\.9\.21/);
+    // The swap is REAL: no forward-shape stub remains, bd is baked with the
+    // checksums-verified supply chain, the gate is the ENTRYPOINT, and the
+    // A2A wiring hook is baked as a cont-init script.
+    expect(agentHermes).not.toMatch(/FORWARD-SHAPE ONLY/);
+    expect(stripComments(agentHermes)).toMatch(/ARG BD_VERSION=1\.2\.2/);
+    expect(stripComments(agentHermes)).toMatch(/checksums\.txt/);
+    expect(stripComments(agentHermes)).toMatch(/ENTRYPOINT \["\/usr\/local\/bin\/gate\.sh"\]/);
+    expect(stripComments(agentHermes)).toMatch(/COPY agent\/vs-a2a-wiring\.sh \/etc\/cont-init\.d\/04-vs-a2a-wiring/);
+    // The devices compose builds THIS file with the canonical long-run
+    // command and the HERMES_HOME/UID contract (the b1r parity).
+    const devicesCompose = stripComments(
+      readFileSync(path.join(repoRoot, 'balena/devices/docker-compose.yml'), 'utf8'),
+    );
+    const agentBlock = serviceBlock(devicesCompose, 'agent');
+    expect(agentBlock).toMatch(/dockerfile: Dockerfile\.agent-hermes/);
+    expect(agentBlock).toMatch(/gateway", "run"|gateway run/);
+    expect(agentBlock).toMatch(/HERMES_HOME: \/data\/agent/);
+    expect(agentBlock).toMatch(/HERMES_UID: "1000"/);
   });
 });

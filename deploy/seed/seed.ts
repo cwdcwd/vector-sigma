@@ -232,12 +232,15 @@ async function main(): Promise<void> {
   // (AGENT_NAME=primus + MODEL_ROUTE + GATEWAY_API_KEY + the bundle-contract
   // extras), config/secrets.env (Slack token), verbatim SOUL.md (the VS
   // coordinator SOUL: queue curator + owner-exception classes, the ADR-0001
-  // clause mirror), config/a2a.json (identity key + trusted peers), and
+  // clause mirror), config/a2a.json (identity key + trusted peers + the
+  // j7g.1 mesh fields: public_url + peer_tokens), and
   // config/github-app.pem (owner-side custody on the real fleet; a
   // deterministic placeholder here — the AC asserts the bootstrap CHAIN,
   // never a live credential). e2e.sh's primus-registrant bootstraps this
   // row; AC12 asserts the artifacts land on the primus-data volume and the
-  // hermes container consumes them (ready marker gate).
+  // hermes container consumes them (ready marker gate). j7g.1's AC14
+  // continues the chain: the wiring hook derives the A2A env + config.yaml
+  // a2a_agents from these files, and the mesh round-trip rides them.
   const primusBundle: IdentityBundle = {
     schema_version: 1,
     bundle_version: BUNDLE_VERSION,
@@ -267,7 +270,17 @@ async function main(): Promise<void> {
       {
         path: 'config/a2a.json',
         mode: '0600',
-        content: JSON.stringify({ identity_key: 'sim-e2e-a2a-identity', trusted_peers: [] }, null, 2) + '\n',
+        content:
+          JSON.stringify(
+            {
+              identity_key: 'sim-e2e-a2a-identity',
+              trusted_peers: ['primus'],
+              public_url: 'https://vsigma.lan:8443',
+              peer_tokens: { primus: 'sim-e2e-a2a-identity' },
+            },
+            null,
+            2,
+          ) + '\n',
       },
       { path: 'config/github-app.pem', mode: '0600', content: 'sim-e2e-pem-placeholder\n' },
     ],
