@@ -111,11 +111,14 @@ never ai.lan. The runtime wiring is a CODE contract, not yours to
 maintain:
 
 - Your bundle's `config/a2a.json` carries `identity_key` (your own mesh
-  key), `trusted_peers`, `public_url` (the mesh edge), and `peer_tokens`
-  (the other mesh agents' keys). The `04-vs-a2a-wiring` boot hook
-  derives `A2A_PEER_TOKENS`, `A2A_TRUSTED_PEERS`, `A2A_PUBLIC_URL`,
-  `A2A_OWN_IDENTITY_KEY` and the `config.yaml` `a2a_agents` section from
-  it on EVERY boot — a console rotation lands on your next container
+  key), `trusted_peers`, `public_url` (your PROXY-DIALABLE origin — the
+  gateway's proxy follows it to deliver peer traffic to you), and
+  `peer_tokens` (the other mesh agents' keys). The `04-vs-a2a-wiring`
+  boot hook derives `A2A_PEER_TOKENS`, `A2A_TRUSTED_PEERS`,
+  `A2A_PUBLIC_URL`, `A2A_OWN_IDENTITY_KEY` and the `config.yaml`
+  `a2a_agents` section (peer URLs ride the mesh EDGE from your
+  GATEWAY_URL — peers call each other THROUGH the gateway) from it on
+  EVERY boot — a console rotation lands on your next container
   recreate. Never edit those env lines or the managed config.yaml
   section by hand; edit the bundle in the registrar console.
 - Calling a peer: the `a2a_call` tool with the peer's configured name

@@ -275,7 +275,10 @@ async function main(): Promise<void> {
             {
               identity_key: process.env.E2E_MESH_IDENTITY_KEY ?? 'sim-e2e-a2a-identity',
               trusted_peers: ['primus'],
-              public_url: 'https://vsigma.lan:8443',
+              // public_url = the PROXY-DIALABLE origin (LiteLLM's proxy
+              // re-discovers the origin card and follows its advertised
+              // url — compose-internal here; the e2e edge stays outbound-only).
+              public_url: 'http://hermes:9900',
               // The mesh identity model (j7g.1): a mesh key IS a gateway
               // virtual key (the vs-<name>-a2a class) — it authenticates at
               // the gateway edge (sk- shape) AND rides upstream as the

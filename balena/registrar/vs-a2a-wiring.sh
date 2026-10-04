@@ -279,13 +279,20 @@ if isinstance(tokens, dict):
     peer_names = sorted(str(k).strip() for k in tokens
                         if isinstance(k, str) and str(k).strip()
                         and isinstance(tokens[k], str) and tokens[k].strip())
-if ident.strip() and peer_names and public:
+# Outbound peer URLs ride the mesh EDGE from the bundle's GATEWAY_URL (the
+# gateway serves every agent's card at /a2a/<name> — peers call each other
+# THROUGH the gateway, never origin-to-origin). public_url (A2A_PUBLIC_URL)
+# is the OTHER direction: the delivery address the gateway's proxy dials
+# (LiteLLM re-discovers the origin card and follows its advertised url —
+# pointing THAT at the edge would loop proxy->edge->proxy; it must be the
+# proxy-reachable origin, compose-internal or LAN/tailnet).
+if ident.strip() and peer_names and gateway_url:
     managed["platforms"] = {"a2a": {"enabled": True}}
+    edge = gateway_url.rstrip("/")
     agents = {}
     for name in peer_names:
-        base = public.rstrip("/")
         agents[name] = {
-            "url": f"{base}/a2a/{name}",
+            "url": f"{edge}/a2a/{name}",
             "auth": {"type": "bearer", "token": "${A2A_OWN_IDENTITY_KEY}"},
             "timeout": 1200,
         }

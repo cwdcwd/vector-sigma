@@ -285,9 +285,11 @@ lands with j7g.1:
 
 - **Bundle contract**: `config/a2a.json` carries `identity_key` (the
   agent's own mesh key), `trusted_peers` (the resolved identities that
-  may run tasks), `public_url` (the mesh edge — the master gateway's
-  served edge), and `peer_tokens` (name→key: the OTHER mesh agents'
-  keys this agent accepts inbound).
+  may run tasks), `public_url` (the PROXY-DIALABLE origin of this agent
+  — the gateway's proxy follows it to deliver peer traffic; the edge
+  there would loop, so it is compose-internal for primus and the
+  device's LAN/tailnet address for a device), and `peer_tokens`
+  (name→key: the OTHER mesh agents' keys this agent accepts inbound).
 - **Runtime derivation** (the 04-vs-a2a-wiring boot hook, baked into
   BOTH Hermes images — primus's and the devices' agent): the hook
   re-derives `A2A_PEER_TOKENS`, `A2A_TRUSTED_PEERS`,

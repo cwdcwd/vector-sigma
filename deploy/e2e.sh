@@ -1432,7 +1432,7 @@ ac14_a2a_mesh_chain() {
     && grep -q '^A2A_PEER_TOKENS=' /data/primus/.env \
     && grep -q '^A2A_PORT=9900' /data/primus/.env \
     && grep -q '^A2A_TRUSTED_PEERS=primus' /data/primus/.env \
-    && grep -q '^A2A_PUBLIC_URL=https://vsigma.lan:8443' /data/primus/.env" 2>/dev/null; then
+    && grep -q '^A2A_PUBLIC_URL=' /data/primus/.env" 2>/dev/null; then
     pass "AC14 wiring env" "bundle a2a.json -> A2A_* env lines in /data/primus/.env (hook 04-)"
   else
     fail "AC14 wiring env" "A2A_* lines missing from /data/primus/.env — wiring hook did not run or bundle missing"
