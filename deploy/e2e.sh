@@ -1496,7 +1496,7 @@ except Exception as e:
   reg_code="$(curl -s -o /tmp/ac14-reg.json -w '%{http_code}' -m 20 \
     --resolve "$TLS_HOSTNAME:8443:127.0.0.1" --cacert "$CA_CERT" \
     "$base/v1/agents" \
-    -H "Authorization: Bearer ***" \
+    -H "Authorization: Bearer $master" \
     -H 'Content-Type: application/json' -d "$reg_body" 2>/dev/null || true)"
   # idempotence: a prior run's row with the same name 409s — treat both as
   # registered (the name is UNIQUE; the row already serving is the goal).
