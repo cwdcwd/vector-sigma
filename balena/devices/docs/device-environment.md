@@ -159,6 +159,31 @@ The runtime wiring is a CODE contract, not yours to maintain:
   resolves the name from `A2A_PEER_TOKENS` and enforces
   `A2A_TRUSTED_PEERS`.
 
+## Shared memory (e5o.3)
+
+Your image carries the `gateway-memory` plugin (installed by the
+`06-vs-memory-tools` boot hook; `plugins.enabled` is seeded for you —
+never edit it). Its three tools persist knowledge across your sessions
+and share it with every VS agent:
+
+- `memory_get` / `memory_set` / `memory_list` — the gateway's
+  `/v1/memory` store, delivered keys signing every call.
+- Your bundle's `config/agent.env` carries
+  `GATEWAY_MEMORY_SHARED_KEY` (team-scoped), `GATEWAY_MEMORY_PRIVATE_KEY`
+  (private scope), and `FLEET_MEMORY_BASE_URL` (the gateway base). The
+  owner mints the keys from the registrar console's *Mint memory keys*
+  action; you never touch them.
+- **List before you write** — scan `fleet/conventions/`,
+  `fleet/status/`, `fleet/notes/` prefixes before starting work and
+  before writing anything: most re-derivations were solved and recorded
+  by an earlier session. Author-lock is real: correct another agent's
+  entry by writing a NEW key that notes the correction, never by
+  overwriting theirs.
+- The full discipline (key naming, what never belongs in the store —
+  no secrets, nothing high-frequency) is
+  [memory-conventions.md](memory-conventions.md), vendored next to this
+  map.
+
 ## Rebuilding you
 
 Your image is `balena/devices/Dockerfile.agent-hermes`: the pinned

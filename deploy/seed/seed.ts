@@ -253,7 +253,19 @@ async function main(): Promise<void> {
           'AGENT_NAME=primus\n' +
           'MODEL_ROUTE=ollama-cloud/glm-5.3\n' +
           'GATEWAY_API_KEY=sim-e2e-gateway-key\n' +
-          'GATEWAY_URL=http://litellm:4000\n',
+          'GATEWAY_URL=http://litellm:4000\n' +
+          // e5o.3: the memory-key delivery shape. On the live fleet the
+          // console's mint action writes GATEWAY_MEMORY_{SHARED,PRIVATE}_KEY
+          // here (route-restricted gateway keys); the e2e stages the
+          // simulation master key as both — LiteLLM treats the master key
+          // as route-unrestricted, so AC15 mints REAL route-restricted
+          // keys at runtime (the mint path itself is the AC), then the
+          // harness exercises the store through the plugin's own HTTP
+          // client shape. FLEET_MEMORY_BASE_URL points the plugin at the
+          // compose-internal gateway, exactly as the bundle would.
+          'GATEWAY_MEMORY_SHARED_KEY=sim-e2e-memory-shared-placeholder\n' +
+          'GATEWAY_MEMORY_PRIVATE_KEY=sim-e2e-memory-private-placeholder\n' +
+          'FLEET_MEMORY_BASE_URL=http://litellm:4000/v1\n',
       },
       { path: 'config/secrets.env', mode: '0600', content: 'SLACK_BOT_TOKEN=sim-e2e-slack-token\n' },
       {

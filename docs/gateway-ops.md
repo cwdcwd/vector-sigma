@@ -315,6 +315,45 @@ CA-trusted host):
 that order — cheapest probes first, and each one's output is the next
 one's input.
 
+## The memory plane (e5o.3)
+
+The gateway serves the fleet's cross-session memory store at
+`/v1/memory` (stock on the pinned tag; DB-backed by the same prisma
+migrations as the key tables — no config block, no feature flag). Agent
+tooling for it ships in both Hermes images (the `gateway-memory` plugin
++ the `06-vs-memory-tools` boot hook).
+
+**Keys:** two route-restricted virtual keys per agent —
+`memory-shared-<agent>` (team-scoped) + `memory-private-<agent>` (no
+team) — both `allowed_routes`-locked to the memory API. Because
+`allowed_routes` is a hard allowlist for every role INCLUDING admins
+(source-verified on the pinned tag), these keys can do nothing but
+memory reads/writes; a leaked memory key leaks the store, not the
+gateway.
+
+**The scoped key-creator key:** the registrar console's
+*Mint memory keys* action mints the per-agent pair using a creator key
+bound to a `proxy_admin`-role user whose own `allowed_routes` is locked
+to the mint surface (`/user/new`, `/team/new`, `/team/list`,
+`/team/member_add`, `/key/generate`) — never the master key. Setup is a
+one-time owner action recorded in the registrar README
+(`GATEWAY_KEY_CREATOR_KEY` + `GATEWAY_KEY_MINT_BASE_URL` on the
+registrar service). The creator key appears in NO bundle, NO image, and
+NO device env.
+
+**Daily pass addition (the memory leg):** after the completion probe,
+one memory round-trip through an agent's shared key —
+`GET /v1/memory/<known-conventions-key>` → 200. This proves the DB row
+path (prisma), the key's route lock still admits the memory route, and
+the store answers — without writing anything. A 401/403 means the key
+rotated or the row changed; a 404 on a key that should exist means the
+DB lost rows (check the postgres volume before anything else).
+
+**Inventory audit addition:** the key inventory sweep should flag (a)
+any `memory-*` alias whose agent no longer exists in the registrar, and
+(b) any key carrying `allowed_routes` containing `/v1/memory` whose
+alias does NOT match the `memory-*` scheme — both are drift signals.
+
 ## Evidence discipline
 
 Whatever lands on the work-tracking thread: aliases, hash prefixes,

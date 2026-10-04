@@ -108,8 +108,22 @@ COPY vs-github-identity.sh /etc/cont-init.d/05-vs-github-identity
 COPY vs-github-identity.py /usr/local/bin/vs-github-identity
 RUN chmod 0755 /etc/cont-init.d/05-vs-github-identity /usr/local/bin/vs-github-identity
 
+# e5o.3: the gateway-memory plugin + its install hook. The plugin copy
+# (gateway-memory/, product-agnostic VS copy of the origin fleet-memory
+# plugin) is byte-pinned to deploy/gateway-memory/ by the vendored-drift
+# test and sha-stamped by provenance-sha256.txt (the drift guard). The
+# 06- hook copies it into $HERMES_HOME/plugins/ and seeds
+# plugins.enabled — PluginManager gates user plugins through the
+# allow-list, so the copy alone would register NOTHING. Keys arrive via
+# the bundle's extra_env (GATEWAY_MEMORY_{SHARED,PRIVATE}_KEY), never
+# baked. Lexically after 05-, both fail-soft.
+COPY gateway-memory /opt/vs/gateway-memory
+COPY vs-memory-tools.sh /etc/cont-init.d/06-vs-memory-tools
+RUN chmod 0755 /etc/cont-init.d/06-vs-memory-tools
+
 # Entrypoint/CMD are inherited from the official image: the dispatcher
 # → /init → cont-init.d (01- stage2, 02- profile reconcile, 03- queue
-# join, 04- A2A wiring) → main-wrapper → hermes. Nothing is overridden;
+# join, 04- A2A wiring, 05- GitHub identity, 06- memory tools) →
+# main-wrapper → hermes. Nothing is overridden;
 # the compose's `command: [gateway, run]` keeps flowing through the same
 # chain.

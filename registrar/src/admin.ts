@@ -20,6 +20,13 @@ import {
 } from './structured-fields.js';
 import { readSlot } from './slots.js';
 import { mintAdminKey } from './keys.js';
+import {
+  mintMemoryKeys,
+  MintConfigError,
+  MintCallError,
+  MEMORY_KEY_ENV_VARS,
+  memoryKeyAlias,
+} from './gateway-mint.js';
 import { BALENA_UUID_SHORT_RE, BALENA_UUID_CANONICAL_RE, normalizeBalenaUuid } from '@vector-sigma/shared';
 import type { Clock } from './clock.js';
 import type { RegistrarConfig } from './config.js';
@@ -717,6 +724,112 @@ export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): v
           csrfToken: session.csrfToken,
           messages: [{ kind: 'ok', text: 'Device key regenerated. The old key is now invalid.' }],
           keyOnce: key,
+        }),
+      );
+  });
+
+  // fleet-ops-e5o.3: the memory-key mint action. One click per device:
+  // mints the two route-restricted gateway memory keys (shared
+  // team-scoped + private) with the SCOPED key-creator key — never the
+  // master key — then merges BOTH into the device bundle's extra_env
+  // (config/agent.env) via the same rotate path the structured editor
+  // uses, so delivery rides the existing bundle plane. Key values are
+  // shown ONCE (the keyOnce posture) and never stored in the registrar
+  // DB — the bundle blob carries them onward to the device, 0600.
+  app.post('/admin/devices/:uuid/mint-memory-keys', async (request, reply) => {
+    const session = await requireSession(request);
+    if (!session) return redirectToLogin(reply);
+    if (!(await csrfGate(request, session))) return reply.status(403).type('text/html').send(csrfErrorPage());
+    const uuid = (request.params as { uuid: string }).uuid;
+    const loaded = await loadDevice(uuid);
+    if (!loaded) return reply.status(404).type('text/html').send(notFoundPage());
+
+    let minted: Awaited<ReturnType<typeof mintMemoryKeys>>;
+    try {
+      minted = await mintMemoryKeys(process.env, loaded.device.agentName);
+    } catch (err) {
+      // Config gap -> the pre-authorized fallback (manual owner mint),
+      // never a silent master-key path. Gateway call failure -> surface
+      // status + body for triage. Both render on the device page.
+      const message =
+        err instanceof MintConfigError
+          ? err.message
+          : err instanceof MintCallError
+            ? `${err.message} (HTTP ${err.status ?? '—'}: ${(err.body ?? '').slice(0, 300)})`
+            : 'Memory key mint failed unexpectedly.';
+      return securityHeaders(reply)
+        .type('text/html')
+        .send(
+          html.deviceDetailPage({
+            ...loaded,
+            csrfToken: session.csrfToken,
+            messages: [{ kind: 'danger', text: message }],
+          }),
+        );
+    }
+
+    // Merge both keys into config/agent.env as extra_env lines — the
+    // same canonical the structured editor's extra_env field renders,
+    // so the wiring hook's env_from_file delivers them on next boot.
+    // mergeEnvFile semantics come free via renderCanonicalFiles? No —
+    // this is a DIRECT bundle merge: read current agent.env, upsert the
+    // two KEY= lines, hand the whole file to rotateBundle as an update.
+    const current = await loadCurrentFileContents(uuid);
+    const agentEnv = current.get('config/agent.env') ?? '';
+    const lines = agentEnv.split(/\r?\n/).filter((l) => l.trim() !== '');
+    const wanted: Array<[string, string]> = [
+      [MEMORY_KEY_ENV_VARS.shared, minted.shared.key],
+      [MEMORY_KEY_ENV_VARS.private, minted.private.key],
+    ];
+    for (const [k, v] of wanted) {
+      const idx = lines.findIndex((l) => l.startsWith(`${k}=`));
+      if (idx === -1) lines.push(`${k}=${v}`);
+      else lines[idx] = `${k}=${v}`;
+    }
+    // FLEET_MEMORY_BASE_URL: only seed when the bundle doesn't already
+    // carry one (an operator-set gateway URL wins, not clobbered).
+    if (!lines.some((l) => l.startsWith('FLEET_MEMORY_BASE_URL='))) {
+      const gwUrl = (process.env['GATEWAY_KEY_MINT_BASE_URL'] ?? '').replace(/\/+$/, '');
+      if (gwUrl !== '') lines.push(`FLEET_MEMORY_BASE_URL=${gwUrl}`);
+    }
+    const nextAgentEnv = lines.join('\n') + (lines.length > 0 ? '\n' : '');
+
+    // Keep EVERY existing bundle file except the one updated — an empty
+    // keep set would drop the rest of the identity bundle (buildNextBundle
+    // keeps only keep + updates; SOUL.md, a2a.json, secrets.env ride on
+    // this set surviving).
+    const keep = new Set<string>(
+      (loaded.blob?.files ?? []).map((f) => f.path).filter((p) => p !== 'config/agent.env'),
+    );
+    await rotateBundle(db, clock, uuid, {
+      kind: 'merge',
+      keep,
+      updates: new Map([['config/agent.env', nextAgentEnv]]),
+      additions: [],
+    }, { sourceIp: request.ip, reason: 'memory_keys_minted_console' });
+    await audit(db, {
+      deviceId: uuid,
+      outcome: 'admin',
+      reason: 'memory_keys_minted',
+      sourceIp: request.ip,
+      occurredAt: clock.now(),
+    });
+
+    const reloaded = await loadDevice(uuid);
+    if (!reloaded) return reply.status(404).type('text/html').send(notFoundPage());
+    return securityHeaders(reply)
+      .type('text/html')
+      .send(
+        html.deviceDetailPage({
+          ...reloaded,
+          csrfToken: session.csrfToken,
+          messages: [
+            {
+              kind: 'ok',
+              text: `Memory keys minted (${memoryKeyAlias(loaded.device.agentName, 'shared')} + private) and merged into the bundle — delivered on the next device sync.`,
+            },
+          ],
+          keyOnce: `GATEWAY_MEMORY_SHARED_KEY=${minted.shared.key}\nGATEWAY_MEMORY_PRIVATE_KEY=${minted.private.key}`,
         }),
       );
   });

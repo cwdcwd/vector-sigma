@@ -1,0 +1,16 @@
+---
+name: gateway-memory
+version: 1.0.0
+description: Read and write memory shared across the agent fleet, or private to just this agent, via the LiteLLM gateway's memory store.
+provides_tools:
+  - memory_get
+  - memory_set
+  - memory_list
+requires_env:
+  - name: GATEWAY_MEMORY_SHARED_KEY
+    description: "Dedicated, route-restricted gateway virtual key (team-scoped) for shared, fleet-readable memory entries. Separate from this agent's main gateway key."
+    secret: true
+  - name: GATEWAY_MEMORY_PRIVATE_KEY
+    description: "Dedicated, route-restricted gateway virtual key (no team scope) for entries visible only to this agent. If unset, private-scope calls return a clear error."
+    secret: true
+tags: [memory, gateway]

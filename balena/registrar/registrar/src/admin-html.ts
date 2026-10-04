@@ -177,6 +177,7 @@ export function deviceDetailPage(v: DeviceDetailView): string {
 <form method="post" action="/admin/devices/${esc(d.balenaUuid)}/re-arm"><input type="hidden" name="_csrf" value="${esc(v.csrfToken)}"><button type="submit">Re-arm slot</button></form>
 ${toggleForm}
 <form method="post" action="/admin/devices/${esc(d.balenaUuid)}/regen-key"><input type="hidden" name="_csrf" value="${esc(v.csrfToken)}"><button type="submit">Regenerate device key</button></form>
+<form method="post" action="/admin/devices/${esc(d.balenaUuid)}/mint-memory-keys"><input type="hidden" name="_csrf" value="${esc(v.csrfToken)}"><button type="submit">Mint memory keys</button></form>
 </div>`;
   return page(
     d.agentName,
