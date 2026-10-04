@@ -1411,10 +1411,9 @@ ac14_a2a_mesh_chain() {
   note "AC14: A2A mesh chain — wiring hook + origin live + card + round-trip through the master gateway (j7g.1)"
   local hcontainer="$PROJECT-hermes-1"
   local base="https://$TLS_HOSTNAME:8443"
-  local master mesh_token reg_body reg_code card_code rpc_code reply
+  local master reg_body reg_code card_code rpc_code reply
 
   master="$(grep -E '^LITELLM_MASTER_KEY=' "$ENV_FILE" | cut -d= -f2-)"
-  mesh_token="sim-e2e-a2a-identity"
   if [ -z "$master" ]; then
     fail AC14 "LITELLM_MASTER_KEY missing from $ENV_FILE"
     return
@@ -1515,7 +1514,7 @@ except Exception as e:
   card_code="$(curl -s -o /tmp/ac14-card.json -w '%{http_code}' -m 20 \
     --resolve "$TLS_HOSTNAME:8443:127.0.0.1" --cacert "$CA_CERT" \
     "$base/a2a/primus/.well-known/agent-card.json" \
-    -H "Authorization: Bearer $mesh_token" 2>/dev/null || true)"
+    -H "Authorization: Bearer $master" 2>/dev/null || true)"
   if [ "$card_code" = "200" ] \
     && grep -q 'vsigma.lan:8443\|/a2a/primus' /tmp/ac14-card.json 2>/dev/null; then
     pass "AC14 served card" "card 200 at /a2a/primus/.well-known/agent-card.json through the edge (gateway-rewritten url)"
@@ -1529,7 +1528,7 @@ except Exception as e:
   rpc_code="$(curl -s -o /tmp/ac14-rpc.json -w '%{http_code}' -m 240 \
     --resolve "$TLS_HOSTNAME:8443:127.0.0.1" --cacert "$CA_CERT" \
     "$base/a2a/primus" \
-    -H "Authorization: Bearer $mesh_token" \
+    -H "Authorization: Bearer $master" \
     -H 'Content-Type: application/json' \
     -H 'A2A-Version: 1.0' \
     -d "{\"jsonrpc\":\"2.0\",\"id\":\"$rpc_id\",\"method\":\"message/send\",\"params\":{\"message\":{\"role\":\"ROLE_USER\",\"messageId\":\"$rpc_id\",\"parts\":[{\"kind\":\"text\",\"text\":\"Mesh round-trip probe (AC14): reply with exactly the word ACK\"}]}}}" 2>/dev/null || true)"

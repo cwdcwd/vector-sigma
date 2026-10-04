@@ -273,10 +273,16 @@ async function main(): Promise<void> {
         content:
           JSON.stringify(
             {
-              identity_key: 'sim-e2e-a2a-identity',
+              identity_key: process.env.E2E_MESH_IDENTITY_KEY ?? 'sim-e2e-a2a-identity',
               trusted_peers: ['primus'],
               public_url: 'https://vsigma.lan:8443',
-              peer_tokens: { primus: 'sim-e2e-a2a-identity' },
+              // The mesh identity model (j7g.1): a mesh key IS a gateway
+              // virtual key (the vs-<name>-a2a class) — it authenticates at
+              // the gateway edge (sk- shape) AND rides upstream as the
+              // caller's identity (peer_tokens). The e2e stages the
+              // simulation gateway key as primus's own identity: the
+              // self-round-trip caller presents it and the origin accepts.
+              peer_tokens: { primus: process.env.E2E_MESH_IDENTITY_KEY ?? 'sim-e2e-a2a-identity' },
             },
             null,
             2,
