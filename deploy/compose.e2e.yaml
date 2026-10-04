@@ -75,11 +75,13 @@ services:
         condition: service_completed_successfully
     environment:
       BALENA_DEVICE_UUID: ${E2E_DEVICE_UUID:?set in deploy/.env.e2e}
-      # lnf (j7g phase 2): loopback bootstrap - the same surface the
-      # serve edge proxies at the MagicDNS name on the master. No CA
+      # lnf (j7g phase 2): the device rides the COMPOSE-INTERNAL path —
+      # in-network containers reach services by compose name; the
+      # 127.0.0.1 loopback publishes serve the HOST-side probes (e2e.sh)
+      # and, on the real device, the tailscale serve edge. No CA
       # variables exist (the internal-CA machinery retired with caddy);
       # the https-on-ts.net path is AC4 canary evidence.
-      REGISTRAR_URL: http://127.0.0.1:3000
+      REGISTRAR_URL: http://registrar:3000
       REGISTRAR_KEY: ${E2E_DEVICE_KEY:?set in deploy/.env.e2e}
       DATA_DIR: /data/agent
       # Containers have no timesyncd socket: gate expires fast and the
