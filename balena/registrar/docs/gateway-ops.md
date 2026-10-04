@@ -122,12 +122,16 @@ typo'd alias becomes a support incident.
 
 ### Block, unblock, delete (owner — one action each)
 
-`POST /key/block {"keys":["<hash>"]}` is the **reversible** first move
-for a suspect key (spike, leak suspicion); `POST /key/delete
+`POST /key/block {"key":"<hash>"}` is the **reversible** first move
+for a suspect key (spike, leak suspicion) — one key per call, by token
+or token-hash (the request body is `{"key": …}`, a single string; the
+plural `{"keys":[…]}` array shape belongs to `/key/delete` only).
+`POST /key/unblock {"key":"<hash>"}` reverses it. `POST /key/delete
 {"keys":[…]}` (or `{"key_aliases":[…]}`) is permanent. Rotation =
 mint the new key → deliver it → block the old one → delete the old one
-after the new one is verified live. `GET /key/info?key=<hash>` is the
-read-only per-key status check between moves.
+after the new one is verified live. `GET /key/info?key=<token-or-hash>`
+is the read-only per-key status check between moves — note the `key`
+parameter there takes the token value or its hash, not the alias.
 
 ## Model route changes
 
@@ -188,31 +192,40 @@ per above.)
 
 ### The discriminator probe (proves failover end-to-end)
 
-Block the primary, ask for it anyway, watch who answers:
+Fail the primary on purpose, ask for it anyway, watch who answers. Two
+ways to fail it, in preference order:
+
+**(a) The credential cut (preferred — works on any deployment).**
+Temporarily point the primary group's upstream credential at a dead
+value in a scratch build of the config (or a scratch key on the
+upstream), ship it to a test/staging instance, and probe there. On a
+single-production-device topology this is a maintenance-window action:
+edit → release → probe → revert-release, with the revert pre-staged.
+
+**(b) The block endpoint (only where models are DB-stored).** The
+admin `POST /model/block` takes `{"model_id":"<deployment-id>"}` —
+a **deployment ID**, never a group name; find the deployment IDs
+behind a group via `GET /v1/models` or the model-management list
+endpoints, and block each deployment in the group individually
+(`{"keys": …}`-style plural bodies do not exist here either). Caveat:
+on a deployment that declares its routes in the config file only —
+no `STORE_MODEL_IN_DB` — this endpoint manages the DB-stored model
+table and **cannot block file-declared groups at all** (the endpoint
+family exists for DB-managed model fleets). If `/model/block` 404s or
+422s your group name, that is why: use (a).
+
+The probe itself, with a WORKING virtual key:
 
 ```bash
-# 1. block the primary group (reversible)
-curl -s -X POST http://litellm:4000/model/block \
-  -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"model_name":"<primary-group>"}'
-# 2. completion against the primary with a WORKING virtual key
 curl -s http://litellm:4000/v1/chat/completions \
   -H "Authorization: Bearer $GATEWAY_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"<primary-group>","messages":[{"role":"user","content":"ping"}],"max_tokens":5}'
-# 3. ALWAYS unblock — even if step 2 failed
-curl -s -X POST http://litellm:4000/model/unblock \
-  -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"model_name":"<primary-group>"}'
 ```
 
-**Pass:** step 2 returns 200 and the response's `model` field names
-the **fallback target**, not the requested group. **Fail:** step 2
-hard-fails — read the error body (below), which names the actual
-mapping state; a blocked primary that serves anyway means you probed a
-different group name than the map holds.
+**Pass:** 200 and the response's `model` field names the **fallback
+target**, not the requested group. **Fail:** hard-fail — read the
+error body (below), which names the actual mapping state.
 
 Two facts that have bitten fleets before, both verified the hard way:
 
