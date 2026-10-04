@@ -4,9 +4,11 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 /**
- * Compose-dialect guard for healthcheck probes (fleet-ops-1py.3).
+ * Compose-dialect guard for healthcheck probes (fleet-ops-1py.3;
+ * REWORKED fleet-ops-lnf, j7g phase 2 — the caddy healthcheck is gone
+ * with the caddy service).
  *
- * The two caddy composes are written in DIFFERENT dialects on purpose:
+ * The two composes are written in DIFFERENT dialects on purpose:
  *
  *  - deploy/compose.yaml is driven by docker compose, which de-escapes
  *    `$$` -> `$` at config time. Its `$$` is the documented, correct way
@@ -14,24 +16,23 @@ import { describe, expect, it } from 'vitest';
  *
  *  - balena/registrar/docker-compose.yml is built by balena's remote
  *    builder, which does NOT de-escape `$$` — it is stored literally,
- *    the CMD-SHELL probe expands it to the shell PID, the curl
- *    --resolve arg is corrupted, and the supervisor restart-loops caddy
- *    ~every 95s. Proven live on release 4370090 (master device 13681815,
- *    registrar-v1.1.4): 19 clean SIGTERM cycles in a 30m window;
- *    byte-exact in-container replay of the stored string -> curl RC=49,
- *    identical single-$ control -> RC=0.
+ *    the CMD-SHELL probe expands it to the shell PID, and the
+ *    supervisor restart-loops the service ~every 95s. Proven live on
+ *    release 4370090 (master device 13681815, the caddy TLS probe).
  *
- * Because CI's E2E exercises the deploy/ dialect (compose-simulated,
- * where `$$` de-escapes properly), the balena dialect bug sails through
- * every gate — exactly how PR #29 shipped it. This test pins both
- * dialects so the divergence is enforced, not remembered:
+ * lnf removed the caddy service (and with it the $$ healthcheck that
+ * this guard originally pinned), but the DIALECT CONTRACT still binds
+ * every runtime-expanded probe in the balena compose — postgres
+ * (${POSTGRES_USER}) and dolt ($DOLT_PASSWORD) carry it today. This
+ * guard pins:
  *
  *   1. balena/registrar/docker-compose.yml: NO `$$` anywhere — every
  *      runtime-expanded healthcheck must use single-$ / ${VAR} shapes,
- *      the form already proven on-device by the postgres and dolt probes.
- *   2. deploy/compose.yaml: the caddy healthcheck keeps its `$$` (docker
- *      compose de-escapes; downgrading it to single-$ would let the
- *      ${VAR} interpolation parser eat TLS_HOSTNAME at config time).
+ *      the form proven on-device.
+ *   2. deploy/compose.yaml: the dolt probe KEEPS its `$$` (docker
+ *      compose de-escapes; single-$ would let the ${VAR} interpolation
+ *      parser eat DOLT_PASSWORD at config time — a secret leak into
+ *      `docker inspect` output).
  *
  * Full-line comments are stripped before scanning; both files carry
  * documentation comments that legitimately mention `$$` in prose.
@@ -47,13 +48,6 @@ function stripComments(raw: string): string {
     .join('\n');
 }
 
-/** The caddy TLS healthcheck probe line(s) in a comment-stripped compose. */
-function caddyProbeLines(code: string): string[] {
-  return code
-    .split('\n')
-    .filter((line) => line.includes('CMD-SHELL') && line.includes('curl -fsk'));
-}
-
 describe('compose dialect guard: balena/registrar/docker-compose.yml', () => {
   const code = stripComments(
     readFileSync(
@@ -65,14 +59,6 @@ describe('compose dialect guard: balena/registrar/docker-compose.yml', () => {
   it('carries no $$ (balena builder stores it literally -> restart-loop; fleet-ops-1py.3)', () => {
     expect(code).not.toContain('$$');
   });
-
-  it('caddy healthcheck probes the TLS front door with single-$ runtime expansion', () => {
-    const probes = caddyProbeLines(code);
-    expect(probes).toHaveLength(1);
-    expect(probes[0]).toContain('--resolve \\"${TLS_HOSTNAME:-vsigma.lan}:443:127.0.0.1\\"');
-    expect(probes[0]).toContain('https://${TLS_HOSTNAME:-vsigma.lan}/healthz');
-    expect(probes[0]).not.toContain('$$');
-  });
 });
 
 describe('compose dialect guard: deploy/compose.yaml', () => {
@@ -80,10 +66,14 @@ describe('compose dialect guard: deploy/compose.yaml', () => {
     readFileSync(path.join(repoRoot, 'deploy/compose.yaml'), 'utf8'),
   );
 
-  it('caddy healthcheck keeps $$ (docker compose de-escapes; runtime TLS_HOSTNAME must not reach the ${VAR} parser)', () => {
-    const probes = caddyProbeLines(code);
-    expect(probes).toHaveLength(1);
-    expect(probes[0]).toContain('--resolve \\"$${TLS_HOSTNAME:-vsigma.lan}:443:127.0.0.1\\"');
-    expect(probes[0]).toContain('https://$${TLS_HOSTNAME:-vsigma.lan}/healthz');
+  it('dolt healthcheck keeps $$ (runtime expansion of DOLT_PASSWORD must not leak through config-time interpolation)', () => {
+    // The raw file carries the literal $$ bytes (comment lines may
+    // legitimately mention $$ in prose, so scan only the live probe
+    // line): find the dolt probe line in the comment-stripped code
+    // and assert its expansion shape directly.
+    const probe = code.split('\n').find((l) => l.includes('dolt --host'));
+    expect(probe).toBeDefined();
+    expect(probe!).toContain('\$\$DOLT_PASSWORD');
+    expect(probe!).not.toContain('\${DOLT_PASSWORD}');
   });
 });

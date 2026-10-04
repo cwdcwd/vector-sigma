@@ -7,7 +7,7 @@ Pi 5, aarch64) — the vector-sigma master device. Per the owner ruling
 on its own hardware; it never couples to the origin fleet's ai.lan (clean-start
 principle). The gateway serves the models front door, virtual keys, and the
 /a2a/* agent mesh — devices point `GATEWAY_URL` and `A2A_PUBLIC_URL` at
-`https://<TLS_HOSTNAME>:8443`.
+    UIs at the MagicDNS names (lnf, phase 2: the serve-only edge — see below).
 
 The balena multi-container app for the **registrar fleet**: the Vector
 Sigma registrar API + admin console, backed by its own Postgres, on one
@@ -17,7 +17,7 @@ Deployed fleet: `g_c_d/vector-sigma-master`.
 
 ```
 balena/registrar/
-├── docker-compose.yml        # registrar + postgres + gateway + queue + primus + caddy + tailscale
+├── docker-compose.yml        # registrar + postgres + gateway + queue + primus + tailscale (the serve edge)
 ├── README.md
 └── registrar/                 # VENDORED workspace sources (context dir)
     ├── Dockerfile            # multi-stage: build → runtime (non-root)
@@ -69,18 +69,18 @@ env).
 |---|---|---|---|
 | `POSTGRES_PASSWORD` | **fleet-wide** | **yes — no default** | Postgres role password. Fleet-scoped: both the postgres service (role creation) and the registrar service (URL part) must see the same value. **No secrets in compose or image layers.** |
 | `SESSION_SECRET` | registrar | **yes — no default** | Admin-console HMAC session secret (≥16 chars). **The registrar refuses to boot without it** — missing or short fails startup with the variable name; there is no fallback secret. Set it on the fleet before the first `registrar-v*` release ships. |
-| `LITELLM_MASTER_KEY` | **fleet-wide** | **yes — no default** (f57.12) | LiteLLM gateway master key — mints virtual keys, unlocks the Admin UI (`https://<TLS_HOSTNAME>:8443/ui`). **Must start with `sk-`** (LiteLLM requirement). 600-equivalent custody: it IS the gateway; never in image layers, compose, chat, or the database. Fleet scope per the bead's variable contract (service scope would be a hardening option — see "Gateway variable scoping" below). |
+| `LITELLM_MASTER_KEY` | **fleet-wide** | **yes — no default** (f57.12) | LiteLLM gateway master key — mints virtual keys, unlocks the Admin UI (`https://vector-sigma.tailb7207e.ts.net:8443/ui` — the serve edge). **Must start with `sk-`** (LiteLLM requirement). 600-equivalent custody: it IS the gateway; never in image layers, compose, chat, or the database. Fleet scope per the bead's variable contract (service scope would be a hardening option — see "Gateway variable scoping" below). |
 | `LITELLM_PG_PASSWORD` | **fleet-wide** | **yes — no default** (f57.12) | Password for the gateway's dedicated least-privilege postgres role. The `postgres` service's wrapper image provisions the `litellm` role + `litellm` database on every boot and re-asserts this value (ALTER ROLE) — rotating it needs no manual psql step, just a release re-deploy or service restart. |
 | `OLLAMA_CLOUD_API_KEY` | **fleet-wide** | **yes — no default** (f57.12) | Ollama Cloud credential — the gateway's model upstream (OpenAI-compatible `https://ollama.com/v1`). Held only by the gateway container; devices never see it. |
 | `DOLT_PASSWORD` | dolt + scotty | **yes — no default** (f57.15) | Dolt auth for the VS queue's app user `vs` (database `vs_ops`). The dolt image creates the user at first boot of the `doltdata` volume; VS device bd clients join with the SAME value. 600-equivalent custody. |
 | `DOLT_ROOT_PASSWORD` | dolt | **yes — no default** (f57.15) | Dolt superuser password (the image requires it to bootstrap; root stays localhost-only by image default — never a LAN login). |
 | `BEADS_DOLT_PASSWORD` | scotty + hermes | **yes — no default** (f57.15; hermes added b1r) | SAME secret value as `DOLT_PASSWORD`, under the env key bd reads (bd and the dolt image read different keys). Lets the scotty container's in-image bd join the queue read-only; since b1r it also reaches the hermes container's in-image bd — primus's queue CURATION client (full read-write). Fleet-scoped: it cascades to every service by default; no static value in the compose (f57.8). |
 | `PRIMUS_REGISTRAR_KEY` | registrant-own | **yes — no default** (f57.14) | The registrar key for the master device's own row (agent_name=primus). Mint/insert per the device-key flow; never reuse another row's key. Set as the `REGISTRAR_KEY` device variable (the name the vendored registrant reads — `PRIMUS_REGISTRAR_KEY` is the balenaCloud device-variable name used at the f57.14 rollout; the registrant's config layer maps it). |
-| `TLS_HOSTNAME` | **fleet-wide** | **yes — no default** (f57.13) | The master device hostname the caddy edge serves (must match the Pi-hole DNS record — see [docs/tls-runbook.md](../../docs/tls-runbook.md)). Feeds the Caddyfile's `{$TLS_HOSTNAME:vsigma.lan}` substitution. This is the ONLY TLS-related fleet variable — caddy mints and rotates its own cert/key via `tls internal`; there is no cert/key pair to paste. |
+| ~~`TLS_HOSTNAME`~~ | — | RETIRED (lnf, phase 2) | The caddy edge is gone; the serve edge fronts the MagicDNS names with Let's Encrypt certs. Delete the fleet variable (docs/tls-runbook.md). |
 | `TS_AUTHKEY` | **service** (`tailscale`) | **yes — no default** (j7g 6c2) | Per-device tailscale auth key (owner-minted, pre-tagged `tag:vs-master`, reusable). **Service-scoped to the tailscale service only** — keeps the secret out of sibling containers. Custody: 600-equivalent, never in image layers or compose. See [docs/tailscale-runbook.md](../../docs/tailscale-runbook.md). |
 | `TS_HOSTNAME` | device | **yes — no default** (j7g 6c2) | The master device's MagicDNS machine name on the VS tailnet (e.g. `vector-sigma`; already set via the balena API 2026-10-01). Device-scoped so the value composes cleanly across future fleet members. |
-| `SCOTTY_BASIC_AUTH_HASH` | caddy | **yes — no default** (j7g 77i) | The scotty queue UI's basic_auth credential: the bcrypt hash of the owner's chosen password, minted with `caddy hash-password --plaintext` (or any bcrypt tool). The Caddyfile's `{$SCOTTY_BASIC_AUTH_HASH}` substitution consumes it at adapt time; an unset/empty variable fails caddy's boot LOUDLY — set it on the fleet BEFORE tagging the release carrying the 8444 fronting. Never the plaintext in any variable; 600-equivalent custody. The UI answers at `https://<TLS_HOSTNAME>:8444` with user `owner`. |
-| `TS_MASTER_DNS` | caddy | no — structural default in compose (j7g lrb) | The master's FULL MagicDNS FQDN served by the caddy edge's overlay site aliases (all three fronted sites carry it as a second address — phase 1b provision-then-flip). STRUCTURAL, not a secret: the compose ships the live value as the default and the Caddyfile's `{$TS_MASTER_DNS:<default>}` substitution mirrors it; set the fleet variable only to override. The name also rides the `extra_hosts` pins in both balena composes — [docs/tailscale-runbook.md](../../docs/tailscale-runbook.md) § phase 1b. |
+| ~~`SCOTTY_BASIC_AUTH_HASH`~~ | — | RETIRED (lnf, phase 2) | basic_auth died with caddy — scotty's lock is the tailnet ACL tag + TLS identity alone (owner GO). Delete the fleet variable. |
+| ~~`TS_MASTER_DNS`~~ | — | RETIRED (lnf, phase 2) | The serve config bakes the MagicDNS FQDN literally (serve-config.json); the extra_hosts pins carry the same literal. Delete the fleet variable. |
 ### Static in compose (override only if you know why)
 
 | Variable | Service | Value | Purpose |
@@ -108,38 +108,28 @@ the structural parts, so the owner only ever supplies the password
 secret.
 
 The registrar's admin console + API ride the same container port (3000).
-Since f57.13 the composition's published surface is the **caddy TLS
-edge**: `https://<TLS_HOSTNAME>/` (port 443) for the admin console + API,
-`https://<TLS_HOSTNAME>:8443/` for the VS gateway, and port 80 is a 308
-redirect to https — the registrar and litellm containers no longer publish
-host ports directly. Since 77i the scotty queue UI is fronted there too,
-at `https://<TLS_HOSTNAME>:8444/` with basic_auth (user `owner`); the raw
-`http://<master-LAN-IP>:3306` dashboard path is GONE (dropped in the same
-release — it was the composition's widest exposure, an unauthenticated
-read-only UI on the LAN). The balenaCloud public URL tunnels device port 80
-and therefore lands on the redirect: plain-HTTP console access through the
-tunnel is dead by design (use https from a trusted host; see
-[docs/tls-runbook.md](../../docs/tls-runbook.md)).
+Since lnf (j7g phase 2) the composition's published surface is the
+**tailscale serve edge**: `https://vector-sigma.tailb7207e.ts.net/`
+(port 443) for the admin console + API,
+`https://vector-sigma.tailb7207e.ts.net:8443/` for the VS gateway, and
+`https://vector-sigma.tailb7207e.ts.net:8444/` for the scotty queue UI
+(the tailnet ACL is the lock — basic_auth retired with caddy). Every
+service publishes on 127.0.0.1 loopback ONLY; the LAN front door
+(80/443/8443/8444) is dark from this release on. Only dolt's `:3326`
+stays LAN-reachable (the bd queue contract). See docs/tls-runbook.md
+(rewritten for the serve-only edge) and docs/tailscale-runbook.md.
 
-> **Deploy sequencing (read before tagging a release):** the composition's
-> published surface is caddy (80 redirect / 443 registrar / 8443 gateway),
-> with TLS from Caddy's own self-provisioned internal CA (`tls internal` —
-> no owner-run script, no cert/key fleet variables; rotation is automatic
-> for as long as the caddy-data volume persists). Because the CA is
-> minted by caddy on the registrar device, it does not exist until the
-> release carrying it has booted once, so device trust is staged AFTER
-> the release lands and BEFORE the URL flip. **Order:** (1) tag the
-> release while devices still use their http `REGISTRAR_URL` (they boot
-> unchanged); (2) confirm the registrar device pulled it and caddy is
-> serving; (3) extract the root cert
-> (`balena ssh <device> caddy -c "cat /data/caddy/pki/authorities/local/root.crt"`)
-> and set `VS_CA_CERT_B64` on the devices fleet; (4) verify
-> (`curl https://<TLS_HOSTNAME>/healthz --cacert <vs-ca.crt>`); (5) only
-> then flip the devices fleet's `REGISTRAR_URL` to `https://<TLS_HOSTNAME>`
-> and verify a device bootstraps. Devices already on an https URL with a
-> CA from the previous owner-generated design will fail TLS until step 3
-> replaces `VS_CA_CERT_B64` with caddy's new root. Full owner checklist:
-> [docs/tls-runbook.md](../../docs/tls-runbook.md).
+
+> **lnf (phase 2) — the caddy retirement is SHIPPED.** The serve edge
+> fronts the MagicDNS names; the f57.13 deploy-sequencing note above
+> (CA extract → variable staging → flip) is historical — the flipped
+> fleet variables already point at the MagicDNS names this release
+> serves, and Let's Encrypt needs no CA staging. The owner checklist
+> now: (1) enable tailnet HTTPS (admin console — once); (2) tag
+> `registrar-v*`; (3) canary from a tailnet client; (4) advance the
+> fleet; (5) tag `devices-v*`; (6) delete the retired fleet variables
+> (`VS_CA_CERT_B64`, `SCOTTY_BASIC_AUTH_HASH`, `TLS_HOSTNAME`,
+> `TS_MASTER_DNS`). Full sequence: docs/tailscale-runbook.md § phase 2.
 
 ## First admin key
 
@@ -224,7 +214,7 @@ groups with glm↔glm cross-fallbacks, a `*` pass-through wildcard to
 Ollama Cloud (routes, never a fallback target — j9f lesson verbatim), and
 a commented future `gw-sonnet` anthropic lane. The gateway is compose-
 internal since f57.13 — no host publish; the Admin UI is served through
-the TLS edge at `https://<TLS_HOSTNAME>:8443/ui`.
+the serve edge at `https://vector-sigma.tailb7207e.ts.net:8443/ui`.
 
 ### First-boot sequence
 
@@ -276,7 +266,7 @@ needed; the service reads them the same way.
 
 The gateway serves `/a2a/*` pass-through natively (same pattern ai.lan
 serves the origin fleet): each VS device's Hermes points `A2A_PUBLIC_URL` at
-`https://<TLS_HOSTNAME>:8443`, and its agent card is served by the VS
+`https://vector-sigma.tailb7207e.ts.net:8443`, and its agent card is served by the VS
 gateway — peer traffic rides the master device, never ai.lan. The
 structured bundle editor's A2A fields (`a2a_identity_key`,
 `a2a_trusted_peers`, and since j7g.1 `a2a_public_url` +
@@ -324,7 +314,7 @@ once the new one exists).
    gateway fail-louds without them.
 2. Tag the release (owner action, e.g. `registrar-v1.1.0`); wait for the
    device to pull it and the gateway to come up (`/health/liveliness`
-   at `https://<TLS_HOSTNAME>:8443/health/liveliness` → 200).
+   at `https://vector-sigma.tailb7207e.ts.net:8443/health/liveliness` → 200 — from a tailnet client).
 3. Mint `vs-optimus-prime` (gateway key) and `vs-optimus-prime-a2a`
    (A2A identity key) against the new gateway — LiteLLM Admin UI
    (`/ui`, login with the master key) or `POST /key/generate` with
@@ -333,7 +323,7 @@ once the new one exists).
 4. Delete the obsolete ai.lan `vs-optimus-prime` alias (owner action,
    ai.lan side).
 5. Point the device bundle at the new gateway: registrar bundle
-   `config/agent.env` gains `GATEWAY_URL=https://<TLS_HOSTNAME>:8443`
+   `config/agent.env` gains `GATEWAY_URL=https://vector-sigma.tailb7207e.ts.net:8443`
    and `config/a2a.json` documents `A2A_PUBLIC_URL` per the editor hints
    (the `a2a_public_url` structured field, j7g.1). The device-side
    wiring — the 04-vs-a2a-wiring boot hook (bundle → runtime env +
@@ -354,7 +344,7 @@ liveness — the stock litellm image ships no curl); real HTTP liveliness
 is asserted externally: the deploy E2E smoke (AC9) polls
 `/health/liveliness` for 200 and asserts the explicit model groups in
 `/v1/models`. On-device spot check: `curl -s
-https://<TLS_HOSTNAME>:8443/health/liveliness` from any LAN host (or
+https://vector-sigma.tailb7207e.ts.net:8443/health/liveliness` from any tailnet client (or
 the balenaCloud public URL path if the owner enables it).
 
 The daily health pass, fallback verification, and the live-vs-file
@@ -438,7 +428,7 @@ The bundle IS the config delivery:
 
 | Bundle file | Hermes consumer |
 |---|---|
-| `config/agent.env` | `AGENT_NAME=primus`, `MODEL_ROUTE`, `GATEWAY_API_KEY`, + `GATEWAY_URL` pointing at the composition's litellm (`http://litellm:4000` compose-internal today; `https://<TLS_HOSTNAME>:8443` after the TLS flip — same sequencing as the devices fleet) |
+| `config/agent.env` | `AGENT_NAME=primus`, `MODEL_ROUTE`, `GATEWAY_API_KEY`, + `GATEWAY_URL` pointing at the composition's litellm (`http://litellm:4000` compose-internal today; the fleet variable carries `https://vector-sigma.tailb7207e.ts.net:8443` (the serve edge — lnf, phase 2)) |
 | `config/secrets.env` | `SLACK_BOT_TOKEN` etc. (owner-side custody, per the origin-fleet pattern) |
 | `SOUL.md` | The VS coordinator SOUL: queue curator (docs/queue-conventions.md), cross-fleet contact A2A-only, credential/install/self-config mutations owner-gated (the ADR-0001 clause mirror) |
 | `config/a2a.json` | `identity_key` + `trusted_peers` + `public_url` + `peer_tokens` (the mesh — j7g.1) |

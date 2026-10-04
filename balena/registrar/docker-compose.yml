@@ -45,18 +45,17 @@ version: "2.4"
 # postgres service's own wrapper image (fleet-ops-anc, 2026-09-29) — the
 # retired one-shot litellm-init service no longer exists.
 #
-# f57.13 TLS edge (rotation automated, see docs/tls-runbook.md): caddy
-# fronts the composition (registrar :443, litellm :8443, https://
-# TLS_HOSTNAME) with `tls internal` — Caddy's own local CA, self-
-# provisioned on first boot and renewed automatically for as long as the
-# caddy-data volume persists. Owner-set fleet variable: TLS_HOSTNAME (the
-# Pi-hole record name, e.g. vsigma.lan) only — no cert/key fleet variables,
-# no one-shot provisioning service. Host ports 443/8443 publish to the
-# device LAN; port 80 redirects to TLS. Device REGISTRAR_URL flips to
-# https://<TLS_HOSTNAME> — see the README deploy-sequencing note (the
-# f57.9 hazard class: flip AFTER the release lands, and only after
-# VS_CA_CERT_B64 is staged on the devices fleet — extracted once from the
-# caddy-data volume, tls-runbook.md).
+# lnf (j7g phase 2) — the serve-only edge: caddy is GONE from this
+# composition (owner GO 2026-10-04). The tailscale service's serve
+# config fronts the three management surfaces at the MagicDNS names
+# with Let's Encrypt certificates (auto-provisioned + renewed inside
+# tailscaled; browser-trusted everywhere, zero root installs); every
+# service publishes on 127.0.0.1 loopback ONLY — the LAN front door
+# (80/443/8443/8444) this release retires. The internal-CA +
+# VS_CA_CERT_B64 machinery is retired repo-wide; basic_auth dies with
+# caddy (scotty's lock is the tailnet ACL tag + TLS identity alone).
+# See docs/tailscale-runbook.md (phase 2) and docs/tls-runbook.md
+# (rewritten for the serve-only edge).
 
 services:
   # postgres: the stock 16-alpine image WRAPPED (fleet-ops-anc, owner ruling
@@ -109,12 +108,18 @@ services:
       POSTGRES_DB: vsigma
       DB_HOST: postgres
       MIGRATE_ON_START: "true"
-    # f57.13: no host publish — caddy fronts the registrar at
-    # https://<TLS_HOSTNAME>:443 (host 80 belongs to caddy's redirect). The
-    # container keeps listening on 3000; devices reach the admin console +
-    # API via REGISTRAR_URL=https://<TLS_HOSTNAME> (TLS bootstrap). Compose-
-    # internal access (deploy/ self-host example, E2E seed) uses
-    # http://registrar:3000 inside the composition network.
+    # lnf (j7g phase 2): 127.0.0.1-ONLY host publish. tailscaled runs in
+    # the host network namespace and cannot reach compose-network names,
+    # so the serve edge proxies at the loopback publish: the baked
+    # serve config (serve-config.json) fronts registrar at the MagicDNS
+    # name :443 -> http://127.0.0.1:3000. The IP-prefixed publish is
+    # the supervisor dialect this lane exercises (bead supervisor fact
+    # 1): 127.0.0.1:3000:3000 binds loopback ONLY — the LAN front door
+    # this release retires. Compose-internal access (deploy/ self-host
+    # example, E2E seed, registrant-own) keeps using http://registrar:3000
+    # over the compose network, untouched.
+    ports:
+      - "127.0.0.1:3000:3000"
     healthcheck:
       test: ["CMD-SHELL", "kill -0 1"]
       interval: 30s
@@ -127,15 +132,15 @@ services:
   # f57.12 (consolidated fleet-ops-anc, 2026-09-29): the VS fleet's own
   # LiteLLM gateway — models front door + virtual keys + the /a2a/* mesh for
   # VS devices. Same image the deploy/ self-host example builds (config baked
-  # by Dockerfile.litellm — the supervisor cannot bind-mount). f57.13 (Copilot
-  # review): NO port publish — caddy fronts the gateway at
-  # https://<TLS_HOSTNAME>:8443; devices point GATEWAY_URL / A2A_PUBLIC_URL
-  # at https://<TLS_HOSTNAME>:8443. PROXY_BASE_URL stays unset (cards
-  # advertise from the request Host header — now the TLS_HOSTNAME the edge
-  # carries; the README documents the override). The gateway's postgres role
-  # + database are provisioned by the postgres service's own wrapper image
-  # every boot — no ordering dependency needed (the litellm entrypoint
-  # retry-cycles its DB connection).
+  # by Dockerfile.litellm — the supervisor cannot bind-mount). lnf (j7g
+  # phase 2): the serve edge fronts the gateway at the MagicDNS name
+  # :8443; devices point GATEWAY_URL / A2A_PUBLIC_URL at it (flipped in
+  # phase 1b — unchanged by this release). PROXY_BASE_URL stays unset
+  # (cards advertise from the request Host header — now the MagicDNS
+  # name the serve edge carries; the README documents the override). The
+  # gateway's postgres role + database are provisioned by the postgres
+  # service's own wrapper image every boot — no ordering dependency
+  # needed (the litellm entrypoint retry-cycles its DB connection).
   litellm:
     build:
       context: .
@@ -154,6 +159,15 @@ services:
       # the live root cause of the gateway completing against api.openai.com;
       # the fleet var override stays as belt-and-braces).
       OLLAMA_CLOUD_API_BASE: https://ollama.com/v1
+    # lnf (j7g phase 2): 127.0.0.1-ONLY host publish — the serve edge
+    # (serve-config.json) fronts the gateway at the MagicDNS name :8443 ->
+    # http://127.0.0.1:4000 (tailscaled is host-netns; compose names are
+    # unreachable from it). Loopback-only: the LAN front door this
+    # release retires. PROXY_BASE_URL stays unset (cards advertise from
+    # the request Host header — now the MagicDNS name the serve edge
+    # carries; the README documents the override).
+    ports:
+      - "127.0.0.1:4000:4000"
     healthcheck:
       # Process liveness — parity with the registrar service's healthcheck
       # shape (the litellm image ships no curl/wget; /health/liveliness is
@@ -240,13 +254,15 @@ services:
       # read different env keys). NEVER baked into the image (f57.8).
     depends_on:
       - dolt
-    # 77i: NO host publish — scotty is fronted by caddy at
-    # https://<TLS_HOSTNAME>:8444 (basic_auth + the internal CA). The
-    # raw 3306:3306 host publish was the composition's widest exposure
-    # (unauthenticated read-only UI on the LAN) and is DROPPED in this
-    # same release. The compose-internal :3306 listener is untouched:
-    # the healthcheck below and scotty's own bd bridge ride the compose
-    # network, never the host publish.
+    # lnf (j7g phase 2): 127.0.0.1-ONLY host publish — the serve edge
+    # (serve-config.json) fronts scotty at the MagicDNS name :8444 ->
+    # http://127.0.0.1:3306. Scotty's lock is now the tailnet ACL tag
+    # + TLS identity ALONE (the owner GO on caddy retirement: basic_auth
+    # dies with caddy; the raw LAN :3306 publish died with 77i). The
+    # compose-internal :3306 listener is untouched: the healthcheck below
+    # and scotty's own bd bridge ride the compose network.
+    ports:
+      - "127.0.0.1:3306:3306"
     healthcheck:
       # HTTP liveness: scotty serves /api/projects (the project picker's data
       # route — verified present at cc55734; there is no /api/doctor route)
@@ -419,6 +435,19 @@ services:
   # attribute for all VS tags — the overlay is reachable only from the
   # tailnet itself, and this service publishes nothing.
   #
+  # lnf (j7g phase 2): the master's tailscale service is now a BUILD,
+  # not the stock image — it SERVES the management layer at the
+  # MagicDNS names (the caddy replacement). The baked serve-config.json
+  # (Dockerfile.tailscale) carries the three fronted surfaces:
+  # vector-sigma.tailb7207e.ts.net:443 -> 127.0.0.1:3000 (registrar),
+  # :8443 -> 127.0.0.1:4000 (gateway), :8444 -> 127.0.0.1:3306
+  # (scotty) — Let's Encrypt certs, auto-provisioned and renewed by
+  # tailscaled once the tailnet has HTTPS enabled (admin-console
+  # prerequisite, docs/tailscale-runbook.md). The DEVICES fleet's
+  # tailscale service stays on the stock image (devices join; they
+  # serve nothing) — the deliberate delta is pinned by
+  # registrar/test/serve-edge.test.ts.
+  #
   # Image: official tailscale/tailscale at a PINNED tag (never :latest;
   # arm64 manifest verified in the registry index 2026-10-01). Alpine-
   # based — the kill -0 1 healthcheck shell exists.
@@ -429,14 +458,15 @@ services:
   # NO ${VAR} substitution (supervisor compose): TS_AUTHKEY (per-device
   # auth key, pre-tagged tag:vs-master, reusable — owner-minted) arrives
   # as a balenaCloud SERVICE-scoped variable on the tailscale service
-  # only (keeps the secret out of the sibling containers), and
-  # TS_HOSTNAME (the MagicDNS machine name, e.g. "vector-sigma") arrives
-  # as a DEVICE-scoped variable — never hardcoded here. Both documented
-  # in the README variable tables.
+  # only (keeps the secret out of sibling containers), and TS_HOSTNAME
+  # (the MagicDNS machine name, e.g. "vector-sigma") arrives as a
+  # DEVICE-scoped variable — never hardcoded here. Both documented in
+  # the README variable tables.
   #
   # ts-state volume: tailscaled identity persists across container
   # restarts — without it every restart mints a NEW tailnet node
-  # (containerboot's TS_STATE_DIR contract).
+  # (containerboot's TS_STATE_DIR contract). It now also carries the
+  # LE certificates tailscaled provisions for the serve edge.
   #
   # /dev/net/tun passthrough (6c2 canary fix, 2026-10-01): balenaOS
   # containers do NOT inherit host /dev — the AC1 pre-flight proved the
@@ -467,13 +497,27 @@ services:
   # the join evidence starts. The variable is structural (not a
   # secret) and safe in compose.
   #
+  # TS_SERVE_CONFIG (lnf): the baked serve config's in-container path
+  # (supervisor fact 2 — this lane exercises the declarative serve
+  # config under the supervisor). containerboot at v1.102.5 reads it
+  # as a raw ipn.ServeConfig JSON file (verified from the pinned tag's
+  # own source, cmd/containerboot/serve.go): TCP map keyed by port,
+  # Web map keyed "SNI:port" (no implicit 443), handlers proxying the
+  # loopback publishes. Application: containerboot UNSETS any prior
+  # serve config at startup, then applies the file's contents on the
+  # first netmap update and on every file change (fsnotify + 5s ticker
+  # fallback). The apply is refused with a log line if the tailnet has
+  # HTTPS certs disabled — the owner prerequisite.
+  #
   # Healthcheck is process liveness only: join state (tailscale status
-  # showing the tailnet IP) is CANARY evidence, not a healthcheck
-  # question — same marker-vs-liveness split as the rest of this
-  # composition (the 1py.3 lesson: a probe-based check can restart-loop
-  # a healthy container; the join signal is external canary evidence).
+  # showing the tailnet IP) and serve state (the ts.net names answering)
+  # are CANARY evidence, not healthcheck questions — same
+  # marker-vs-liveness split as the rest of this app (the 1py.3 lesson:
+  # a probe-based check can restart-loop a healthy container).
   tailscale:
-    image: tailscale/tailscale:v1.102.5
+    build:
+      context: .
+      dockerfile: Dockerfile.tailscale
     network_mode: host
     cap_add:
       - net_admin
@@ -484,6 +528,7 @@ services:
       TS_STATE_DIR: /var/lib/tailscale
       TS_USERSPACE: "false"
       TS_BOOT_TIMEOUT: "24h"
+      TS_SERVE_CONFIG: /serve-config.json
     volumes:
       - ts-state:/var/lib/tailscale
     labels:
@@ -497,83 +542,11 @@ services:
     stop_signal: SIGTERM
     restart: always
 
-  # f57.13: the TLS edge — caddy fronts the whole composition per the baked
-  # Caddyfile (registrar :443, litellm :8443, 80 -> 308 redirect). TLS_HOSTNAME
-  # is a fleet variable consumed by caddy's own {$VAR:default} substitution
-  # (the supervisor does no interpolation; the Caddyfile stays identical in
-  # deploy/ self-host). `tls internal` needs no provisioning step to start —
-  # the caddy-data volume is where Caddy's self-generated CA + leaf certs
-  # live, and it MUST be a named (persistent) volume: it is the only thing
-  # standing between "automatic rotation" and "a new untrusted CA on every
-  # release" (docs/tls-runbook.md).
-  caddy:
-    build:
-      context: .
-      dockerfile: Dockerfile.caddy
-    environment:
-      # Structural (Caddyfile {$TLS_HOSTNAME:vsigma.lan} default mirrors it;
-      # the fleet var wins when set).
-      TLS_HOSTNAME: vsigma.lan
-      # j7g phase 1b (fleet-ops-lrb): the master's MagicDNS FQDN for the
-      # overlay site aliases (Caddyfile {$TS_MASTER_DNS:...} substitution —
-      # same mechanism and default shape as TLS_HOSTNAME above; the fleet
-      # variable wins when set). STRUCTURAL, not a secret — the phase-1b
-      # extra_hosts pins carry the same name literally in both composes.
-      TS_MASTER_DNS: vector-sigma.tailb7207e.ts.net
-    ports:
-      # The composition's TLS front door. 443 = registrar (admin + API);
-      # 8443 = the VS gateway (gateway + /ui + /a2a/*); 8444 = the scotty
-      # queue UI (basic_auth + the internal CA — 77i; raw host :3306 was
-      # the composition's widest exposure and is DROPPED in the same
-      # release). Port 80 serves only the 308 redirect to https.
-      - "80:80"
-      - "443:443"
-      - "8443:8443"
-      - "8444:8444"
-    volumes:
-      - caddy-data:/data
-    healthcheck:
-      # Real TLS readiness (Copilot f57.13 review): the entrypoint is still
-      # PID 1 while waiting for certs, so process liveness would report a
-      # "healthy" edge before any cert exists. Probe the actual front door
-      # instead — the supervisor's rollout/monitoring then reports the edge
-      # healthy only when it actually serves TLS. The hostname comes from
-      # the TLS_HOSTNAME environment variable at runtime (NOT compose
-      # interpolation — {$...} here would be eaten by the ${VAR} parser).
-      # caddy:2-alpine ships curl; --insecure because THIS check is about
-      # the server having a usable pair loaded, not client CA trust.
-      #
-      # 1py.3 (caddy restart-loop fix): SINGLE-$ runtime expansion — never
-      # $$ here. This file is built by balena's remote builder, which does
-      # NOT de-escape compose $$ -> $ the way docker compose does: $$ is
-      # stored literally, the CMD-SHELL probe expands it to the shell PID,
-      # curl's --resolve arg is corrupted, and the supervisor restart-loops
-      # caddy ~every 95s (proven live on release 4370090, master device
-      # 13681815: 19 clean SIGTERM cycles in a 30m window; byte-exact
-      # in-container replay of the stored string -> curl RC=49, single-$
-      # control -> RC=0). The single-$ shape is already proven on THIS
-      # file's other runtime-expanded probes: postgres ${POSTGRES_USER}
-      # (line ~89) and dolt $DOLT_PASSWORD (line ~211), stable on-device
-      # for weeks. deploy/compose.yaml's twin keeps its $$ — that file is
-      # driven by docker compose, which de-escapes correctly; the two
-      # dialects MUST diverge (registrar/test/compose-dialect.test.ts pins
-      # it).
-      test: ["CMD-SHELL", "curl -fsk --resolve \"${TLS_HOSTNAME:-vsigma.lan}:443:127.0.0.1\" \"https://${TLS_HOSTNAME:-vsigma.lan}/healthz\" -o /dev/null || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-    stop_grace_period: 60s
-    stop_signal: SIGTERM
-    restart: always
-
 volumes:
   pgdata:
-  # j7g 6c2: tailscaled state (tailnet identity survives restarts).
+  # j7g 6c2: tailscaled state (tailnet identity survives restarts; from
+  # lnf/phase 2 it also carries the serve edge's Let's Encrypt certs).
   ts-state:
-  # f57.13 (Caddy-internal-CA rewrite): Caddy's self-generated CA key +
-  # leaf certs live here (/data/caddy/pki/...). Must persist across
-  # releases — wiping it forces a CA roll (docs/tls-runbook.md "CA roll").
-  caddy-data:
   # f57.15: the VS queue's Dolt state volume.
   doltdata:
   # f57.14: primus state — the shared agent-data volume pattern (the

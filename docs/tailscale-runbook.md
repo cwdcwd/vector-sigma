@@ -191,6 +191,78 @@ resolution is PINNED, not resolved:
      watcher, no more ENOTFOUND); no LAN regression
      (`vectorsigma.lan` still serves).
 
+## Phase 2: the serve-only edge (fleet-ops-lnf — EXECUTED, owner GO 2026-10-04)
+
+Caddy is retired from the composition; the master's tailscale service
+IS the TLS front door. What shipped:
+
+- **The master's tailscale service becomes a BUILD**:
+  `balena/registrar/Dockerfile.tailscale` (FROM the same pinned
+  `v1.102.5`) bakes `serve-config.json`; the compose sets
+  `TS_SERVE_CONFIG=/serve-config.json`. The devices fleet's tailscale
+  service stays on the stock image — devices join, they serve
+  nothing.
+- **The serve config** (the containerboot v1.102.5 dialect, verified
+  from the pinned tag's own source — `cmd/containerboot/serve.go`):
+  `TCP` map keyed by port with `HTTPS:true` (443/8443/8444); `Web`
+  map keyed `SNI:port` (no implicit 443), each proxying the loopback
+  publishes: `:443` → `127.0.0.1:3000` (registrar), `:8443` →
+  `127.0.0.1:4000` (gateway), `:8444` → `127.0.0.1:3306` (scotty).
+  The MagicDNS FQDN is baked literally — `${TS_CERT_DOMAIN}` is a
+  Kubernetes-operator placeholder (outside kube, containerboot
+  substitutes an empty domain).
+- **Loopback-only publishes**: registrar/litellm/scotty gain
+  `127.0.0.1`-prefixed host publishes (the supervisor dialect this
+  lane was gated to exercise). The LAN front door (80/443/8443/8444)
+  is dark from this release on; only dolt's `:3326` stays
+  LAN-reachable (the bd queue contract).
+- **Let's Encrypt certificates** auto-provision + renew inside
+  tailscaled once the tailnet has **HTTPS enabled** (admin console →
+  DNS → MagicDNS → HTTPS Certificates) — the ONE owner prerequisite.
+  Browser-trusted everywhere; `VS_CA_CERT_B64` and the whole
+  internal-CA machinery are retired.
+- **scotty's lock is the tailnet ACL + TLS identity alone**
+  (basic_auth died with caddy — owner-accepted consequence).
+
+Deploy sequencing (the standard flow; provision-then-flip does not
+apply — the flipped variables already point at these exact
+names/ports):
+
+1. Owner: enable tailnet HTTPS (once).
+2. Owner tags `registrar-v*` → master pins the release → canary:
+   ts.net names answer 200 from a tailnet client; LAN front door
+   dark; loopback probes answer on-device; no restart-loops.
+3. Fleet pin → clear canary.
+4. Owner tags `devices-v*` (the registrant's retired-CA code) →
+   devices canary → fleet pin.
+5. Coordinator: delete the retired fleet variables
+   (`VS_CA_CERT_B64`, `SCOTTY_BASIC_AUTH_HASH`, `TLS_HOSTNAME`,
+   `TS_MASTER_DNS`).
+
+Canary additions (per release, from a TAILNET client — a LAN host
+cannot resolve ts.net names):
+
+- [ ] `https://vector-sigma.tailb7207e.ts.net/healthz` → 200,
+  browser-trusted cert (no `--cacert`).
+- [ ] `https://vector-sigma.tailb7207e.ts.net:8443/health/liveliness`
+  → 200.
+- [ ] `https://vector-sigma.tailb7207e.ts.net:8444/api/projects` →
+  200 (no credentials — the ACL is the lock now).
+- [ ] LAN front door dark: `80/443/8443/8444` REFUSED from a LAN host
+  at the device IP (the AC3 contrast; dolt `:3326` still answers).
+- [ ] On-device loopback probes: `127.0.0.1:3000/healthz`,
+  `127.0.0.1:4000` (gateway port), `127.0.0.1:3306/api/projects`
+  answer from the device's host shell.
+
+Failure modes:
+
+- Serve config never applied → check the tailscale container logs
+  for the HTTPS-disabled refusal line (owner prerequisite), and
+  confirm the join (`tailscale status` shows the tailnet IP).
+- Everything else inherits the phase-1a failure modes (no
+  application role; a dead tailscaled costs tailnet reachability
+  only).
+
 ## Canary evidence (per device, per release)
 
 - [ ] `tailscale` container **Running** and healthy (process-liveness
