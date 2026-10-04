@@ -94,6 +94,18 @@ RUN chmod 0755 /etc/cont-init.d/03-vs-queue-join
 COPY vs-a2a-wiring.sh /etc/cont-init.d/04-vs-a2a-wiring
 RUN chmod 0755 /etc/cont-init.d/04-vs-a2a-wiring
 
+# e5o.5: the GitHub App identity wiring hook — primus writes to this
+# repo too (the same per-agent App mechanics as the devices: the bundle
+# carries github-app.pem + GH_APP_ID/GH_APP_SLUG; the hook derives the
+# GIT_CONFIG_* env lines so plain git authenticates as the App). 05-
+# prefix: lexically after the A2A wiring (04-), both fail-soft.
+# The wrapper itself ships in the SAME venv python the image already
+# provides (PyJWT included) — see the COPY of vs-github-identity.py
+# to /usr/local/bin below.
+COPY vs-github-identity.sh /etc/cont-init.d/05-vs-github-identity
+COPY vs-github-identity.py /usr/local/bin/vs-github-identity
+RUN chmod 0755 /etc/cont-init.d/05-vs-github-identity /usr/local/bin/vs-github-identity
+
 # Entrypoint/CMD are inherited from the official image: the dispatcher
 # → /init → cont-init.d (01- stage2, 02- profile reconcile, 03- queue
 # join, 04- A2A wiring) → main-wrapper → hermes. Nothing is overridden;

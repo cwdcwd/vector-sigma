@@ -35,6 +35,20 @@
 
 FROM nousresearch/hermes-agent:v2026.9.21
 
+# ── GitHub App identity wrapper + wiring hook (fleet-ops-e5o.5) ────────
+# The pinned official image ships git + openssl + the runtime venv
+# python (with PyJWT) but NO GitHub tooling of any kind — a device
+# agent has no documented path to write to the repo. The wrapper below
+# mints short-lived installation tokens from the agent's OWN App
+# private key (delivered via the registrar bundle, never baked); the
+# 05- boot hook derives the GIT_CONFIG_* env lines that make plain git
+# authenticate as <slug>[bot]. Byte-pinned vendored copies of
+# scripts/vs-github-identity.{py,sh} (the drift guard test enforces
+# parity; docs/vs-github.md is the usage doc).
+COPY agent/vs-github-identity.py /usr/local/bin/vs-github-identity
+COPY agent/vs-github-identity.sh /etc/cont-init.d/05-vs-github-identity
+RUN chmod 0755 /usr/local/bin/vs-github-identity /etc/cont-init.d/05-vs-github-identity
+
 # ── bd 1.2.2: prebuilt release binary (Dockerfile.scotty/harness pattern) ──
 # Pinned per the fleet convention (fleet/conventions/bd-version-pin: bd
 # 1.3.x auto-migrates the shared Dolt schema and would lock out every
