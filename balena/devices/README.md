@@ -13,7 +13,7 @@ balena/devices/
 │   ├── Dockerfile            # the RETIRED placeholder image (kept for history; not built since j7g.1)
 │   ├── gate.sh               # blocks on /data/agent/ready.marker, then execs the image's own entrypoint dispatcher
 │   └── vs-a2a-wiring.sh      # cont-init 04-: bundle → A2A_* env + config.yaml a2a section (j7g.1)
-├── docs/                     # vendored queue-conventions.md + vs-environment.md (byte-pinned to docs/)
+├── docs/                     # vendored device-environment.md + queue-conventions.md (byte-pinned to docs/; NEVER the master's vs-environment.md — e5o.1)
 ├── registrant/               # VENDORED workspace sources (see below)
 │   ├── Dockerfile            # multi-stage: build → runtime (non-root)
 │   ├── package.json          # exact-pinned deps, workspaces: shared

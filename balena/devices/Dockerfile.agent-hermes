@@ -32,7 +32,10 @@
 #   5. The device environment map + queue conventions + A2A dispatch
 #      discipline at /opt/vs/docs (vendored at build time — the
 #      vendored-drift pattern; docs/ at the repo root is the source of
-#      truth).
+#      truth). e5o.1: the devices environment map is
+#      device-environment.md (the WORKER map) — NEVER the master's
+#      vs-environment.md (wrong-map regression, CI-fatal in
+#      registrant/test/vendored-drift.test.ts).
 
 FROM nousresearch/hermes-agent:v2026.9.21
 

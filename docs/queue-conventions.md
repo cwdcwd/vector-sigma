@@ -5,6 +5,15 @@ The VS queue lives in the master device's `dolt` container (database
 `vs_ops`). It is the VS fleet's ONLY work queue. primus (the VS coordinator
 Hermes, fleet-ops-f57.14) is the **queue curator** — its SOUL says so.
 
+Readers: this doc serves BOTH sides of the queue. primus (master device)
+is the CURATOR — epics, structure, routing, adjudication. Every other VS
+agent, including every device agent, is a **WORKER**: claim a ready bead
+that fits your role labels, build it, post evidence as you go, close with
+the evidence cited. Your own environment map is `vs-environment.md`
+(master) or `device-environment.md` (device) — each image vendors its
+own, and a device agent reading the master's map is a regression
+(CI-fatal in `registrant/test/vendored-drift.test.ts`).
+
 ## Structure
 
 - **One EPIC per project/workstream.** All work beads are children of their

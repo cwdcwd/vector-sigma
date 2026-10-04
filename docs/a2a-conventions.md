@@ -1,6 +1,8 @@
 # A2A Operational Conventions — dispatch discipline
 
-`vs-environment.md` maps the A2A **wiring**: the `a2a.json` bundle
+Your environment map — `vs-environment.md` on the master device,
+`device-environment.md` on a device — maps the A2A **wiring**: the
+`a2a.json` bundle
 contract, the `04-vs-a2a-wiring` boot hook, the `a2a_call` tool, and
 inbound trust. This doc covers the other half — **operational
 discipline**: how to dispatch, how to answer, and how to interpret
