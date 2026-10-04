@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -80,8 +80,17 @@ const vendoredFiles = [
   // j7g.1: the devices app vendors the queue docs (the Dockerfile.agent-
   // hermes COPY docs surface) — byte-pinned to docs/ at the repo root,
   // same pattern as the registrar app's vendored docs.
+  // e5o.1: each image vendors ITS OWN map — the devices set is
+  // queue-conventions.md + device-environment.md (the WORKER map);
+  // vs-environment.md (the master map) is the registrar app's vendored
+  // set ONLY. A device agent reading primus's map is the shipped
+  // identity defect this lane fixes — guarded by the dedicated wrong-map
+  // regression test below, not just this byte-pin list.
   ['docs/queue-conventions.md', 'balena/devices/docs/queue-conventions.md'],
-  ['docs/vs-environment.md', 'balena/devices/docs/vs-environment.md'],
+  ['docs/device-environment.md', 'balena/devices/docs/device-environment.md'],
+  // the master image's vendored set (curator + master map):
+  ['docs/queue-conventions.md', 'balena/registrar/docs/queue-conventions.md'],
+  ['docs/vs-environment.md', 'balena/registrar/docs/vs-environment.md'],
   // j7g.1: the A2A mesh wiring hook ships in THREE places — deploy/
   // (canonical), the devices agent image, and the registrar's primus
   // image — one file, three COPY targets, byte-pinned (the vs-entrypoint
@@ -102,6 +111,67 @@ describe('balena vendored sources', () => {
       drifted,
       `drift detected, regenerate vendored copies:\n${drifted.join('\n')}`,
     ).toEqual([]);
+  });
+
+  // e5o.1 — the wrong-map regression guard. Before this lane the devices
+  // image vendored primus's MASTER map byte-identical (vs-environment.md),
+  // so a device agent opened its own environment doc and read "You are
+  // primus … the queue CURATOR" plus a queue host (dolt:3306) that is
+  // unreachable from a device. The byte-pin list above proves the
+  // vendored copies match the ROOT docs; THIS test proves each image
+  // vendors its OWN map — the set membership, the identity direction,
+  // and the device map's worker framing are all asserted so a re-vendor
+  // slip fails CI with the cause, not a live device agent.
+  it('e5o.1: each image vendors its own environment map (wrong-map regression)', () => {
+    const devicesDocs = path.join(repoRoot, 'balena/devices/docs');
+    const registrarDocs = path.join(repoRoot, 'balena/registrar/docs');
+
+    // The devices vendored set: the WORKER map, never the master's.
+    expect(
+      existsSync(path.join(devicesDocs, 'device-environment.md')),
+      'devices app must vendor docs/device-environment.md',
+    ).toBe(true);
+    expect(
+      existsSync(path.join(devicesDocs, 'queue-conventions.md')),
+      'devices app must vendor docs/queue-conventions.md',
+    ).toBe(true);
+    expect(
+      existsSync(path.join(devicesDocs, 'vs-environment.md')),
+      'devices app must NOT vendor the master map (vs-environment.md) — a device agent reading "You are primus" is the e5o.1 defect',
+    ).toBe(false);
+
+    // The master image's vendored set: the MASTER map, never the device's.
+    expect(
+      existsSync(path.join(registrarDocs, 'vs-environment.md')),
+      'registrar app must vendor docs/vs-environment.md (primus\'s own map)',
+    ).toBe(true);
+    expect(
+      existsSync(path.join(registrarDocs, 'device-environment.md')),
+      'registrar app must NOT vendor the device map — each image carries its own set',
+    ).toBe(false);
+
+    // The device map must carry the worker identity framing, never the
+    // coordinator's: "You are primus" anywhere in the devices vendored
+    // docs is the shipped defect verbatim.
+    for (const doc of ['device-environment.md', 'queue-conventions.md']) {
+      const body = readFileSync(path.join(devicesDocs, doc), 'utf8');
+      expect(
+        body.includes('You are primus'),
+        `balena/devices/docs/${doc} carries the master-map identity framing ("You are primus") — the e5o.1 defect`,
+      ).toBe(false);
+    }
+
+    // The device map must name the worker join contract (the LAN :3326
+    // queue host, delivered via the bundle) — the master map's
+    // compose-internal dolt:3306 is unreachable from a device and must
+    // not be the only queue host a device agent can find.
+    const deviceMap = readFileSync(
+      path.join(devicesDocs, 'device-environment.md'),
+      'utf8',
+    );
+    expect(deviceMap).toMatch(/:3326/);
+    expect(deviceMap).toMatch(/WORKER/);
+    expect(deviceMap).toMatch(/NEVER run `bd init`/);
   });
 
   it('carry the pinned dependency versions of the root lockfile', () => {
