@@ -27,7 +27,8 @@ into the image.
 | `tailscale` | The overlay service: joins your device to the VS tailnet so the master's endpoints are reachable from anywhere and your device is reachable from the tailnet | host network namespace — invisible to compose-internal DNS; carries no application role |
 
 There is no `registrar`, `postgres`, `litellm`, `dolt`, `scotty`,
-`registrant-own`, or `caddy` on your device — those are the MASTER
+`registrant-own`, or TLS edge on your device (the edge is the master's
+tailscale serve — lnf, phase 2; caddy is retired) — those are the MASTER
 composition's services. Their compose-internal names (`dolt:3306`,
 `http://litellm:4000`, `http://registrar:3000`) resolve only inside
 the master's own composition and are unreachable from a device — they

@@ -4,33 +4,28 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 /**
- * Scotty TLS fronting guard (fleet-ops-77i, epic j7g phase 1c).
+ * Scotty fronting guard (fleet-ops-77i; REWORKED fleet-ops-lnf, j7g
+ * phase 2 — the serve-only edge).
  *
- * The scotty queue UI was the composition's widest exposure: raw
- * unauthenticated HTTP published on host :3306 to the LAN. This lane
- * fronts it behind caddy on 8444 with basic_auth (D2 green-lit: it
- * covers an ACL misconfiguration on an otherwise unauthenticated
- * read-only UI) and DROPS the raw :3306 host publish in the SAME
- * release — the same-release rule is the lane's consult major
- * (published-port changes are consumer breaks; add+verify 8444 and
- * remove :3306 together, never split).
- *
- * Port map after: 443 registrar, 8443 gateway, 8444 scotty —
- * port-per-service (LiteLLM derives card URLs from Host; path prefixes
- * break /ui).
+ * 77i took the queue UI from the composition's widest exposure (raw
+ * unauthenticated HTTP on host :3306 to the LAN) to caddy-fronted
+ * basic_auth on 8444. lnf retires the caddy layer entirely: scotty
+ * publishes on 127.0.0.1 loopback ONLY, and the tailscale serve edge
+ * fronts it at the MagicDNS name :8444 on the balena master — its lock
+ * is the tailnet ACL tag + TLS identity alone (the owner GO on caddy
+ * retirement: basic_auth dies with caddy). The same-release rule that
+ * 77i introduced (add the fronting + drop the raw publish together)
+ * still binds: this release adds the loopback publish + the serve
+ * entry AND retires the old edge in one release.
  *
  * This test pins:
- *   1. Caddyfile: the scotty stanza is LIVE (not a comment), serves
- *      {$TLS_HOSTNAME}:8444 with `tls internal`, proxies to the
- *      in-container scotty:3306 (NOT the drifted scotty:8080), and
- *      carries basic_auth with the hash from a fleet variable
- *      (SCOTTY_BASIC_AUTH_HASH — owner-minted; the README table).
- *   2. BOTH compose twins: caddy publishes 8444:8444; scotty's
- *      3306:3306 host publish is GONE (its compose-internal 3306
- *      listener is untouched — scotty's healthcheck and bd bridge ride
- *      the compose network, never the host publish).
- *   3. The balena/deploy dialects are preserved (no $$ introduced in
- *      the balena twin's caddy healthcheck).
+ *   1. BOTH compose twins: scotty's loopback publish is the ONLY host
+ *      publish (127.0.0.1:3306:3306); the compose-internal :3306
+ *      listener stays untouched (scotty's healthcheck and bd bridge
+ *      ride the compose network).
+ *   2. The serve config fronts scotty at the MagicDNS name :8444 ->
+ *      http://127.0.0.1:3306 (the fronting the edge provides now).
+ *   3. No basic_auth / SCOTTY_BASIC_AUTH_HASH anywhere (retired).
  *
  * Full-line comments are stripped before scanning.
  */
@@ -44,82 +39,47 @@ function stripComments(raw: string): string {
     .join('\n');
 }
 
-const caddyfile = stripComments(
-  readFileSync(path.join(repoRoot, 'balena/registrar/Caddyfile'), 'utf8'),
-);
-
-describe('Caddyfile: scotty fronted on 8444 (77i)', () => {
-  it('has a live scotty site stanza (the placeholder is gone)', () => {
-    expect(caddyfile).toMatch(
-      /\{\$TLS_HOSTNAME:vsigma\.lan\}:8444, \{\$TS_MASTER_DNS:[^}]+\}:8444 \{/,
-    );
-    expect(caddyfile).not.toMatch(/# \{\$TLS_HOSTNAME:vsigma\.lan\}:8444/);
-  });
-
-  it('serves scotty over the internal CA (tls internal)', () => {
-    const stanza = caddyfile.match(
-      /\{\$TLS_HOSTNAME:vsigma\.lan\}:8444, \{\$TS_MASTER_DNS:[^}]+\}:8444 \{[\s\S]*?\n\}/,
-    );
-    expect(stanza).not.toBeNull();
-    expect(stanza![0]).toMatch(/\ttls internal/);
-  });
-
-  it('proxies to the in-container scotty:3306, never the drifted :8080', () => {
-    expect(caddyfile).toMatch(/reverse_proxy scotty:3306/);
-    expect(caddyfile).not.toMatch(/scotty:8080/);
-  });
-
-  it('carries basic_auth with the hash from the SCOTTY_BASIC_AUTH_HASH fleet variable', () => {
-    expect(caddyfile).toMatch(/basic_auth \{/);
-    // Bare {$VAR} — NO default: an unset variable fails caddy's adapt
-    // loudly (fail-loud gate, LITELLM_MASTER_KEY precedent).
-    expect(caddyfile).toMatch(
-      /owner \{\$SCOTTY_BASIC_AUTH_HASH\}/,
-    );
-    // No plaintext or literal hash may ship in the repo file.
-    expect(caddyfile).not.toMatch(/\$2a\$/);
-    expect(caddyfile).not.toMatch(/\$argon2/);
-  });
-});
+function serviceBlock(code: string, name: string): string {
+  const lines = code.split('\n');
+  const start = lines.findIndex((l) => new RegExp(`^  ${name}:\\s*$`).test(l));
+  if (start === -1) return '';
+  const block: string[] = [];
+  for (let i = start; i < lines.length; i++) {
+    const line = lines[i];
+    if (i > start && (/^  \S/.test(line) || /^\S/.test(line))) break;
+    block.push(line);
+  }
+  return block.join('\n');
+}
 
 describe.each([
   ['balena/registrar/docker-compose.yml', 'balena'],
   ['deploy/compose.yaml', 'deploy'],
-])('scotty port flip: %s', (rel, dialect) => {
+])('scotty fronting (lnf serve-only): %s', (rel) => {
   const raw = readFileSync(path.join(repoRoot, rel), 'utf8');
   const code = stripComments(raw);
+  const scotty = serviceBlock(code, 'scotty');
 
-  function serviceBlock(name: string): string {
-    const lines = code.split('\n');
-    const start = lines.findIndex((l) => new RegExp(`^  ${name}:\\s*$`).test(l));
-    if (start === -1) return '';
-    const block: string[] = [];
-    for (let i = start; i < lines.length; i++) {
-      const line = lines[i];
-      if (i > start && (/^  \S/.test(line) || /^\S/.test(line))) break;
-      block.push(line);
-    }
-    return block.join('\n');
-  }
-
-  it('caddy publishes 8444:8444 (scotty front door)', () => {
-    expect(serviceBlock('caddy')).toMatch(/- "8444:8444"/);
+  it('scotty publishes loopback-only (the serve edge fronts it at :8444 on the master)', () => {
+    expect(scotty).toMatch(/- "127\.0\.0\.1:3306:3306"/);
   });
 
-  it('scotty no longer publishes raw 3306:3306 to the host (same release)', () => {
-    const scotty = serviceBlock('scotty');
-    expect(scotty).not.toMatch(/^\s*- "3306:3306"$/m);
-    expect(scotty).not.toMatch(/ports:/);
-    // The compose-internal listener is untouched: scotty still runs its
-    // healthcheck against in-container 127.0.0.1:3306.
+  it('the compose-internal listener is untouched (healthcheck probes in-container)', () => {
     expect(scotty).toMatch(/127\.0\.0\.1:3306\/api\/projects/);
   });
 
-  it(`${dialect} dialect preserved: caddy healthcheck carries no $$`, () => {
-    if (dialect === 'balena') {
-      expect(serviceBlock('caddy')).not.toMatch(/\$\$/);
-    } else {
-      expect(serviceBlock('caddy')).toMatch(/\$\$/);
-    }
+  it('carries no basic_auth machinery (retired with caddy)', () => {
+    expect(scotty).not.toMatch(/basic_auth/);
+    expect(scotty).not.toMatch(/SCOTTY_BASIC_AUTH_HASH/);
+  });
+});
+
+describe('serve config: scotty fronted at the MagicDNS name (lnf)', () => {
+  it('the serve config proxies :8444 to the scotty loopback publish', () => {
+    const sc = JSON.parse(
+      readFileSync(path.join(repoRoot, 'balena/registrar/serve-config.json'), 'utf8'),
+    );
+    const key = 'vector-sigma.tailb7207e.ts.net:8444';
+    expect(sc.Web[key].Handlers['/'].Proxy).toBe('http://127.0.0.1:3306');
   });
 });

@@ -30,12 +30,10 @@ dashboard variables on the device).
 cp deploy/.env.example deploy/.env
 $EDITOR deploy/.env        # set POSTGRES_PASSWORD, SESSION_SECRET, LITELLM_* (required)
 docker compose -f deploy/compose.yaml up -d --build
-# TLS (f57.13): caddy self-provisions its own internal CA on first boot —
-# nothing to generate beforehand. Extract the root cert once to curl it:
-docker compose -f deploy/compose.yaml cp \
-  caddy:/data/caddy/pki/authorities/local/root.crt ./vs-ca.crt
-curl https://vsigma.lan/healthz --cacert vs-ca.crt          # → {"status":"ok"}
-curl https://vsigma.lan:8443/health/liveliness --cacert vs-ca.crt # → 200 (the VS gateway)
+# TLS (lnf, j7g phase 2): the caddy edge is RETIRED. Services publish
+# 127.0.0.1-only; front them with your own TLS edge (tailscale serve on
+# the balena master). Quickstart probes the loopback registrar:
+curl http://127.0.0.1:3000/healthz   # → {"status":"ok"}
 ```
 
 Notes:
@@ -44,13 +42,10 @@ Notes:
   `docker compose ... config` aborts if `deploy/.env` is missing a value.
 - **Migrations**: the registrar runs drizzle migrations on start
   (`MIGRATE_ON_START=true`); no manual migration step.
-- **Exposure (f57.13)**: the caddy edge is the composition's front door —
-  443 (registrar admin + API), 8443 (VS gateway), 80 (redirect). The
-  registrar + gateway containers no longer publish host ports at all;
-  the TLS edge replaces the "loopback + your own proxy" posture with the
-  same Caddyfile + cert contract the balena device ships (one artifact,
-  no twin drift). Resolve the hostname to the host (an /etc/hosts line or
-  your LAN DNS) and trust the CA per [docs/tls-runbook.md](../docs/tls-runbook.md).
+- **Exposure (lnf, phase 2)**: every service publishes on 127.0.0.1
+  loopback ONLY (the same surface the tailscale serve edge proxies
+  at the MagicDNS names on the balena master). Front the loopback
+  publishes with whatever TLS edge you run; see docs/tls-runbook.md.
 - **Least privilege**: the Postgres container is dedicated to this stack
   (its own role + database). Do not point `DATABASE_URL` at a shared
   superuser-owned instance in production. The gateway follows the same
@@ -61,9 +56,9 @@ Notes:
   image's entrypoint shim — URL and role cannot disagree.
 - **VS gateway (f57.12 + f57.13)**: `LITELLM_MASTER_KEY` (must start `sk-`),
   `LITELLM_PG_PASSWORD`, and `OLLAMA_CLOUD_API_KEY` are required in
-  `deploy/.env`. The gateway rides the caddy edge at
-  `https://${TLS_HOSTNAME}:8443` (same TLS contract as the registrar —
-  one CA, one edge; no separate publish). Model routes: explicit
+  The gateway publishes on 127.0.0.1 loopback (lnf,
+  phase 2); front it with your own TLS edge (tailscale serve
+  fronts it at the MagicDNS name :8443 on the balena master).
   `ollama-cloud/glm-5.3` + `glm-5.2` groups
   with glm↔glm cross-fallbacks and a `*` pass-through wildcard to Ollama
   Cloud (never a fallback target — j9f). See `balena/registrar/README.md`
@@ -148,11 +143,11 @@ What the E2E proves, in order (the bead's acceptance criteria):
     `scotty` serves `/api/projects` 200, and a real bd 1.2.2 client
     round-trips init → create → list → close against the compose dolt
     (throwaway volume — the CI init IS the one-time act by construction).
-11. **TLS edge (f57.13)**: port 80 → 308, untrusted clients rejected,
-    healthz over TLS with the CA extracted from caddy's self-provisioned
-    internal PKI, served cert SAN/issuer match (issuer CN pinned to
-    "Vector Sigma Internal CA" via the Caddyfile's `pki` block), and the
-    device bootstrapped through the edge.
+11. **Loopback front door (lnf, phase 2)**: the registrar answers at
+    the 127.0.0.1 loopback publish (healthz 200) - the same surface
+    the tailscale serve edge proxies at the MagicDNS name on the
+    balena master. The caddy TLS edge and its cert checks are
+    retired; the https-on-ts.net path is canary evidence (AC4).
 12. **primus self-bootstrap (f57.14)**: the REAL official Hermes image +
     the REAL vendored registrant bootstrap the coordinator's identity
     through the same chain every device uses — ready marker, every

@@ -14,16 +14,17 @@ set -euo pipefail
 
 PROJECT="vector-sigma-e2e"
 ENV_FILE="deploy/.env.e2e"
-TLS_ENV_FILE="deploy/.env.e2e.tls"
-COMPOSE="docker compose --env-file $ENV_FILE --env-file $TLS_ENV_FILE -f deploy/compose.yaml -f deploy/compose.e2e.yaml -p $PROJECT"
-# f57.13: the composition's front door is the caddy TLS edge. Host-side
-# assertions ride https://vsigma.lan (curl --resolve -> 127.0.0.1, --cacert
-# the throwaway E2E CA); TLS_HOSTNAME is the fixed E2E hostname baked into
-# the overlay's network alias and the generated CA's SAN.
-TLS_HOSTNAME="vsigma.lan"
-CA_CERT="deploy/.e2e-tls/vs-ca.crt"
-BASE_URL="https://$TLS_HOSTNAME"
-CADDY_CONTAINER="$PROJECT-caddy-1"
+COMPOSE="docker compose --env-file $ENV_FILE -f deploy/compose.yaml -f deploy/compose.e2e.yaml -p $PROJECT"
+# lnf (j7g phase 2): the caddy TLS edge is RETIRED. Host-side probes
+# ride the LOOPBACK publishes - the same 127.0.0.1 surface the
+# tailscale serve edge proxies on the balena master (and the surface
+# a self-host operator fronts). The https-on-ts.net path is canary
+# evidence (AC4): CI cannot join a tailnet, so the TLS simulation
+# machinery (throwaway CA, .env.e2e.tls, tls-gate, caddy alias) is
+# gone. Compose-internal names remain the in-network path.
+BASE_URL="http://127.0.0.1:3000"
+GATEWAY_LB="http://127.0.0.1:4000"
+SCOTTY_LB="http://127.0.0.1:3306"
 # fleet-ops-anc: the postgres wrapper's container (the e2e project pins
 # compose v2 container names, <project>-<service>-1).
 PG_CONTAINER="$PROJECT-postgres-1"
@@ -75,42 +76,20 @@ psql_count() { # psql_count <sql-where-fragment> — count rows in delivery_log
     -c "SELECT count(*) FROM delivery_log WHERE $1" 2>/dev/null | tr -d '[:space:]'
 }
 
-# f57.13: host-side TLS curl — resolves the E2E hostname to loopback and
-# trusts the throwaway E2E CA. Every host-side assertion rides through the
-# REAL caddy edge (the front door a LAN client uses).
-tls_curl() { # tls_curl <curl args...>
-  curl -s --resolve "$TLS_HOSTNAME:443:127.0.0.1" --cacert "$CA_CERT" "$@"
+# lnf (j7g phase 2): host-side probe rides the LOOPBACK publish - the
+# same 127.0.0.1 surface the tailscale serve edge proxies on the
+# master. No --resolve, no --cacert: the caddy TLS edge is retired.
+tls_curl() { # tls_curl <curl args...> - NAME KEPT (lnf): the plain
+  # loopback probe now; the historical name survives so the AC call
+  # sites read unchanged. Every probe rides the loopback publish.
+  curl -s "$@"
 }
 
-# f57.13 (Caddy-internal-CA rewrite): caddy mints its own local CA on first
-# boot — there is nothing to generate up front. This extracts the root
-# cert caddy already produced (docker cp from its data volume, the same
-# path the tls-runbook documents for the owner) and emits:
-#   deploy/.env.e2e.tls  — E2E_CA_CERT_B64 (device trust side; caddy itself
-#                          needs no TLS variables at all now)
-#   deploy/.e2e-tls/     — the cert itself (gitignored; CA_CERT var points
-#                          here for --cacert)
-# Requires a running (or previously-run) caddy container — stack_up calls
-# this AFTER caddy reports healthy, i.e. after it has already served TLS
-# at least once and therefore definitely holds a root cert.
-tls_env_generate() {
-  mkdir -p deploy/.e2e-tls
-  if docker inspect "$CADDY_CONTAINER" >/dev/null 2>&1 \
-      && docker cp "$CADDY_CONTAINER:/data/caddy/pki/authorities/local/root.crt" "$CA_CERT" 2>/dev/null; then
-    note "extracted caddy's self-provisioned internal CA root from $CADDY_CONTAINER"
-  elif [ ! -s "$CA_CERT" ]; then
-    # No caddy container to extract from (e.g. a bare --down before any
-    # --up ran this session) — mint a throwaway self-signed placeholder
-    # purely so compose's ${E2E_CA_CERT_B64:?} interpolation has a value;
-    # nothing trusts it, and `down` tears the stack out from under it
-    # immediately.
-    openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
-      -subj "/CN=e2e-teardown-placeholder" -keyout /dev/null -out "$CA_CERT" 2>/dev/null
-  fi
-  [ -s "$CA_CERT" ] || { echo "[e2e] no CA material available (real or placeholder)" >&2; exit 1; }
-  echo "E2E_CA_CERT_B64=$(base64 -w0 "$CA_CERT" 2>/dev/null || base64 "$CA_CERT" | tr -d '\n')" > "$TLS_ENV_FILE"
-  [ -s "$TLS_ENV_FILE" ] || { echo "[e2e] TLS env emission failed" >&2; exit 1; }
-}
+# lnf (j7g phase 2): RETIRED - tls_env_generate and the throwaway-CA
+# machinery are gone with the caddy TLS edge. The composition has no
+# CA variables anywhere (the serve edge presents Let Encrypt
+# certificates, publicly trusted); the e2e device rides the
+# compose-internal http path (its job is the bootstrap chain).
 
 wait_audit_count() { # wait_audit_count <where> <min> — poll up to 20s
   local deadline=$((SECONDS + 20))
@@ -136,32 +115,11 @@ stack_up() {
   STACK_OWNER=true  # This run owns the stack — enable auto-teardown on failure
   note "fresh stack: down -v, then build + up (project $PROJECT)..."
   $COMPOSE down -v >/dev/null 2>&1 || true
-  rm -rf deploy/.e2e-tls
 
-  # f57.13 (Caddy-internal-CA rewrite): caddy self-provisions its CA on
-  # first boot — there is no CA material to hand the device container
-  # until caddy has actually started. Two-phase bring-up: (1) everything
-  # except tls-gate/device, which need the CA bytes as an env var at
-  # container-create time (docker compose reads deploy/.env.e2e.tls fresh
-  # on every invocation); (2) extract the CA, then start tls-gate/device.
-  $COMPOSE up -d --build --scale tls-gate=0 --scale device=0 \
-    || { note "compose up (phase 1: everything but tls-gate/device) failed"; exit 1; }
-
-  note "waiting for caddy to self-provision its internal CA and serve TLS..."
-  local deadline=$((SECONDS + 60))
-  until [ "$(docker inspect -f '{{.State.Health.Status}}' "$CADDY_CONTAINER" 2>/dev/null)" = "healthy" ]; do
-    if [ $SECONDS -ge $deadline ]; then
-      note "caddy never became healthy within 60s; recent logs:"
-      docker logs "$CADDY_CONTAINER" 2>&1 | tail -30
-      exit 1
-    fi
-    sleep 1
-  done
-  tls_env_generate
-
-  note "starting tls-gate + device now that the CA is extracted..."
-  $COMPOSE up -d --build tls-gate device \
-    || { note "compose up (phase 2: tls-gate/device) failed"; exit 1; }
+  # lnf (j7g phase 2): single-phase bring-up - no caddy wait, no CA
+  # extraction pass, no tls-gate (the overlay no longer defines one).
+  $COMPOSE up -d --build \
+    || { note "compose up failed"; exit 1; }
 
   note "waiting for cold bootstrap (seed gate → device → ready marker)..."
   if ! wait_marker; then
@@ -572,7 +530,7 @@ ac9_litellm_smoke() {
   note "AC9: VS gateway smoke — liveliness + models list over TLS (f57.12 + f57.13)"
   # f57.13: the gateway is fronted by caddy at https://vsigma.lan:8443 —
   # the smoke rides the REAL edge, --resolve to loopback, throwaway CA trust.
-  local base="https://$TLS_HOSTNAME:8443"
+  local base="$GATEWAY_LB"  # lnf: loopback publish (the serve edge proxies it at :8443 on the master)
   local master
   master="$(grep -E '^LITELLM_MASTER_KEY=' "$ENV_FILE" | cut -d= -f2-)"
   if [ -z "$master" ]; then
@@ -584,7 +542,6 @@ ac9_litellm_smoke() {
   # and the compose build pulls the litellm base image on cold runners.
   local deadline=$((SECONDS + 240)) code=""
   until code="$(curl -s -o /dev/null -w '%{http_code}' -m 5 \
-      --resolve "$TLS_HOSTNAME:8443:127.0.0.1" --cacert "$CA_CERT" \
       "$base/health/liveliness" 2>/dev/null)" \
     && [ "$code" = "200" ]; do
     [ $SECONDS -ge $deadline ] && break
@@ -594,8 +551,8 @@ ac9_litellm_smoke() {
     pass "AC9 liveliness" "/health/liveliness -> 200 over TLS edge (:8443)"
   else
     fail "AC9 liveliness" "last code: ${code:-none} (deadline 240s)"
-    note "caddy + litellm container recent logs (self-diagnosis):"
-    docker logs "$PROJECT-caddy-1" 2>&1 | tail -15 || true
+    note "litellm container recent logs (self-diagnosis):"
+    note "(lnf: no caddy in the composition - litellm logs only)"
     docker logs "$PROJECT-litellm-1" 2>&1 | tail -25 || true
     return
   fi
@@ -605,8 +562,8 @@ ac9_litellm_smoke() {
   # Substring checks: /v1/models ids are the config model_names, but a
   # substring match stays robust to any deployment-version id decoration.
   local models
-  models="$(curl -s -m 10 --resolve "$TLS_HOSTNAME:8443:127.0.0.1" --cacert "$CA_CERT" \
-    "$base/v1/models" -H "Authorization: Bearer $master" 2>/dev/null || true)"
+  models="$(curl -s -m 10 "$base/v1/models" \
+      -H "Authorization: Bearer ***" 2>/dev/null || true)"
   if [ -n "$models" ]; then
     if printf '%s' "$models" | grep -q 'glm-5\.3' \
       && printf '%s' "$models" | grep -q 'glm-5\.2'; then
@@ -636,7 +593,7 @@ ac9_litellm_smoke() {
 # return_full_object=true — hence the flag: full objects carry key_alias.
 ac9b_litellm_db_smoke() {
   note "AC9b: VS gateway DB contract — virtual-key mint + list via /key/generate + /key/list (f57.17)"
-  local base="https://$TLS_HOSTNAME:8443"
+  local base="$GATEWAY_LB"  # lnf: loopback publish (the serve edge proxies it at :8443 on the master)
   local master
   master="$(grep -E '^LITELLM_MASTER_KEY=' "$ENV_FILE" | cut -d= -f2-)"
   if [ -z "$master" ]; then
@@ -651,7 +608,6 @@ ac9b_litellm_db_smoke() {
   #    lookup + 1h duration so probe keys self-expire on a standing stack.
   #    No models list (the probe key never completes anything), no budget.
   code="$(curl -s -o "$gen_body" -w '%{http_code}' -m 30 \
-      --resolve "$TLS_HOSTNAME:8443:127.0.0.1" --cacert "$CA_CERT" \
       -X POST "$base/key/generate" \
       -H "Authorization: Bearer $master" \
       -H 'Content-Type: application/json' \
@@ -671,7 +627,6 @@ ac9b_litellm_db_smoke() {
   # 2. List with the exact-match alias filter (verified: /key/list matches
   #    key_alias exactly by default — no substring false-positives).
   code="$(curl -s -o "$list_body" -w '%{http_code}' -m 30 \
-      --resolve "$TLS_HOSTNAME:8443:127.0.0.1" --cacert "$CA_CERT" \
       "$base/key/list?key_alias=$alias&return_full_object=true" \
       -H "Authorization: Bearer $master" 2>/dev/null || true)"
   expect "AC9b list virtual keys" "$code" "200"
@@ -838,12 +793,8 @@ ac_w5d_admin_key_ui() {
 
   # 0. Readiness gate (run 36597260403): AC-anc stops postgres right before
   #    this AC fires, and the registrar's prisma pool breaks with it. The
-  #    edge (caddy) answers immediately with 502 — an honest "backend not
-  #    listening yet" — while the registrar takes a few seconds of re-boot
-  #    to re-arm. Poll healthz over the TLS edge (the same front door the
-  #    probes use) until the registrar is actually serving, so the setup
-  #    probes assert the 404-after-first-key semantics against the REAL
-  #    app, not caddy's transient 502.
+#    (lnf: no caddy in the composition - the loopback publish
+#    answers 200 directly once the registrar serves; poll it.)
   local hz_code
   local hz_deadline=$((SECONDS + 90))
   hz_code="$(tls_curl -o /dev/null -w '%{http_code}' -m 10 "$BASE_URL/healthz" 2>/dev/null)" || hz_code=""
@@ -962,33 +913,27 @@ ac10_queue_plane() {
     fail "AC10 dolt healthy" "no answer to select current_timestamp() as app user"
   fi
 
-  # 2. Scotty serves — over the TLS EDGE with basic_auth (77i): the raw
-  # host :3306 publish is GONE; /api/projects must 401 anonymous and 200
-  # with the basic_auth pair through caddy at https://<TLS_HOSTNAME>:8444,
-  # and the raw in-container listener must refuse host connections
-  # (nothing publishes it anymore). The sim pair (owner/hiccup) and its
-  # bcrypt hash ship committed in deploy/.env.e2e — caddy consumed the
-  # hash at adapt time (container start), so the edge serves auth from
-  # the first request. Poll: the patched image build is cold on CI
-  # runners and caddy must mint the 8444 leaf first.
-  local deadline=$((SECONDS + 240)) code="" code401=""
-  until code401="$(curl -s -o /dev/null -w '%{http_code}' -m 5 \
-      --resolve "$TLS_HOSTNAME:8444:127.0.0.1" --cacert "$CA_CERT" \
-      "https://$TLS_HOSTNAME:8444/api/projects" 2>/dev/null)" \
-    && [ "$code401" = "401" ]; do
+  # 2. Scotty serves (lnf, j7g phase 2): the queue UI rides the
+  # loopback publish - the same 127.0.0.1:3306 surface the tailscale
+  # serve edge proxies at the MagicDNS name :8444 on the balena
+  # master (and the scotty service's own healthcheck probes
+  # in-container). basic_auth is RETIRED with caddy: on the master
+  # the lock is the tailnet ACL tag + TLS identity alone (the owner
+  # GO); self-host fronts the loopback with whatever edge the
+  # operator runs. Poll: the patched image build is cold on CI.
+  local deadline=$((SECONDS + 240)) code=""
+  until code="$(curl -s -o /dev/null -w '%{http_code}' -m 5 \
+      "$SCOTTY_LB/api/projects" 2>/dev/null)" \
+    && [ "$code" = "200" ]; do
     [ $SECONDS -ge $deadline ] && break
     sleep 3
   done
-  code="$(curl -s -o /dev/null -w '%{http_code}' -m 5 \
-    --resolve "$TLS_HOSTNAME:8444:127.0.0.1" --cacert "$CA_CERT" \
-    -u "owner:hiccup" \
-    "https://$TLS_HOSTNAME:8444/api/projects" 2>/dev/null)"
-  if [ "$code" = "200" ] && [ "$code401" = "401" ]; then
-    pass "AC10 scotty serves (8444 + basic_auth)" \
-      "https://$TLS_HOSTNAME:8444/api/projects -> 401 anon / 200 with owner creds"
+  if [ "$code" = "200" ]; then
+    pass "AC10 scotty serves (loopback)" \
+      "127.0.0.1:3306/api/projects -> 200 (serve edge fronts it at :8444 on the master)"
   else
-    fail "AC10 scotty serves (8444 + basic_auth)" \
-      "anon: ${code401:-none} / authed: ${code:-none} (deadline 240s)"
+    fail "AC10 scotty serves (loopback)" \
+      "answered ${code:-none} (deadline 240s)"
     note "scotty container recent logs (self-diagnosis):"
     docker logs "$PROJECT-scotty-1" 2>&1 | tail -25 || true
     return
@@ -1096,57 +1041,22 @@ ac10_queue_plane() {
 #   1. port 80 redirects to https (308)
 #   2. plain https WITHOUT the CA fails (TLS is ENFORCED, not optional)
 #   3. 443 serves the registrar over TLS with the E2E CA trust (healthz 200)
-#   4. served cert is caddy's self-issued leaf: SAN vsigma.lan, issuer
-#      "Vector Sigma Internal CA" (the Caddyfile's `pki` block pins the
-#      root_cn — Caddy's own local CA, not its generic default identity)
-#   5. the DEVICE bootstrapped through the edge: its REGISTRAR_URL is
-#      https://vsigma.lan and the ready marker exists (AC1's cold boot is
-#      the TLS path itself; this makes the attribution explicit)
 ac10_tls_edge() {
-  note "AC11: TLS edge contract — redirect, enforcement, cert, device path (f57.13)"
-  local code sans issuer
+  note "AC11: loopback front door (lnf, j7g phase 2 - the caddy TLS edge is retired)"
+  local code
 
-  # 1. port 80 -> 308 redirect to https
-  code="$(curl -s -o /dev/null -w '%{http_code}' --resolve "$TLS_HOSTNAME:80:127.0.0.1" \
-    "http://$TLS_HOSTNAME/" 2>/dev/null || true)"
-  expect "AC11 port 80 redirect" "$code" "308"
+  # 1. registrar answers at the loopback publish - the surface the
+  #    tailscale serve edge proxies at the MagicDNS name on the
+  #    master (and the surface a self-host operator fronts).
+  code="$(curl -s -o /dev/null -w '%{http_code}' -m 10 "$BASE_URL/healthz" 2>/dev/null || true)"
+  expect "AC11 loopback front door" "$code" "200"
 
-  # 2. TLS enforced: same call WITHOUT the CA must FAIL (self-signed rejection)
-  if curl -s -o /dev/null --resolve "$TLS_HOSTNAME:443:127.0.0.1" \
-    "https://$TLS_HOSTNAME/healthz" 2>/dev/null; then
-    fail "AC11 TLS enforced" "untrusted client SUCCEEDED — TLS not enforced"
-  else
-    pass "AC11 TLS enforced" "untrusted client rejected (self-signed CA not in store)"
-  fi
-
-  # 3. trusted path: healthz 200 over the edge
-  code="$(tls_curl -o /dev/null -w '%{http_code}' "$BASE_URL/healthz")"
-  expect "AC11 registrar healthz over TLS" "$code" "200"
-
-  # 4. served cert identity: SAN + issuer from the throwaway E2E material
-  sans="$(openssl s_client -connect "127.0.0.1:443" -servername "$TLS_HOSTNAME" </dev/null 2>/dev/null \
-    | openssl x509 -noout -ext subjectAltName 2>/dev/null | grep -o 'DNS:[^ ,]*' || true)"
-  issuer="$(openssl s_client -connect "127.0.0.1:443" -servername "$TLS_HOSTNAME" </dev/null 2>/dev/null \
-    | openssl x509 -noout -issuer 2>/dev/null || true)"
-  if printf '%s' "$sans" | grep -q "DNS:$TLS_HOSTNAME"; then
-    pass "AC11 cert SAN" "$sans"
-  else
-    fail "AC11 cert SAN" "got: $sans"
-  fi
-  if printf '%s' "$issuer" | grep -q 'Vector Sigma Internal CA'; then
-    pass "AC11 cert issuer" "VS internal CA (caddy self-issued, pki.ca.local.root_cn pinned)"
-  else
-    fail "AC11 cert issuer" "got: $issuer"
-  fi
-
-  # 5. the device's own path was TLS: ready marker present (bootstrap went
-  #    through https://vsigma.lan — the overlay's REGISTRAR_URL) and the
-  #    audit rows carry the edge as source.
-  if docker exec "$PROJECT-device-1" test -f /data/agent/ready.marker 2>/dev/null; then
-    pass "AC11 device bootstrapped via TLS" "ready.marker present (REGISTRAR_URL=https://$TLS_HOSTNAME)"
-  else
-    fail "AC11 device bootstrapped via TLS" "no ready.marker — device never completed TLS bootstrap"
-  fi
+  # 2. The LAN front door is GONE by construction: the compose
+  #    publishes bind 127.0.0.1 only, so nothing answers on the
+  #    host LAN IPs (AC3 live proof is canary evidence, run from
+  #    a LAN host against the device IP).
+  # 3. The https-on-ts.net path (cert identity, TLS enforcement)
+  #    is canary evidence (AC4) - CI cannot join a tailnet.
 }
 
 # AC12 (f57.14): the primus dogfood — the coordinator self-bootstraps through
@@ -1365,13 +1275,11 @@ ac13_primus_queue_tooling() {
 
   # 5. scotty re-aligned: the dashboard's baked join carries the same
   #    canonical id; after canonicalization its bd connects again.
-  #    (77i: through the TLS edge + basic_auth like every host-side
-  #    consumer — the raw host :3306 path no longer exists.)
+  #    (lnf: through the loopback publish - the 8444 TLS edge is
+  #    gone with caddy; the serve edge fronts it on the master.)
   local code
   code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
-    --resolve "$TLS_HOSTNAME:8444:127.0.0.1" --cacert "$CA_CERT" \
-    -u "owner:hiccup" \
-    "https://$TLS_HOSTNAME:8444/api/projects" || true)"
+    "$SCOTTY_LB/api/projects" || true)"
   if [ "$code" = "200" ]; then
     pass "AC13 scotty re-aligned" "/api/projects 200 post-canonicalization — one id, every client (scotty + primus + host)"
   else
@@ -1410,7 +1318,7 @@ ac13_primus_queue_tooling() {
 ac14_a2a_mesh_chain() {
   note "AC14: A2A mesh chain — wiring hook + origin live + card + round-trip through the master gateway (j7g.1)"
   local hcontainer="$PROJECT-hermes-1"
-  local base="https://$TLS_HOSTNAME:8443"
+  local base="$GATEWAY_LB"  # lnf: loopback publish (the serve edge proxies it at :8443 on the master)
   local master reg_body reg_code card_code rpc_code reply
 
   master="$(grep -E '^LITELLM_MASTER_KEY=' "$ENV_FILE" | cut -d= -f2-)"
@@ -1493,7 +1401,6 @@ except Exception as e:
   #    extra_headers = Authorization forwarding (per-caller identity).
   reg_body='{"agent_name":"primus","agent_card_params":{"protocolVersion":"1.0","name":"primus","description":"VS coordinator Hermes (e2e)","url":"http://hermes:9900","version":"1.0.0","capabilities":{"streaming":false},"defaultInputModes":["text"],"defaultOutputModes":["text"],"skills":[]},"litellm_params":{},"extra_headers":["Authorization"]}'
   reg_code="$(curl -s -o /tmp/ac14-reg.json -w '%{http_code}' -m 20 \
-    --resolve "$TLS_HOSTNAME:8443:127.0.0.1" --cacert "$CA_CERT" \
     "$base/v1/agents" \
     -H "Authorization: Bearer $master" \
     -H 'Content-Type: application/json' -d "$reg_body" 2>/dev/null || true)"
@@ -1512,7 +1419,6 @@ except Exception as e:
 
   # 4. the served card through the TLS edge (gateway-rewritten).
   card_code="$(curl -s -o /tmp/ac14-card.json -w '%{http_code}' -m 20 \
-    --resolve "$TLS_HOSTNAME:8443:127.0.0.1" --cacert "$CA_CERT" \
     "$base/a2a/primus/.well-known/agent-card.json" \
     -H "Authorization: Bearer $master" 2>/dev/null || true)"
   if [ "$card_code" = "200" ] \
@@ -1526,7 +1432,6 @@ except Exception as e:
   # 5. the round-trip: message/send through the edge -> proxy -> origin.
   local rpc_id="e2e-ac14-$$"
   rpc_code="$(curl -s -o /tmp/ac14-rpc.json -w '%{http_code}' -m 240 \
-    --resolve "$TLS_HOSTNAME:8443:127.0.0.1" --cacert "$CA_CERT" \
     "$base/a2a/primus" \
     -H "Authorization: Bearer $master" \
     -H 'Content-Type: application/json' \
@@ -1547,7 +1452,6 @@ except Exception as e:
 
 # f57.13: the TLS env file is (re)generated on --up; ensure it exists for
 # assert-only and --down paths too (compose refuses a missing --env-file).
-[ -f "$TLS_ENV_FILE" ] || tls_env_generate
 
 case "${1:-}" in
   --down) stack_down; exit $? ;;

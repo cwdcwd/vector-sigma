@@ -3,18 +3,20 @@
 # Quickstart (see deploy/README.md):
 #   cp deploy/.env.example deploy/.env   # edit: set real secrets
 #   docker compose -f deploy/compose.yaml up -d --build
-#   docker compose -f deploy/compose.yaml cp \
-#     caddy:/data/caddy/pki/authorities/local/root.crt ./vs-ca.crt
-#   curl https://vsigma.lan/healthz --cacert vs-ca.crt   # via the caddy TLS edge (f57.13)
+#   curl http://127.0.0.1:3000/healthz   # loopback publish (lnf phase 2)
 #
 # Interpolation is fail-closed: every ${VAR:?} aborts `compose config` when
 # deploy/.env does not define it — no silent defaults for secrets.
 #
-# f57.13: the composition's front door is caddy, TLS via `tls internal` —
-# Caddy's own local CA, self-provisioned on first boot and renewed
-# automatically thereafter (see docs/tls-runbook.md). registrar + litellm
-# are compose-internal; caddy publishes 443 (registrar: admin + API) and
-# 8443 (litellm gateway + /ui + /a2a/*); port 80 redirects.
+# lnf (j7g phase 2): the caddy TLS edge is GONE — the serve-only shape
+# mirrors the balena app (one artifact, no twin drift). The registrar,
+# litellm gateway and scotty publish on 127.0.0.1 loopback ONLY. In the
+# balena world the tailscale serve edge fronts them at the MagicDNS
+# names; in the self-host world an operator puts their own TLS edge in
+# front of the loopback publishes (any proxy — the README documents
+# the pattern). The SCOTTY_BASIC_AUTH_HASH, TLS_HOSTNAME and
+# TS_MASTER_DNS variables retired with caddy; VS_CA_CERT_B64 retired
+# with the internal CA.
 
 services:
   # postgres: the stock 16-alpine image WRAPPED (fleet-ops-anc) — same image
@@ -70,65 +72,14 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    # f57.12 (fleet-ops-anc): the litellm-init completion gate is GONE — the
-    # postgres wrapper provisions the role+database before its own
-    # healthcheck can pass, so service_healthy is now the stronger gate.
-    # f57.13 (Copilot review): NO host publish — the plaintext 127.0.0.1:4000
-    # bypass is gone; the gateway is reachable only through the caddy TLS
-    # edge at https://<TLS_HOSTNAME>:8443. E2E asserts it there (AC9).
+    # lnf (j7g phase 2): 127.0.0.1-ONLY publish — parity with the balena
+    # app's loopback shape. The gateway is fronted by whatever TLS edge
+    # the operator runs against the loopback publish (tailscale serve on
+    # the balena master; any proxy self-host).
+    ports:
+      - "127.0.0.1:4000:4000"
     healthcheck:
       test: ["CMD-SHELL", "kill -0 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 30s
-    restart: unless-stopped
-
-  # f57.13: the TLS edge (same image as the balena app). TLS_HOSTNAME feeds
-  # the Caddyfile's {$TLS_HOSTNAME:...} substitution; the two publish ports
-  # are the composition's only exposed surface (registrar :443, litellm
-  # :8443; port 80 = 308 redirect). The balenaCloud public-URL equivalent
-  # (device port 80) therefore lands on the redirect — intentional, see
-  # the README. `tls internal` self-provisions on first boot — no
-  # dependency on a provisioning service; caddy-data MUST be a named
-  # volume or every `up` mints a fresh, untrusted CA (docs/tls-runbook.md).
-  caddy:
-    build:
-      context: ../balena/registrar
-      dockerfile: Dockerfile.caddy
-    environment:
-      TLS_HOSTNAME: ${TLS_HOSTNAME:-vsigma.lan}
-      # j7g phase 1b (fleet-ops-lrb): the master's MagicDNS FQDN for the
-      # overlay site aliases — same baked Caddyfile as the balena app
-      # (one artifact, no drift; {$TS_MASTER_DNS:...} substitution at
-      # adapt time). The self-host world has no tailnet, so the default
-      # is an inert name the edge never serves traffic on; a self-hoster
-      # who actually joins a tailnet overrides it with their master's
-      # real MagicDNS FQDN (deploy/README.md).
-      TS_MASTER_DNS: ${TS_MASTER_DNS:-vector-sigma.tailb7207e.ts.net}
-      # 77i: the scotty basic_auth hash (bcrypt). The Caddyfile consumes
-      # it via {$SCOTTY_BASIC_AUTH_HASH} substitution at adapt time —
-      # NO default: an unset variable fails caddy loudly (fail-loud
-      # gate; the e2e ships the committed simulation hash in .env.e2e,
-      # production carries the owner-minted fleet variable).
-      SCOTTY_BASIC_AUTH_HASH: "${SCOTTY_BASIC_AUTH_HASH:?set SCOTTY_BASIC_AUTH_HASH (e2e ships it in deploy/.env.e2e; balena carries the fleet variable)}"
-    ports:
-      - "80:80"
-      - "443:443"
-      - "8443:8443"
-      - "8444:8444"
-    volumes:
-      - caddy-data:/data
-    healthcheck:
-      # Real TLS readiness (Copilot f57.13 review): the entrypoint is still
-      # PID 1 while waiting for certs, so process liveness would report a
-      # "healthy" edge before any cert exists. Probe the actual front door:
-      # caddy serving the pinned hostname over TLS. The hostname comes from
-      # the TLS_HOSTNAME environment variable at runtime (NOT compose
-      # interpolation — {$...} here would be eaten by the ${VAR} parser).
-      # caddy:2-alpine ships curl; --insecure because THIS check is about
-      # the server having a usable pair loaded, not client CA trust.
-      test: ["CMD-SHELL", "curl -fsk --resolve \"$${TLS_HOSTNAME:-vsigma.lan}:443:127.0.0.1\" \"https://$${TLS_HOSTNAME:-vsigma.lan}/healthz\" -o /dev/null || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -148,9 +99,12 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    # f57.13 (Copilot review): NO host publish — the plaintext 127.0.0.1:3000
-    # bypass is gone; the registrar is reachable only through the caddy TLS
-    # edge at https://<TLS_HOSTNAME> (443). E2E rides the edge end-to-end.
+    # lnf (j7g phase 2): 127.0.0.1-ONLY publish (parity with the balena
+    # app). Compose-internal http://registrar:3000 stays the in-network
+    # path; the loopback publish fronts through whatever TLS edge the
+    # operator runs (tailscale serve on the master).
+    ports:
+      - "127.0.0.1:3000:3000"
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 5s
@@ -211,11 +165,14 @@ services:
     depends_on:
       dolt:
         condition: service_healthy
-    # 77i: NO host publish — scotty is fronted by caddy at
-    # https://<TLS_HOSTNAME>:8444 (basic_auth + internal CA). The raw
-    # 3306:3306 host publish is DROPPED in this same release; the
-    # compose-internal :3306 listener (healthcheck + bd bridge) is
-    # untouched.
+    # lnf (j7g phase 2): 127.0.0.1-ONLY publish — parity with the balena
+    # app's loopback shape (the serve edge proxies scotty at the
+    # MagicDNS name :8444 on the master; self-host fronts it with
+    # whatever TLS edge the operator runs). The compose-internal :3306
+    # listener is untouched: the healthcheck + scotty's bd bridge ride
+    # the compose network.
+    ports:
+      - "127.0.0.1:3306:3306"
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3306/api/projects').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
       interval: 30s
@@ -280,7 +237,7 @@ services:
 
   # f57.14: the master's own registrant (build context = balena/registrar
   # — the vendored registrant-own/ tree lives beside the other app sources;
-  # same context-root discipline as the litellm/caddy/scotty builds).
+  # same context-root discipline as the litellm/scotty builds).
   # REGISTRAR_KEY is a secret (.env); the UUID + URL are structural.
   registrant-own:
     build:
@@ -305,10 +262,6 @@ services:
 
 volumes:
   pgdata:
-  # f57.13 (Caddy-internal-CA rewrite): Caddy's self-generated CA key +
-  # leaf certs live here — must persist, or every recreate mints a new,
-  # untrusted CA. Wipe it deliberately to force a CA roll.
-  caddy-data:
   # f57.15: the VS queue's Dolt state volume.
   doltdata:
   # f57.14: primus state (bundle + ready marker from registrant-own;

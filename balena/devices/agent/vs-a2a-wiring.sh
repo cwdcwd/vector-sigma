@@ -38,10 +38,10 @@
 #      timeout 1200 — the fleet standard for agentic peers). Keys OUTSIDE
 #      the managed set are preserved verbatim (the stage2 contract:
 #      operator-provided values win; the bundle is the operator here).
-#   4. VS_CA_CERT_B64 (or VS_CA_CERT) -> SSL_CERT_FILE for the Python TLS
-#      stacks (the same CA vs-entrypoint.sh provisions for Node): the
-#      post-flip GATEWAY_URL rides TLS under the VS internal CA, and
-#      Hermes's model traffic must verify it.
+#   4. TLS trust: RETIRED with the internal CA (lnf, phase 2) — the edge
+#      serves Let's Encrypt certificates (publicly trusted, stock stores
+#      verify them); no trust provisioning runs in this hook anymore.
+#      stacks. No TLS provisioning — see 4.
 #
 # CONTRACTS THIS HOOK HONORS:
 #   - s6-overlay cont-init via /command/with-contenv (the 03-vs-queue-join
@@ -66,7 +66,6 @@ HOME_DIR="${HERMES_HOME:-/data/agent}"
 BUNDLE_DIR="$HOME_DIR/config"
 ENV_FILE="$HOME_DIR/.env"
 CFG_FILE="$HOME_DIR/config.yaml"
-CA_FILE="$HOME_DIR/vs-ca.pem"
 PY="/opt/hermes/.venv/bin/python"
 # The runtime user after stage2's remap (the b1r ownership contract): every
 # file this hook writes must stay owned by it — root-owned 0600 files would
@@ -334,30 +333,14 @@ except Exception as e:
     print(f"[vs-a2a-wiring] WARN: config.yaml managed write failed: {e} — runtime keeps prior config", file=sys.stderr)
 PYEOF
 
-# ── 4: the VS internal CA -> Python TLS trust ──────────────────────────
-
-if [ -n "${VS_CA_CERT:-}" ]; then
-  if [ -f "$VS_CA_CERT" ]; then
-    set_env SSL_CERT_FILE "$VS_CA_CERT" || true
-    log "SSL_CERT_FILE=$VS_CA_CERT (variable-provided CA)"
-  else
-    log "WARN: VS_CA_CERT set but missing: $VS_CA_CERT — TLS trust unchanged"
-  fi
-elif [ -n "${VS_CA_CERT_B64:-}" ]; then
-  if printf '%s' "$VS_CA_CERT_B64" | base64 -d > "$CA_FILE" 2>/dev/null; then
-    if grep -q "BEGIN CERTIFICATE" "$CA_FILE" 2>/dev/null; then
-      chmod 600 "$CA_FILE" 2>/dev/null || true
-      own_file "$CA_FILE"
-      set_env SSL_CERT_FILE "$CA_FILE" || true
-      log "SSL_CERT_FILE=$CA_FILE (decoded from VS_CA_CERT_B64)"
-    else
-      log "WARN: decoded VS_CA_CERT_B64 is not a PEM — TLS trust unchanged"
-      rm -f "$CA_FILE"
-    fi
-  else
-    log "WARN: VS_CA_CERT_B64 is not valid base64 — TLS trust unchanged"
-  fi
-fi
+# ── 4: TLS trust (RETIRED with the internal CA — lnf, j7g phase 2) ────
+# The VS_CA_CERT / VS_CA_CERT_B64 -> SSL_CERT_FILE provisioning block is
+# GONE: the edge is tailscale serve with Let's Encrypt certificates —
+# publicly trusted by every stock trust store, Python's certifi bundle
+# included. No trust provisioning runs anywhere in the composition
+# anymore; the VS_CA_* variables no longer exist in the bundle or the
+# fleet's variable sets. Kept as a numbered section header so the hook's
+# doc-comment enumeration stays aligned.
 
 log "done"
 exit 0

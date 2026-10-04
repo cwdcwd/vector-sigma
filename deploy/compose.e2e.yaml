@@ -20,17 +20,16 @@
 # deploy/.env.e2e.tls) — committed, deterministic, simulation-only — no
 # production secrets anywhere in them.
 #
-# f57.13 TLS (Caddy-internal-CA rewrite): the device bootstraps through
-# the REAL TLS edge — REGISTRAR_URL=https://vsigma.lan (compose network
-# alias -> caddy), trust via caddy's OWN self-provisioned internal CA.
-# deploy/e2e.sh --up extracts the root cert caddy already minted (docker
-# cp from its data volume — the same path the tls-runbook documents for
-# the owner) into .env.e2e.tls. The CA cert reaches the device via
-# VS_CA_CERT_B64 (the same variable the balena devices fleet uses); the
-# shim decodes it to NODE_EXTRA_CA_CERTS; the registrant's config layer
-# passes because the CA is provisioned (the fail-loud contract exercised
-# on the https path). The caddy service itself needs no TLS variables at
-# all — `tls internal` self-provisions with no fleet-var pair to arrive.
+# lnf (j7g phase 2): the caddy TLS edge is RETIRED - the overlay's
+# TLS-simulation machinery (throwaway CA, tls-gate, caddy alias)
+# is gone with it. The e2e device bootstraps against the
+# LOOPBACK publish (http://127.0.0.1:3000) - the same surface the
+# tailscale serve edge proxies at the MagicDNS name on the balena
+# master. No CA variables exist anywhere in the composition (the
+# serve edge presents Let's Encrypt certificates, publicly
+# trusted); the https-on-ts.net path is canary evidence (AC4),
+# exercised on the live tailnet - CI cannot join one by
+# construction.
 
 services:
   seed:
@@ -63,37 +62,6 @@ services:
         condition: service_healthy
     restart: "no"
 
-  # f57.13 (Copilot review): dedicated TLS gate for the E2E device — the
-  # device's own depends_on only reached registrar/seed, and the registrar
-  # healthcheck probes its in-container http, so the device could start
-  # before caddy had finished self-provisioning its internal CA + leaf.
-  # This one-shot service polls the REAL edge (https, CA-trusted, healthz
-  # 200) and the device waits for its completion — TLS readiness gates the
-  # device by construction, not by timing luck. No --resolve needed: the
-  # network alias below maps vsigma.lan -> caddy inside the compose network.
-  tls-gate:
-    image: curlimages/curl:8.10.1
-    depends_on:
-      - caddy
-    environment:
-      E2E_CA_CERT_B64: ${E2E_CA_CERT_B64:?set by deploy/e2e.sh --up (generated throwaway CA)}
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        set -eu
-        echo "$E2E_CA_CERT_B64" | base64 -d > /tmp/e2e-ca.crt
-        i=0
-        until curl -fs --cacert /tmp/e2e-ca.crt \
-            "https://$${TLS_HOSTNAME:-vsigma.lan}/healthz" >/dev/null 2>&1; do
-          i=$$((i + 1))
-          if [ "$$i" -ge 120 ]; then
-            echo "tls-gate: edge never became ready in 120s" >&2
-            exit 1
-          fi
-          sleep 1
-        done
-        echo "tls-gate: TLS edge serving healthz with the E2E CA"
-    restart: "no"
 
   device:
     build:
@@ -101,29 +69,23 @@ services:
       dockerfile: deploy/Dockerfile
     command: ["node", "registrant/dist/index.js"]
     depends_on:
-      tls-gate:
-        condition: service_completed_successfully
       registrar:
         condition: service_healthy
       seed:
         condition: service_completed_successfully
     environment:
       BALENA_DEVICE_UUID: ${E2E_DEVICE_UUID:?set in deploy/.env.e2e}
-      # f57.13: TLS bootstrap — the REAL contract: https://<master-hostname>
-      # with the CA provisioned (the exact path a balena device takes
-      # post-flip). caddy fronts the registrar on 443.
-      REGISTRAR_URL: https://vsigma.lan
-      REGISTRAR_KEY: ${E2E_DEVICE_KEY:?set in deploy/.env.e2e}
-      # The throwaway E2E CA cert — same variable the devices fleet uses.
-      # e2e.sh --up generates it (minted fresh per run, never committed);
-      # the ${:?} fails loud if the overlay is driven outside the driver.
-      VS_CA_CERT_B64: ${E2E_CA_CERT_B64:?set by deploy/e2e.sh --up (generated throwaway CA)}
+      # lnf (j7g phase 2): loopback bootstrap - the same surface the
+      # serve edge proxies at the MagicDNS name on the master. No CA
+      # variables exist (the internal-CA machinery retired with caddy);
+      # the https-on-ts.net path is AC4 canary evidence.
+      REGISTRAR_URL: http://127.0.0.1:3000
       DATA_DIR: /data/agent
       # Containers have no timesyncd socket: gate expires fast and the
       # boot path proceeds best-effort (this is the no-RTC device behavior
-      # the gate exists for). Under f57.13 the TLS guard is LIVE: a
-      # wrong-clock device fails the cert validity window — the natural
-      # guard the spec wanted, now enforced by the edge.
+      # the gate exists for). lnf: the loopback path carries no TLS guard
+      # (the https edge is canary territory; the clock gate keeps its
+      # fail-open best-effort contract).
       CLOCK_GATE_TIMEOUT_MS: "2000"
       # Long watch interval: the E2E asserts rotation separately via
       # /v1/rotate + rearm; resident polls must not race the assertions.
@@ -162,17 +124,6 @@ services:
       seed:
         condition: service_completed_successfully
     restart: "no"
-
-  # f57.13: caddy network alias — the compose-simulated equivalent of the
-  # owner's Pi-hole DNS record: the device's REGISTRAR_URL
-  # (https://vsigma.lan) resolves INSIDE the compose network to the caddy
-  # service (defined + built in deploy/compose.yaml; this overlay only
-  # adds the alias).
-  caddy:
-    networks:
-      default:
-        aliases:
-          - vsigma.lan
 
   # f57.14: primus — the compose-simulated coordinator self-bootstrap. The
   # REAL official Hermes image + the REAL vendored registrant, riding the

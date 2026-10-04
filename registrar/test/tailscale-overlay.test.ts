@@ -97,7 +97,13 @@ describe.each(composes)('tailscale overlay service: %s', (rel) => {
   });
 
   it('pins the official image at a fixed tag (never :latest)', () => {
-    expect(ts).toMatch(/^    image: tailscale\/tailscale:v1\.102\.5$/m);
+    // lnf: the master BUILDS the serve image FROM this pin
+    // (Dockerfile.tailscale) — either a direct `image:` pin (devices)
+    // or a build whose FROM is the pin (master) satisfies the guard.
+    expect(
+      /^    image: tailscale\/tailscale:v1\.102\.5$/m.test(ts) ||
+        /dockerfile: Dockerfile\.tailscale/.test(ts),
+    ).toBe(true);
     expect(ts).not.toMatch(/:latest/);
   });
 
@@ -162,14 +168,37 @@ describe.each(composes)('tailscale overlay service: %s', (rel) => {
   });
 });
 
-describe('tailscale overlay service: cross-compose parity', () => {
+describe('tailscale overlay service: the deliberate master/devices delta (lnf)', () => {
   const blocks = composes.map((rel) => {
     const code = stripComments(readFileSync(path.join(repoRoot, rel), 'utf8'));
     return serviceBlock(code, 'tailscale');
   });
 
-  it('is byte-identical in both balena composes (one shape, two files)', () => {
-    expect(blocks[0]).not.toBe('');
-    expect(blocks[0]).toBe(blocks[1]);
+  it('shares the JOIN contract byte-for-byte, diverging only on the serve build (master serves; devices join)', () => {
+    // lnf (j7g phase 2): the master's tailscale service BUILDS the
+    // serve image + declares TS_SERVE_CONFIG; the devices fleet stays
+    // on the stock image. Everything else — image tag lineage,
+    // network_mode, caps, tun passthrough, state volume, structural
+    // env, healthcheck posture — is the ONE 6c2 service shape, and the
+    // shared lines must stay identical so a future edit to the join
+    // contract lands in BOTH blocks.
+    const [master, devices] = blocks;
+    expect(master).not.toBe('');
+    expect(devices).not.toBe('');
+    // master-only lines
+    expect(master).toMatch(/dockerfile: Dockerfile\.tailscale/);
+    expect(master).toMatch(/TS_SERVE_CONFIG: \/serve-config\.json/);
+    expect(devices).not.toMatch(/TS_SERVE_CONFIG/);
+    expect(devices).not.toMatch(/dockerfile:/);
+    // the shared join contract: identical lines modulo the serve delta
+    const stripServe = (b: string) =>
+      b.split('\n').filter((l) =>
+        !/dockerfile: Dockerfile\.tailscale/.test(l) &&
+        !/build:/.test(l) &&
+        !/context: \./.test(l) &&
+        !/TS_SERVE_CONFIG/.test(l) &&
+        !/image: tailscale\/tailscale:v1\.102\.5/.test(l),
+      );
+    expect(stripServe(master)).toEqual(stripServe(devices));
   });
 });
