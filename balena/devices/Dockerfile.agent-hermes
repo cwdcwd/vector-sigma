@@ -30,10 +30,10 @@
 #      an N-device image. NEVER a device-side bd init (the 2026-09-09
 #      lockout class).
 #   5. The device environment map + queue conventions + A2A dispatch
-#      discipline at /opt/vs/docs (vendored at build time — the
-#      vendored-drift pattern; docs/ at the repo root is the source of
-#      truth). e5o.1: the devices environment map is
-#      device-environment.md (the WORKER map) — NEVER the master's
+#      discipline + the gateway ops runbook at /opt/vs/docs (vendored
+#      at build time — the vendored-drift pattern; docs/ at the repo
+#      root is the source of truth). e5o.1: the devices environment map
+#      is device-environment.md (the WORKER map) — NEVER the master's
 #      vs-environment.md (wrong-map regression, CI-fatal in
 #      registrant/test/vendored-drift.test.ts).
 

@@ -67,7 +67,10 @@ Notes:
   `ollama-cloud/glm-5.3` + `glm-5.2` groups
   with glm↔glm cross-fallbacks and a `*` pass-through wildcard to Ollama
   Cloud (never a fallback target — j9f). See `balena/registrar/README.md`
-  for the full gateway runbook (key minting, A2A mesh, failure domain).
+  for the full gateway runbook (key minting, A2A mesh, failure domain);
+  the day-to-day recipes (key audits, route changes with live
+  verification, fallback probing, the DB-row shadow trap, the daily
+  health pass) live in [docs/gateway-ops.md](../docs/gateway-ops.md).
 - **VS queue plane (f57.15)**: `DOLT_PASSWORD`, `DOLT_ROOT_PASSWORD`, and
   `BEADS_DOLT_PASSWORD` (same value as `DOLT_PASSWORD`) are required in
   `deploy/.env`. The `dolt` service (Dolt SQL server, `vs_ops` database)

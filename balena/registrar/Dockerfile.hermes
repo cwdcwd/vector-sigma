@@ -20,7 +20,8 @@
 #      hook copies it to $HERMES_HOME/vs-queue at first boot.
 #   3. environment docs at /opt/vs/docs (queue-conventions.md +
 #      vs-environment.md — primus's own map; a2a-conventions.md — the
-#      dispatch-discipline doc, e5o.4).
+#      dispatch-discipline doc, e5o.4; gateway-ops.md — the gateway
+#      ops runbook, e5o.6).
 #
 # Supply-chain posture: the bd tarball is fetched at the pinned release
 # and sha256-verified against the release's own checksums.txt in the
