@@ -51,6 +51,10 @@ services:
       # device row + full bundle; primus-registrant bootstraps against it).
       PRIMUS_DEVICE_UUID: ${PRIMUS_DEVICE_UUID:?set in deploy/.env.e2e}
       PRIMUS_REGISTRAR_KEY: ${PRIMUS_REGISTRAR_KEY:?set in deploy/.env.e2e}
+      # j7g.1: the mesh identity the seeded bundle carries — the simulation
+      # gateway key (a mesh key IS a gateway virtual key; the round-trip
+      # caller presents it and both auth layers accept it).
+      E2E_MESH_IDENTITY_KEY: ${LITELLM_MASTER_KEY:?set in deploy/.env.e2e}
       # Short auto-rearm window so the re-delivery path is observable in
       # seconds (production default is 1 hour).
       SEED_REARM_SECONDS: ${SEED_REARM_SECONDS:-45}

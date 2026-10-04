@@ -85,8 +85,17 @@ COPY queue-join /opt/vs/queue-join
 COPY docs /opt/vs/docs
 COPY vs-queue-join.sh /etc/cont-init.d/03-vs-queue-join
 RUN chmod 0755 /etc/cont-init.d/03-vs-queue-join
+# j7g.1: the A2A mesh wiring hook — primus is a mesh member too (the
+# coordinator's Hermes serves its own card through the master gateway).
+# Same contract as the devices agent image: derives A2A_* env + the
+# config.yaml managed section from the registrar-delivered bundle on
+# every boot. 04- prefix: after stage2 (01-), lexically after the queue
+# join (03-) — both hooks are independent and fail-soft.
+COPY vs-a2a-wiring.sh /etc/cont-init.d/04-vs-a2a-wiring
+RUN chmod 0755 /etc/cont-init.d/04-vs-a2a-wiring
 
 # Entrypoint/CMD are inherited from the official image: the dispatcher
-# → /init → cont-init.d (01- stage2, 02- profile reconcile, 03- this
-# hook) → main-wrapper → hermes. Nothing is overridden; the compose's
-# `command: [gateway, run]` keeps flowing through the same chain.
+# → /init → cont-init.d (01- stage2, 02- profile reconcile, 03- queue
+# join, 04- A2A wiring) → main-wrapper → hermes. Nothing is overridden;
+# the compose's `command: [gateway, run]` keeps flowing through the same
+# chain.

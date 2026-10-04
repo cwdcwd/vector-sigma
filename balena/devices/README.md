@@ -7,16 +7,19 @@ balena remote builders when a `devices-v*` tag is pushed
 
 ```
 balena/devices/
-├── docker-compose.yml   # agent + registrant + tailscale overlay, shared volume, healthchecks
+├── docker-compose.yml        # agent + registrant + tailscale overlay, shared volume, healthchecks
+├── Dockerfile.agent-hermes   # the agent runtime (j7g.1): official Hermes image + bd 1.2.2 + gate + A2A hook
 ├── agent/
-│   ├── Dockerfile       # placeholder runtime image (swap point)
-│   └── gate.sh          # blocks on /data/agent/ready.marker, then execs
-├── registrant/          # VENDORED workspace sources (see below)
-│   ├── Dockerfile       # multi-stage: build → runtime (non-root)
-│   ├── package.json     # exact-pinned deps, workspaces: shared
+│   ├── Dockerfile            # the RETIRED placeholder image (kept for history; not built since j7g.1)
+│   ├── gate.sh               # blocks on /data/agent/ready.marker, then execs the image's own entrypoint dispatcher
+│   └── vs-a2a-wiring.sh      # cont-init 04-: bundle → A2A_* env + config.yaml a2a section (j7g.1)
+├── docs/                     # vendored queue-conventions.md + vs-environment.md (byte-pinned to docs/)
+├── registrant/               # VENDORED workspace sources (see below)
+│   ├── Dockerfile            # multi-stage: build → runtime (non-root)
+│   ├── package.json          # exact-pinned deps, workspaces: shared
 │   ├── tsconfig.json
-│   ├── shared/          # vendored @vector-sigma/shared (types + zod)
-│   └── src/             # vendored registrant sources
+│   ├── shared/               # vendored @vector-sigma/shared (types + zod)
+│   └── src/                  # vendored registrant sources
 └── README.md
 ```
 

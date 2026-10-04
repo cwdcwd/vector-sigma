@@ -6,6 +6,7 @@ import {
   parseEnvLine,
   renderCanonicalFiles,
   InvalidExtraEnvError,
+  InvalidPeerTokenLineError,
 } from '../src/structured-fields.js';
 
 const AGENT_ENV = CANONICAL_PATHS.agentEnv;
@@ -83,6 +84,57 @@ describe('structured-fields — renderCanonicalFiles (f57.11)', () => {
     expect(a2a).toEqual({ identity_key: 'old', custom: 'kept', trusted_peers: ['kangbot'] });
   });
 
+  it('j7g.1: a2a_public_url renders into a2a.json and merges like the other a2a keys', () => {
+    // Set on a fresh bundle: renders public_url alongside identity/peers.
+    const fresh = renderCanonicalFiles({
+      a2a_identity_key: 'a2a-k',
+      a2a_trusted_peers: 'primus',
+      a2a_public_url: 'https://vector-sigma.tailb7207e.ts.net:8443',
+    });
+    expect(JSON.parse(contentsOf(fresh).get(CANONICAL_PATHS.a2a) ?? '{}')).toEqual({
+      identity_key: 'a2a-k',
+      trusted_peers: ['primus'],
+      public_url: 'https://vector-sigma.tailb7207e.ts.net:8443',
+    });
+    // Set over an existing file: object-merge keeps identity_key, replaces public_url.
+    const existing = new Map([
+      [CANONICAL_PATHS.a2a, JSON.stringify({ identity_key: 'old', public_url: 'http://old:4000' }, null, 2) + '\n'],
+    ]);
+    const merged = renderCanonicalFiles({ a2a_public_url: 'https://new-edge:8443' }, existing);
+    expect(JSON.parse(contentsOf(merged).get(CANONICAL_PATHS.a2a) ?? '{}')).toEqual({
+      identity_key: 'old',
+      public_url: 'https://new-edge:8443',
+    });
+    // Blank = keep: a blank a2a_public_url alone renders nothing.
+    expect(renderCanonicalFiles({ a2a_public_url: '   ' })).toEqual([]);
+  });
+
+  it('j7g.1: a2a_peer_tokens renders name:key lines into the peer_tokens map; malformed lines refuse the save', () => {
+    const out = renderCanonicalFiles({
+      a2a_identity_key: 'own-key',
+      a2a_peer_tokens: 'primus:sk-primus-a2a\n# comment\nwheeljack: sk-wheeljack-a2a',
+    });
+    expect(JSON.parse(contentsOf(out).get(CANONICAL_PATHS.a2a) ?? '{}')).toEqual({
+      identity_key: 'own-key',
+      peer_tokens: { primus: 'sk-primus-a2a', wheeljack: 'sk-wheeljack-a2a' },
+    });
+    // Object-merge keeps sibling keys; a set peer_tokens replaces the prior map.
+    const existing = new Map([
+      [CANONICAL_PATHS.a2a, JSON.stringify({ identity_key: 'old', peer_tokens: { old: 'k' } }, null, 2) + '\n'],
+    ]);
+    const merged = renderCanonicalFiles({ a2a_peer_tokens: 'primus:p1' }, existing);
+    expect(JSON.parse(contentsOf(merged).get(CANONICAL_PATHS.a2a) ?? '{}')).toEqual({
+      identity_key: 'old',
+      peer_tokens: { primus: 'p1' },
+    });
+    // Malformed lines are refused with the dedicated error (comments allowed).
+    expect(() => renderCanonicalFiles({ a2a_peer_tokens: 'no-colon-here' })).toThrow(InvalidPeerTokenLineError);
+    expect(() => renderCanonicalFiles({ a2a_peer_tokens: 'name:' })).toThrow(InvalidPeerTokenLineError);
+    expect(() => renderCanonicalFiles({ a2a_peer_tokens: 'bad name:k' })).toThrow(InvalidPeerTokenLineError);
+    // Blank = keep.
+    expect(renderCanonicalFiles({ a2a_peer_tokens: '   ' })).toEqual([]);
+  });
+
   it('a2a.json over non-JSON prior content starts fresh (raw upload garbage tolerance)', () => {
     const existing = new Map([[CANONICAL_PATHS.a2a, 'not json at all']]);
     const out = renderCanonicalFiles({ a2a_identity_key: 'k' }, existing);
@@ -115,10 +167,12 @@ describe('structured-fields — renderCanonicalFiles (f57.11)', () => {
     expect(contentsOf(out).get(AGENT_ENV)).toBe('# comment\nGOOD=1\n');
   });
 
-  it('field set matches the owner-ruled nine; secret set matches the ruled four', () => {
+  it('field set matches the owner-ruled eleven (j7g.1 adds a2a_public_url + a2a_peer_tokens); secret set matches the ruled five', () => {
     expect([...FIELD_NAMES].sort()).toEqual(
       [
         'a2a_identity_key',
+        'a2a_public_url',
+        'a2a_peer_tokens',
         'a2a_trusted_peers',
         'agent_name',
         'extra_env',
@@ -130,7 +184,7 @@ describe('structured-fields — renderCanonicalFiles (f57.11)', () => {
       ].sort(),
     );
     expect([...SECRET_FIELDS].sort()).toEqual(
-      ['a2a_identity_key', 'gateway_api_key', 'github_app_pem', 'slack_bot_token'].sort(),
+      ['a2a_identity_key', 'a2a_peer_tokens', 'gateway_api_key', 'github_app_pem', 'slack_bot_token'].sort(),
     );
   });
 });

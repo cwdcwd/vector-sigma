@@ -10,7 +10,7 @@ Everything here is a UI-only, one-time-per-device workflow on the balenaCloud da
 
 | Service | Image | Role |
 |---|---|---|
-| `agent` | built from `balena/devices/agent/` (placeholder runtime) | Your agent runtime. Entrypoint blocks on `/data/agent/ready.marker` — no identity, no start. Swap the runtime via a fleet PR when ready. |
+| `agent` | built from `balena/devices/Dockerfile.agent-hermes` (the real Hermes runtime since j7g.1 — the pinned official image + bd 1.2.2 + the A2A wiring hook) | Your agent runtime. The gate blocks on `/data/agent/ready.marker` — no identity, no start — then boots Hermes (`gateway run`) through the image's own cont-init chain; the 04-vs-a2a-wiring hook derives the mesh env + config.yaml from the delivered bundle on every boot. |
 | `registrant` | built from `balena/devices/registrant/` (vendored workspace sources) | Bootstraps identity: clock gate → registrar fetch → 0600 bundle write → ready marker → resident rotation watcher. |
 | `tailscale` | `tailscale/tailscale:v1.102.5` (pinned official image) | The VS tailnet overlay (j7g phase 1a): joins the device to the private tailnet — off-LAN devices reach the master's endpoints, and the device is reachable from the tailnet. Host network namespace, publishes nothing; funnel is ACL-denied. See [tailscale-runbook.md](tailscale-runbook.md). |
 
@@ -63,7 +63,7 @@ The very first devices-fleet device was provisioned before this app existed (fle
 
 ## Housekeeping
 
-- **Logs:** dashboard per-device; the registrant prefixes `[registrant:*]`, the agent gate `[gate]`, the placeholder runtime `[agent]`.
+- **Logs:** dashboard per-device; the registrant prefixes `[registrant:*]`, the agent gate `[gate]`, the mesh hook `[vs-a2a-wiring]`, the runtime is Hermes itself.
 - **Rotation:** owner rotates a bundle via the registrar console (`/v1/rotate`); the resident registrant watcher re-fetches within one watch interval and rewrites config — no restart, no reflash.
 - **Supervisor restart (`balena restart`):** the boot identity check dominates — a restart alone never re-fetches; rotation is the poll's job.
 - **Kill-test:** part of every canary verification (checklist §5).

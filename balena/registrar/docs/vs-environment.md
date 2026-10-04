@@ -103,6 +103,30 @@ shared-queue writes. No VS agent writes the Cabal's `fleet_ops`; no
 Cabal agent writes your `vs_ops`. Coordination crossings happen over
 A2A, exactly as the lane that built this image was dispatched.
 
+## The A2A mesh (j7g.1)
+
+You are a mesh member. The master gateway serves every VS agent's card
+at `https://<edge>/a2a/<name>`; peer traffic rides the master device,
+never ai.lan. The runtime wiring is a CODE contract, not yours to
+maintain:
+
+- Your bundle's `config/a2a.json` carries `identity_key` (your own mesh
+  key), `trusted_peers`, `public_url` (your PROXY-DIALABLE origin — the
+  gateway's proxy follows it to deliver peer traffic to you), and
+  `peer_tokens` (the other mesh agents' keys). The `04-vs-a2a-wiring`
+  boot hook derives `A2A_PEER_TOKENS`, `A2A_TRUSTED_PEERS`,
+  `A2A_PUBLIC_URL`, `A2A_OWN_IDENTITY_KEY` and the `config.yaml`
+  `a2a_agents` section (peer URLs ride the mesh EDGE from your
+  GATEWAY_URL — peers call each other THROUGH the gateway) from it on
+  EVERY boot — a console rotation lands on your next container
+  recreate. Never edit those env lines or the managed config.yaml
+  section by hand; edit the bundle in the registrar console.
+- Calling a peer: the `a2a_call` tool with the peer's configured name
+  (the hook writes one `a2a_agents` entry per `peer_tokens` name).
+- A peer calling you: it presents its own mesh key; your inbound
+  resolves the name from `A2A_PEER_TOKENS` and enforces
+  `A2A_TRUSTED_PEERS`.
+
 ## Rebuilding you
 
 Your image is `balena/registrar/Dockerfile.hermes`: the pinned official

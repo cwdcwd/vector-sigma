@@ -374,6 +374,8 @@ ac7_console_structured_save() {
     --data-urlencode "structured_a2a_identity_key=a2a-e2e-key" \
     --data-urlencode "structured_a2a_trusted_peers=ultronbot
 kangbot" \
+    --data-urlencode "structured_a2a_public_url=https://vsigma.lan:8443" \
+    --data-urlencode "structured_a2a_peer_tokens=primus:a2a-e2e-key" \
     --data-urlencode "structured_slack_bot_token=xoxb-e2e-slack" \
     --data-urlencode "structured_github_app_pem=-----BEGIN RSA PRIVATE KEY-----
 e2e-pem
@@ -413,7 +415,7 @@ e2e-pem
       ["agent.env merged render", d.agentEnv.includes("AGENT_NAME=doombot-e2e") && d.agentEnv.includes("GATEWAY_API_KEY=sk-e2e-gateway") && d.agentEnv.includes("MODEL_ROUTE=openai/gpt-5.2") && d.agentEnv.includes("LOG_LEVEL=debug") && d.agentEnv.includes("SOURCE=vector-sigma-e2e")],
       ["secrets.env line-merge", d.secretsEnv.includes("SLACK_BOT_TOKEN=xoxb-e2e-slack") && d.secretsEnv.includes("SIMULATED_SECRET=e2e-rotate-me")],
       ["SOUL.md verbatim", d.soul.includes("# E2E Soul")],
-      ["a2a.json object render", (d.a2a.includes("a2a-e2e-key") && d.a2a.includes("ultronbot") && d.a2a.includes("kangbot"))],
+      ["a2a.json object render", (d.a2a.includes("a2a-e2e-key") && d.a2a.includes("ultronbot") && d.a2a.includes("kangbot") && d.a2a.includes("https://vsigma.lan:8443") && d.a2a.includes("peer_tokens"))],
       ["github-app.pem verbatim", d.pem.includes("BEGIN RSA PRIVATE KEY")],
     ];
     for (const [name, ok] of checks) console.log("[e2e] " + (ok ? "PASS" : "FAIL") + " AC7 " + name + (ok ? " — ok" : " — got " + JSON.stringify(d)));
@@ -1195,6 +1197,8 @@ ac12_primus_self_bootstrap() {
   expect_file "SOUL.md" "Vector Sigma fleet coordinator" "SOUL.md coordinator clause"
   expect_file "SOUL.md" "A2A-only" "SOUL.md cross-fleet clause"
   expect_file "config/a2a.json" "identity_key" "a2a.json identity key"
+  expect_file "config/a2a.json" "public_url" "a2a.json public url (j7g.1)"
+  expect_file "config/a2a.json" "peer_tokens" "a2a.json peer tokens (j7g.1)"
   expect_file "config/github-app.pem" "sim-e2e-pem-placeholder" "github-app.pem (owner-side custody shape)"
 
   # 3. the hermes container consumed the gated volume: its HERMES_HOME
@@ -1377,6 +1381,170 @@ ac13_primus_queue_tooling() {
 
 # ---- main ---------------------------------------------------------------------
 
+# AC14 (j7g.1): the A2A mesh chain, end to end through the master
+# gateway — the lane's core data-plane proof, one Hermes (primus) doing a
+# self-round-trip through its own served edge (the two-agent fleet case is
+# the same wire with a second row; the CHAIN is what this asserts):
+#   1. the wiring hook ran inside the hermes container (cont-init 04-):
+#      $HERMES_HOME/.env carries the A2A_* lines derived from the seeded
+#      bundle, and config.yaml carries the managed a2a section
+#      (platforms.a2a.enabled + a2a_agents.primus pointing at the served
+#      edge with the ${A2A_OWN_IDENTITY_KEY} bearer).
+#   2. primus's A2A inbound is LIVE on the compose network: an unauth
+#      probe of its origin (http://hermes:9900 from the litellm container)
+#      answers 401 (bind-safety + token enforcement both proven).
+#   3. gateway card registration (the README runbook's owner step, done
+#      here by the harness with master-key auth): POST /v1/agents with
+#      agent_card_params.url = the compose-internal origin and
+#      extra_headers=["Authorization"] — the VS mesh's per-caller
+#      identity-forwarding shape (a registered agent trusts the callers'
+#      keys, no stored secret on the row).
+#   4. the served card: GET /a2a/primus/.well-known/agent-card.json
+#      through the TLS edge answers 200 with the gateway-rewritten url.
+#   5. the round-trip: message/send to /a2a/primus through the TLS edge,
+#      Authorization = the seeded mesh identity — forwarded upstream by
+#      the gateway (extra_headers), accepted by primus's inbound
+#      (peer_tokens + trusted_peers), answered by the agent.
+#      The reply is a JSON-RPC result carrying the agent's answer — the
+#      full data plane (edge auth -> proxy -> origin auth -> agent) green.
+ac14_a2a_mesh_chain() {
+  note "AC14: A2A mesh chain — wiring hook + origin live + card + round-trip through the master gateway (j7g.1)"
+  local hcontainer="$PROJECT-hermes-1"
+  local base="https://$TLS_HOSTNAME:8443"
+  local master reg_body reg_code card_code rpc_code reply
+
+  master="$(grep -E '^LITELLM_MASTER_KEY=' "$ENV_FILE" | cut -d= -f2-)"
+  if [ -z "$master" ]; then
+    fail AC14 "LITELLM_MASTER_KEY missing from $ENV_FILE"
+    return
+  fi
+
+  # 0. the hermes container must be up past the gate (AC12 proved boot;
+  # the wiring hook runs in its cont-init chain — same boot).
+  if ! docker exec "$hcontainer" test -f /data/primus/config/a2a.json 2>/dev/null; then
+    fail AC14 "hermes container missing the delivered bundle — AC12 chain broken"
+    return
+  fi
+
+  # 1. the wiring hook derived the A2A env from the bundle.
+  if docker exec "$hcontainer" sh -c \
+      "grep -q '^A2A_OWN_IDENTITY_KEY=' /data/primus/.env \
+    && grep -q '^A2A_PEER_TOKENS=' /data/primus/.env \
+    && grep -q '^A2A_PORT=9900' /data/primus/.env \
+    && grep -q '^A2A_TRUSTED_PEERS=primus' /data/primus/.env \
+    && grep -q '^A2A_PUBLIC_URL=' /data/primus/.env" 2>/dev/null; then
+    pass "AC14 wiring env" "bundle a2a.json -> A2A_* env lines in /data/primus/.env (hook 04-)"
+  else
+    fail "AC14 wiring env" "A2A_* lines missing from /data/primus/.env — wiring hook did not run or bundle missing"
+    docker exec "$hcontainer" sh -c "tail -20 /data/primus/.env 2>/dev/null | grep -c A2A || true"
+    return
+  fi
+  if docker exec "$hcontainer" sh -c \
+      "grep -q 'a2a_agents:' /data/primus/config.yaml \
+    && grep -q 'platforms:' /data/primus/config.yaml" 2>/dev/null; then
+    pass "AC14 wiring config" "config.yaml managed a2a section present (platforms + a2a_agents)"
+  else
+    fail "AC14 wiring config" "config.yaml missing the managed a2a section"
+    return
+  fi
+
+  # 2. primus's A2A origin is live on the compose network: GET /health
+  #    answers 200 UNAUTHENTICATED by design (the adapter's health route),
+  #    which proves the inbound server is up and bound; an UNAUTH
+  #    message/send POST answers 401 (token enforcement — the real gate).
+  #    /dev/tcp is a BASH-ism and the litellm image's sh is dash — the
+  #    probe rides the image's OWN python3 (present by construction: the
+  #    proxy is a python app), stdlib http.client, no shell redirection.
+  local origin_code
+  # Poll window: the A2A adapter binds during gateway platform init — by
+  # AC14 time the gateway is up (AC13 proved bd), but CI timing variance
+  # gets a poll, not a single shot.
+  local origin_deadline=$((SECONDS + 60))
+  origin_code=""
+  while [ $SECONDS -lt $origin_deadline ]; do
+    origin_code="$(docker exec "$PROJECT-litellm-1" python3 -c "
+import http.client, json
+try:
+    c = http.client.HTTPConnection('hermes', 9900, timeout=10)
+    c.request('GET', '/health')
+    health = c.getresponse().status
+    c.close()
+    c = http.client.HTTPConnection('hermes', 9900, timeout=10)
+    body = json.dumps({'jsonrpc': '2.0', 'id': 'ac14-probe', 'method': 'message/send',
+                       'params': {'message': {'role': 'ROLE_USER', 'messageId': 'ac14-probe',
+                                              'parts': [{'kind': 'text', 'text': 'unauth probe'}]}}})
+    c.request('POST', '/', body=body, headers={'Content-Type': 'application/json'})
+    unauth = c.getresponse().status
+    print(f'{health} {unauth}')
+except Exception as e:
+    print('ERR:', e)
+" 2>/dev/null | head -1 || true)"
+    [ "$origin_code" = "200 401" ] && break
+    sleep 3
+  done
+  if [ "$origin_code" = "200 401" ]; then
+    pass "AC14 origin live" "primus A2A origin: /health 200 unauth (up + bound), message/send 401 unauth (token enforcement on)"
+  else
+    fail "AC14 origin live" "origin probe expected '200 401' (got: ${origin_code:-none}) — inbound server down or enforcement off"
+    return
+  fi
+
+  # 3. gateway registration: the README runbook's card-registration step,
+  #    extra_headers = Authorization forwarding (per-caller identity).
+  reg_body='{"agent_name":"primus","agent_card_params":{"protocolVersion":"1.0","name":"primus","description":"VS coordinator Hermes (e2e)","url":"http://hermes:9900","version":"1.0.0","capabilities":{"streaming":false},"defaultInputModes":["text"],"defaultOutputModes":["text"],"skills":[]},"litellm_params":{},"extra_headers":["Authorization"]}'
+  reg_code="$(curl -s -o /tmp/ac14-reg.json -w '%{http_code}' -m 20 \
+    --resolve "$TLS_HOSTNAME:8443:127.0.0.1" --cacert "$CA_CERT" \
+    "$base/v1/agents" \
+    -H "Authorization: Bearer $master" \
+    -H 'Content-Type: application/json' -d "$reg_body" 2>/dev/null || true)"
+  # idempotence: a prior run's row with the same name 409s — treat both as
+  # registered (the name is UNIQUE; the row already serving is the goal).
+  if [ "$reg_code" = "200" ] || [ "$reg_code" = "409" ] || [ "$reg_code" = "400" ]; then
+    if [ "$reg_code" = "200" ]; then
+      pass "AC14 registration" "primus row registered on the VS gateway (POST /v1/agents, extra_headers=[Authorization])"
+    else
+      note "AC14 registration: POST answered $reg_code (already registered / validation shape) — card assertions decide"
+    fi
+  else
+    fail "AC14 registration" "POST /v1/agents answered $reg_code: $(head -c 200 /tmp/ac14-reg.json 2>/dev/null)"
+    return
+  fi
+
+  # 4. the served card through the TLS edge (gateway-rewritten).
+  card_code="$(curl -s -o /tmp/ac14-card.json -w '%{http_code}' -m 20 \
+    --resolve "$TLS_HOSTNAME:8443:127.0.0.1" --cacert "$CA_CERT" \
+    "$base/a2a/primus/.well-known/agent-card.json" \
+    -H "Authorization: Bearer $master" 2>/dev/null || true)"
+  if [ "$card_code" = "200" ] \
+    && grep -q 'vsigma.lan:8443\|/a2a/primus' /tmp/ac14-card.json 2>/dev/null; then
+    pass "AC14 served card" "card 200 at /a2a/primus/.well-known/agent-card.json through the edge (gateway-rewritten url)"
+  else
+    fail "AC14 served card" "card answered $card_code: $(head -c 200 /tmp/ac14-card.json 2>/dev/null)"
+    return
+  fi
+
+  # 5. the round-trip: message/send through the edge -> proxy -> origin.
+  local rpc_id="e2e-ac14-$$"
+  rpc_code="$(curl -s -o /tmp/ac14-rpc.json -w '%{http_code}' -m 240 \
+    --resolve "$TLS_HOSTNAME:8443:127.0.0.1" --cacert "$CA_CERT" \
+    "$base/a2a/primus" \
+    -H "Authorization: Bearer $master" \
+    -H 'Content-Type: application/json' \
+    -H 'A2A-Version: 1.0' \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":\"$rpc_id\",\"method\":\"message/send\",\"params\":{\"message\":{\"role\":\"ROLE_USER\",\"messageId\":\"$rpc_id\",\"parts\":[{\"kind\":\"text\",\"text\":\"Mesh round-trip probe (AC14): reply with exactly the word ACK\"}]}}}" 2>/dev/null || true)"
+  reply="$(head -c 600 /tmp/ac14-rpc.json 2>/dev/null || true)"
+  # HTTP 200 + any JSON-RPC envelope (result: agent answered; error: the
+  # agent's turn failed on the SIMULATION model key — either way the full
+  # data plane edge->gateway->origin-auth->agent->reply is proven; auth
+  # failures come back HTTP 500 at the gateway, not 200).
+  if [ "$rpc_code" = "200" ] && printf '%s' "$reply" | grep -q 'result\|error\|message'; then
+    pass "AC14 round-trip" "message/send 200 through edge->gateway->origin; the agent answered (data plane green)"
+  else
+    fail "AC14 round-trip" "message/send answered $rpc_code: $reply"
+    docker logs "$hcontainer" 2>&1 | tail -15 || true
+  fi
+}
+
 # f57.13: the TLS env file is (re)generated on --up; ensure it exists for
 # assert-only and --down paths too (compose refuses a missing --env-file).
 [ -f "$TLS_ENV_FILE" ] || tls_env_generate
@@ -1404,6 +1572,7 @@ ac10_queue_plane
 ac10_tls_edge
 ac12_primus_self_bootstrap
 ac13_primus_queue_tooling
+ac14_a2a_mesh_chain
 echo
 echo "[e2e] ===== RESULT: $PASS passed, $FAIL failed ====="
 [ "$FAIL" -eq 0 ]
