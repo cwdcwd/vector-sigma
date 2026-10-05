@@ -87,6 +87,17 @@ RUN chmod 0755 /etc/cont-init.d/04-vs-a2a-wiring
 # ── Docs (vendored; source of truth = docs/ at the repo root) ─────────────
 COPY docs /opt/vs/docs
 
+# ── The gateway-memory plugin + install hook (fleet-ops-e5o.3) ────────────
+# Byte-pinned to deploy/gateway-memory/ (the drift test enforces parity
+# with the vendored copy this Dockerfile's context already carries). The
+# 06- hook installs it into $HERMES_HOME/plugins/ and seeds
+# plugins.enabled on every boot (PluginManager's allow-list gate — a
+# copied-but-unlisted plugin registers NOTHING). Memory KEYS arrive via
+# the bundle's extra_env, never baked. Lexically after 05-, fail-soft.
+COPY agent/gateway-memory /opt/vs/gateway-memory
+COPY agent/vs-memory-tools.sh /etc/cont-init.d/06-vs-memory-tools
+RUN chmod 0755 /etc/cont-init.d/06-vs-memory-tools
+
 # ── The identity gate as ENTRYPOINT ────────────────────────────────────────
 # The upstream image's ENTRYPOINT is the dispatcher; this image's gate
 # REPLACES it — identity first, then the gate execs the dispatcher so

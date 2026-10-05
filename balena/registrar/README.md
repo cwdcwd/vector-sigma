@@ -337,6 +337,42 @@ once the new one exists).
    each caller's own credential (per-caller identity — the ai.lan
    shape; no secret stored on the row).
 
+### Memory keys & the scoped key-creator key (e5o.3)
+
+Agent memory keys are minted PER AGENT by the registrar console's
+**Mint memory keys** action (device page → Actions): one click creates
+the two route-restricted gateway virtual keys (`memory-shared-<agent>` +
+`memory-private-<agent>`, `allowed_routes` locked to the memory API) and
+merges both into that device's bundle `config/agent.env` — delivery rides
+the existing bundle plane; the next device sync wires the plugin.
+
+The console NEVER uses the master key for this. It authenticates to the
+gateway with a **scoped key-creator key**: a virtual key bound to a
+`proxy_admin`-role user whose own `allowed_routes` is locked to exactly
+`/user/new`, `/team/new`, `/team/list`, `/team/member_add`,
+`/key/generate` (the mint surface). Source-verified on the pinned
+gateway tag: `allowed_routes` is a hard allowlist for every role
+including admins, so the creator key can mint keys and do nothing else.
+
+**One-time owner setup (per gateway):**
+
+1. `POST /user/new` with the master key:
+   `{"user_id": "key-creator", "user_alias": "registrar key creator", "user_role": "proxy_admin", "auto_create_key": false}`
+2. `POST /key/generate` with the master key:
+   `{"key_alias": "key-creator", "user_id": "key-creator", "allowed_routes": ["/user/new", "/team/new", "/team/list", "/team/member_add", "/key/generate"]}`
+3. Store the returned key ONLY in the registrar service env
+   (balenaCloud dashboard): `GATEWAY_KEY_CREATOR_KEY`.
+   Also set `GATEWAY_KEY_MINT_BASE_URL` = the gateway base the registrar
+   calls (`http://litellm:4000` compose-internal on the master).
+
+Without the creator key configured, the mint action refuses with the
+manual fallback (mint per agent by hand in the LiteLLM Admin UI, then
+paste the keys into the bundle editor's extra_env) — pre-authorized by
+the e5o.2 owner ruling; it never falls through to master-key use.
+See [docs/memory-conventions.md](../../docs/memory-conventions.md) for
+the store's operating discipline and
+[docs/gateway-ops.md](../../docs/gateway-ops.md) for the daily pass.
+
 ### Gateway health
 
 Healthcheck parity with the registrar service (`kill -0 1` process

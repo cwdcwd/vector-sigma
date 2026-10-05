@@ -12,7 +12,11 @@ balena/devices/
 ├── agent/
 │   ├── Dockerfile            # the RETIRED placeholder image (kept for history; not built since j7g.1)
 │   ├── gate.sh               # blocks on /data/agent/ready.marker, then execs the image's own entrypoint dispatcher
-│   └── vs-a2a-wiring.sh      # cont-init 04-: bundle → A2A_* env + config.yaml a2a section (j7g.1)
+│   ├── vs-a2a-wiring.sh      # cont-init 04-: bundle → A2A_* env + config.yaml a2a section (j7g.1)
+│   ├── vs-github-identity.py # GitHub App token wrapper (e5o.5; vendored from scripts/)
+│   ├── vs-github-identity.sh # cont-init 05-: bundle → GIT_CONFIG_* env (e5o.5)
+│   ├── gateway-memory/       # the memory plugin (e5o.3; vendored from deploy/gateway-memory/)
+│   └── vs-memory-tools.sh    # cont-init 06-: installs the plugin + seeds plugins.enabled (e5o.3)
 ├── docs/                     # vendored device-environment.md + queue-conventions.md (byte-pinned to docs/; NEVER the master's vs-environment.md — e5o.1)
 ├── registrant/               # VENDORED workspace sources (see below)
 │   ├── Dockerfile            # multi-stage: build → runtime (non-root)
@@ -83,3 +87,27 @@ dashboard-variable way (`TS_AUTHKEY` service-scoped to tailscale,
 - Update strategy: balena default (`download-then-kill`), generous
   `stop_grace_period` (60s agent / 30s registrant) for SIGTERM/WAL
   evidence standard.
+
+## Agent memory (e5o.3)
+
+Both Hermes images bake the `gateway-memory` plugin (vendored at
+`agent/gateway-memory/`, byte-pinned to `deploy/gateway-memory/` by the
+drift test) and the `06-vs-memory-tools` boot hook that installs it into
+`$HERMES_HOME/plugins/` and seeds `plugins.enabled` — the PluginManager
+allow-list gate; a copied-but-unlisted plugin registers nothing.
+
+The plugin's tools (`memory_get` / `memory_set` / `memory_list`) need two
+route-restricted gateway keys, delivered via the bundle's
+`config/agent.env` extra_env — minted per device by the registrar
+console's **Mint memory keys** action (see the registrar README) or by
+hand on the gateway (the pre-authorized fallback):
+
+```
+GATEWAY_MEMORY_SHARED_KEY=sk-…   # team-scoped, route-locked to /v1/memory
+GATEWAY_MEMORY_PRIVATE_KEY=sk-…  # no team scope — private entries
+FLEET_MEMORY_BASE_URL=https://<gateway-host>/v1
+```
+
+Operating discipline (list before write, key naming, what never belongs
+in the store): [docs/memory-conventions.md](../../docs/memory-conventions.md)
+— vendored into this app's `docs/` set.

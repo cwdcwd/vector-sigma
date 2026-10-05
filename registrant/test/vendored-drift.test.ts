@@ -56,6 +56,8 @@ const vendoredFiles = [
   ['registrar/src/auth.ts', 'balena/registrar/registrar/src/auth.ts'],
   ['registrar/src/clock.ts', 'balena/registrar/registrar/src/clock.ts'],
   ['registrar/src/config.ts', 'balena/registrar/registrar/src/config.ts'],
+  // e5o.3: the memory-key mint client is a registrar source — vendored
+  ['registrar/src/gateway-mint.ts', 'balena/registrar/registrar/src/gateway-mint.ts'],
   ['registrar/src/index.ts', 'balena/registrar/registrar/src/index.ts'],
   ['registrar/src/keys.ts', 'balena/registrar/registrar/src/keys.ts'],
   ['registrar/src/rate-limit.ts', 'balena/registrar/registrar/src/rate-limit.ts'],
@@ -100,12 +102,41 @@ const vendoredFiles = [
   // agents run the read-only probes) — one doc, one truth.
   ['docs/gateway-ops.md', 'balena/registrar/docs/gateway-ops.md'],
   ['docs/gateway-ops.md', 'balena/devices/docs/gateway-ops.md'],
+  // e5o.3: the memory conventions doc ships in BOTH images (every
+  // agent is its audience) — one doc, one truth.
+  ['docs/memory-conventions.md', 'balena/registrar/docs/memory-conventions.md'],
+  ['docs/memory-conventions.md', 'balena/devices/docs/memory-conventions.md'],
   // j7g.1: the A2A mesh wiring hook ships in THREE places — deploy/
   // (canonical), the devices agent image, and the registrar's primus
   // image — one file, three COPY targets, byte-pinned (the vs-entrypoint
   // pattern).
   ['deploy/vs-a2a-wiring.sh', 'balena/devices/agent/vs-a2a-wiring.sh'],
   ['deploy/vs-a2a-wiring.sh', 'balena/registrar/vs-a2a-wiring.sh'],
+  // e5o.3: the gateway-memory plugin ships in THREE places — deploy/
+  // gateway-memory/ (canonical), and the two balena app dirs the images
+  // COPY from — byte-pinned per file (the vs-entrypoint one-file pattern
+  // extended to the plugin's file set, provenance-sha256.txt included:
+  // the stamp is data, drift in IT is drift too).
+  ['deploy/gateway-memory/PROVENANCE.md', 'balena/registrar/gateway-memory/PROVENANCE.md'],
+  ['deploy/gateway-memory/README.md', 'balena/registrar/gateway-memory/README.md'],
+  ['deploy/gateway-memory/__init__.py', 'balena/registrar/gateway-memory/__init__.py'],
+  ['deploy/gateway-memory/plugin.yaml', 'balena/registrar/gateway-memory/plugin.yaml'],
+  ['deploy/gateway-memory/schemas.py', 'balena/registrar/gateway-memory/schemas.py'],
+  ['deploy/gateway-memory/tools.py', 'balena/registrar/gateway-memory/tools.py'],
+  ['deploy/gateway-memory/skills/gateway-memory/SKILL.md', 'balena/registrar/gateway-memory/skills/gateway-memory/SKILL.md'],
+  ['deploy/gateway-memory/provenance-sha256.txt', 'balena/registrar/gateway-memory/provenance-sha256.txt'],
+  ['deploy/gateway-memory/PROVENANCE.md', 'balena/devices/agent/gateway-memory/PROVENANCE.md'],
+  ['deploy/gateway-memory/README.md', 'balena/devices/agent/gateway-memory/README.md'],
+  ['deploy/gateway-memory/__init__.py', 'balena/devices/agent/gateway-memory/__init__.py'],
+  ['deploy/gateway-memory/plugin.yaml', 'balena/devices/agent/gateway-memory/plugin.yaml'],
+  ['deploy/gateway-memory/schemas.py', 'balena/devices/agent/gateway-memory/schemas.py'],
+  ['deploy/gateway-memory/tools.py', 'balena/devices/agent/gateway-memory/tools.py'],
+  ['deploy/gateway-memory/skills/gateway-memory/SKILL.md', 'balena/devices/agent/gateway-memory/skills/gateway-memory/SKILL.md'],
+  ['deploy/gateway-memory/provenance-sha256.txt', 'balena/devices/agent/gateway-memory/provenance-sha256.txt'],
+  // e5o.3: the memory-tools boot hook ships in THREE places — deploy/
+  // (canonical) + both balena app dirs (the a2a-wiring one-file pattern).
+  ['deploy/vs-memory-tools.sh', 'balena/registrar/vs-memory-tools.sh'],
+  ['deploy/vs-memory-tools.sh', 'balena/devices/agent/vs-memory-tools.sh'],
 ] as const;
 
 describe('balena vendored sources', () => {

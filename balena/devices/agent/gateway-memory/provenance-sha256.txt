@@ -1,0 +1,10 @@
+# sha256 of every gateway-memory plugin file at bake time (fleet-ops-e5o.3).
+# Regenerate: cd deploy/gateway-memory && sha256sum -- PROVENANCE.md README.md __init__.py plugin.yaml schemas.py tools.py skills/gateway-memory/SKILL.md > provenance-sha256.txt (excluding this file itself)
+# The image build verifies these; the drift test (registrar/test/gateway-memory.test.ts) enforces the vendored parity.
+bb21bf4987da02ae403901f41e6dc56509fc1fe1664ef0385b173bb35b4b48e4  PROVENANCE.md
+0e9e3f711e2316162223144959a22c41eafc38e1be75f98e0ff030bf6a856760  README.md
+9db6c7cc7d6a9f3a0b3dbf1453033649e3dce7dd416d32a784a7bd732fe87995  __init__.py
+f30098a9d1b0a18bc45b0fa4efd1f282495ea58b7524eda0498893bcfa4fa619  plugin.yaml
+fac736664d9f1ba88eedf84316d2efbf592182803a240cb8da282778bc17242a  schemas.py
+7485360135da820376758e36e4ffd9f5bde19cfaa35f2ed551c2abceef283135  tools.py
+7470518205e7349ba9e711dd21da8385fef9b6d622fa304e4692ae0ff1f41b86  skills/gateway-memory/SKILL.md

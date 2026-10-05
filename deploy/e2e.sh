@@ -1449,6 +1449,229 @@ except Exception as e:
   fi
 }
 
+# AC15 (e5o.3): the memory plane on the REAL gateway — mint shape, route
+# lock, and a PUT/GET round-trip with a REAL minted key. The harness stands
+# in for the console's mint action (CI has no registrar-console-to-gateway
+# creator key; the console mint path is unit-tested in
+# registrar/test/gateway-mint.test.ts). This asserts the GATEWAY side of
+# the design gate: /key/generate with allowed_routes locks the minted key
+# to the memory API (every role incl. admin — source-verified on the
+# pinned tag), and the memory store round-trips through it:
+#   1. mint a route-restricted memory key (master-key auth, like AC9b)
+#   2. the minted key CANNOT call /v1/models (403 — the route lock bites)
+#   3. PUT /v1/memory/<key> + GET round-trip through the minted key (200s,
+#      value byte-equal) — the AC(a) live probe
+#   4. DELETE + GET 404 (cleanup; proves the row was real and is gone)
+ac15_memory_plane() {
+  note "AC15: gateway memory plane — route-restricted mint + PUT/GET round-trip (e5o.3)"
+  local base="$GATEWAY_LB"
+  local master
+  master="$(grep -E '^LITELLM_MASTER_KEY=' "$ENV_FILE" | cut -d= -f2-)"
+  if [ -z "$master" ]; then
+    fail AC15 "LITELLM_MASTER_KEY missing from $ENV_FILE"
+    return
+  fi
+  local alias="e2e-ac15-memory-key"
+  local gen=/tmp/e2e-ac15-gen.json
+
+  # 1. mint — the same payload shape the registrar console mint sends
+  # (gateway-mint.ts): alias + user binding + the route lock.
+  local code
+  code="$(curl -s -o "$gen" -w '%{http_code}' -m 30 \
+      -X POST "$base/key/generate" \
+      -H "Authorization: Bearer $master" \
+      -H 'Content-Type: application/json' \
+      -d '{"key_alias": "'"$alias"'", "user_id": "agent-e2e-ac15", "allowed_routes": ["/v1/memory", "/v1/memory/*"]}' 2>/dev/null || true)"
+  expect "AC15 mint route-restricted key" "$code" "200"
+  if [ "$code" != "200" ]; then
+    note "generate body (self-diagnosis):"
+    tail -c 400 "$gen" 2>/dev/null || true
+    return
+  fi
+  local memkey
+  memkey="$(node -e 'const b=require(process.argv[1]);console.log(typeof b.key==="string"&&b.key.length>0?b.key:"")' "$gen" 2>/dev/null)" || memkey=""
+  if [ -z "$memkey" ]; then
+    fail "AC15 minted key present" "no key in generate response"
+    return
+  fi
+  pass "AC15 minted key present" "route-restricted memory key minted (alias $alias)"
+
+  # 2. the route lock bites: /v1/models through the memory key must 403.
+  local lock_code
+  lock_code="$(curl -s -o /tmp/e2e-ac15-lock.json -w '%{http_code}' -m 15 \
+      "$base/v1/models" \
+      -H "Authorization: Bearer $memkey" 2>/dev/null || true)"
+  if [ "$lock_code" = "403" ] || [ "$lock_code" = "401" ]; then
+    pass "AC15 route lock" "memory key refused on /v1/models ($lock_code) — allowed_routes is a hard allowlist"
+  else
+    fail "AC15 route lock" "/v1/models answered $lock_code through the memory key — want 401/403"
+  fi
+
+  # 3. PUT/GET round-trip through the minted key (the AC(a) live probe).
+  local mkey="fleet/status/e2e-ac15-round-trip"
+  local mval="e2e-ac15 value $(date -u +%H%M%S)"
+  local put_code
+  put_code="$(curl -s -o /tmp/e2e-ac15-put.json -w '%{http_code}' -m 15 \
+      -X PUT "$base/v1/memory/$(printf '%s' "$mkey" | sed 's|/|%2F|g')" \
+      -H "Authorization: Bearer $memkey" \
+      -H 'Content-Type: application/json' \
+      -d '{"value": "'"$mval"'"}' 2>/dev/null || true)"
+  expect "AC15 memory PUT" "$put_code" "200"
+  local got
+  got="$(curl -s -m 15 \
+      "$base/v1/memory/$(printf '%s' "$mkey" | sed 's|/|%2F|g')" \
+      -H "Authorization: Bearer $memkey" 2>/dev/null \
+      | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{console.log(JSON.parse(d).value??"")}catch{console.log("")}})' 2>/dev/null)" || got=""
+  if [ "$got" = "$mval" ]; then
+    pass "AC15 memory round-trip" "PUT then GET byte-equal through the minted key ($mkey)"
+  else
+    fail "AC15 memory round-trip" "GET returned '${got:-nothing}', want '$mval'"
+  fi
+
+  # 4. cleanup + the row was real: DELETE 200 then GET 404.
+  local del_code get_after
+  del_code="$(curl -s -o /dev/null -w '%{http_code}' -m 15 \
+      -X DELETE "$base/v1/memory/$(printf '%s' "$mkey" | sed 's|/|%2F|g')" \
+      -H "Authorization: Bearer $memkey" 2>/dev/null || true)"
+  expect "AC15 memory DELETE" "$del_code" "200"
+  get_after="$(curl -s -o /dev/null -w '%{http_code}' -m 15 \
+      "$base/v1/memory/$(printf '%s' "$mkey" | sed 's|/|%2F|g')" \
+      -H "Authorization: Bearer $memkey" 2>/dev/null || true)"
+  expect "AC15 memory gone after delete" "$get_after" "404"
+}
+
+# AC16 (e5o.3): the agent-side bake — plugin installed, allow-list seeded,
+# tools invocable in-container, and a memory write that survives a session
+# boundary (a FRESH process reading the SAME delivered env reads the row
+# the first process wrote — AC(c)). All inside the hermes container:
+#   1. the 06- hook ran: $HERMES_HOME/plugins/gateway-memory exists with
+#      the plugin files, no __pycache__, owned by the runtime user.
+#   2. config.yaml carries plugins.enabled [gateway-memory] (the
+#      PluginManager gate — copy alone registers nothing).
+#   3. the plugin module IMPORTS from its installed location (the AC(b)
+#      tool-invocation floor: an import failure is a registration
+#      failure at boot) and its tools answer through the delivered env
+#      keys against the compose gateway.
+#   4. session boundary: session-1 writes a row via the plugin's own
+#      tool handler; session-2 (a NEW python process, same env, no
+#      shared state) reads it back byte-equal.
+# The seeded bundle's memory keys are placeholders replaced at runtime by
+# AC15's minted keys via the hook's env — no: the bundle is delivered at
+# bootstrap, BEFORE this AC. Instead the harness exports the REAL minted
+# key into both sessions' env directly (the delivered-env simulation of a
+# re-mint + re-delivery), proving the plugin honors its env contract.
+ac16_agent_memory_tools() {
+  note "AC16: agent-side bake — plugin + allow-list + tool round-trip across a session boundary (e5o.3)"
+  local hcontainer="$PROJECT-hermes-1"
+  local base="http://litellm:4000/v1"
+  local master
+  master="$(grep -E '^LITELLM_MASTER_KEY=' "$ENV_FILE" | cut -d= -f2-)"
+  if [ -z "$master" ]; then
+    fail AC16 "LITELLM_MASTER_KEY missing from $ENV_FILE"
+    return
+  fi
+
+  # 1. the hook ran (cont-init chain, before the gateway process).
+  if docker exec "$hcontainer" test -f /data/primus/plugins/gateway-memory/tools.py 2>/dev/null \
+     && docker exec "$hcontainer" test -f /data/primus/plugins/gateway-memory/skills/gateway-memory/SKILL.md 2>/dev/null; then
+    pass "AC16 plugin installed" "gateway-memory under \$HERMES_HOME/plugins (06- hook ran)"
+  else
+    fail "AC16 plugin installed" "no /data/primus/plugins/gateway-memory — hook did not run; logs:"
+    docker logs "$hcontainer" 2>&1 | grep -i 'vs-memory-tools' | tail -10
+    return
+  fi
+  if docker exec "$hcontainer" test -d /data/primus/plugins/gateway-memory/__pycache__ 2>/dev/null; then
+    fail "AC16 no bytecode" "__pycache__ present in the installed plugin (COPY exclusion violated)"
+  else
+    pass "AC16 no bytecode" "no __pycache__ in the installed plugin"
+  fi
+
+  # 2. the allow-list gate (PluginManager): plugins.enabled seeded.
+  if docker exec "$hcontainer" sh -c \
+      "grep -A3 'plugins:' /data/primus/config.yaml 2>/dev/null | grep -q 'gateway-memory'" 2>/dev/null; then
+    pass "AC16 allow-list seeded" "config.yaml plugins.enabled carries gateway-memory (the PluginManager gate)"
+  else
+    fail "AC16 allow-list seeded" "plugins.enabled missing gateway-memory in /data/primus/config.yaml"
+    docker exec "$hcontainer" sh -c "cat /data/primus/config.yaml 2>/dev/null | head -30" || true
+    return
+  fi
+
+  # 3+4. tool invocation + session boundary. Mint a FRESH memory key (the
+  # delivered-env simulation), then two sequential python processes: one
+  # writes via the installed plugin's memory_set, the next reads via
+  # memory_get. A pass proves: import, env contract, HTTP client, gateway
+  # auth, and cross-process persistence — the AC(b)+AC(c) chain.
+  local gen=/tmp/e2e-ac16-gen.json
+  local code
+  code="$(curl -s -o "$gen" -w '%{http_code}' -m 30 \
+      -X POST "http://127.0.0.1:4000/key/generate" \
+      -H "Authorization: Bearer $master" \
+      -H 'Content-Type: application/json' \
+      -d '{"key_alias": "e2e-ac16-session-key", "user_id": "agent-e2e-ac16", "allowed_routes": ["/v1/memory", "/v1/memory/*"]}' 2>/dev/null || true)"
+  expect "AC16 mint session key" "$code" "200"
+  if [ "$code" != "200" ]; then return; fi
+  local skey
+  skey="$(node -e 'const b=require(process.argv[1]);console.log(typeof b.key==="string"&&b.key.length>0?b.key:"")' "$gen" 2>/dev/null)" || skey=""
+  if [ -z "$skey" ]; then
+    fail "AC16 session key present" "no key minted"
+    return
+  fi
+  pass "AC16 session key present" "route-restricted key minted for the session pair"
+
+  # session-1: write. NOTE: exports ride the exec env — the plugin reads
+  # os.environ, exactly the delivered-env contract.
+  local probe_key="fleet/status/e2e-ac16-cross-session"
+  local probe_val="ac16 value $$ $(date -u +%s)"
+  # Both sessions import the plugin the way the loader does (path-based
+  # importlib — the hyphenated dir name is not a package name).
+  # Package-context import: __init__.py's `from . import tools` needs the
+  # spec to carry submodule_search_locations (the loader's own posture —
+  # a bare file spec breaks relative imports).
+  local loader_prefix="import importlib.util; d='/data/primus/plugins/gateway-memory'; spec = importlib.util.spec_from_file_location('gm', d + '/__init__.py', submodule_search_locations=[d]); mod = importlib.util.module_from_spec(spec); import sys; sys.modules['gm'] = mod; spec.loader.exec_module(mod); tools = mod.tools"
+  local s1
+  s1="$(docker exec -e GATEWAY_MEMORY_SHARED_KEY="$skey" -e FLEET_MEMORY_BASE_URL="$base" \
+      "$hcontainer" /opt/hermes/.venv/bin/python -c "
+import sys
+$loader_prefix
+print(tools.memory_set({'key': sys.argv[1], 'value': sys.argv[2], 'scope': 'shared'}))
+" "$probe_key" "$probe_val" 2>&1 | tail -1 || true)"
+  if [ "$(printf '%s' "$s1" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const o=JSON.parse(d.slice(d.indexOf("{")));console.log(o.success===true?"ok":"no")}catch{console.log("no")}})' 2>/dev/null)" = "ok" ]; then
+    pass "AC16 session-1 write" "memory_set through the installed plugin answered success"
+  else
+    fail "AC16 session-1 write" "memory_set output: $(printf '%s' "$s1" | head -c 300)"
+    return
+  fi
+
+  # session-2: a FRESH process, same delivered env, reads the row back.
+  local s2
+  s2="$(docker exec -e GATEWAY_MEMORY_SHARED_KEY="$skey" -e FLEET_MEMORY_BASE_URL="$base" \
+      "$hcontainer" /opt/hermes/.venv/bin/python -c "
+import json, sys
+$loader_prefix
+out = json.loads(tools.memory_get({'key': sys.argv[1], 'scope': 'shared'}))
+print(out.get('value') if out.get('found') else 'NOT_FOUND')
+" "$probe_key" 2>&1 | tail -1 || true)"
+  if [ "$s2" = "$probe_val" ]; then
+    pass "AC16 cross-session read" "session-2 read back session-1's row byte-equal (survives the session boundary)"
+  else
+    fail "AC16 cross-session read" "session-2 got: $(printf '%s' "$s2" | head -c 200)"
+  fi
+
+  # cleanup: the probe row dies; the AC's evidence is the transcript.
+  docker exec -e GATEWAY_MEMORY_SHARED_KEY="$skey" -e FLEET_MEMORY_BASE_URL="$base" \
+    "$hcontainer" /opt/hermes/.venv/bin/python -c "
+import sys
+sys.path.insert(0, '/data/primus/plugins')
+from gateway_memory import tools
+import urllib.request, os, json
+key = tools._key_for_scope('shared')
+base = tools._base_url()
+req = urllib.request.Request(f'{base}/memory/' + urllib.parse.quote(sys.argv[1], safe=''), method='DELETE')
+req.add_header('Authorization', f'Bearer {key}')
+urllib.request.urlopen(req, timeout=10)
+" "$probe_key" >/dev/null 2>&1 || true
+}
+
 # f57.13: the TLS env file is (re)generated on --up; ensure it exists for
 # assert-only and --down paths too (compose refuses a missing --env-file).
 
@@ -1476,6 +1699,8 @@ ac10_tls_edge
 ac12_primus_self_bootstrap
 ac13_primus_queue_tooling
 ac14_a2a_mesh_chain
+ac15_memory_plane
+ac16_agent_memory_tools
 echo
 echo "[e2e] ===== RESULT: $PASS passed, $FAIL failed ====="
 [ "$FAIL" -eq 0 ]

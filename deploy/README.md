@@ -154,6 +154,17 @@ What the E2E proves, in order (the bead's acceptance criteria):
     structured canonical on the volume (merged agent.env, secrets.env,
     verbatim SOUL.md, a2a.json, github-app.pem), and the hermes
     container's stage2 boot artifacts prove the gated gateway launched.
+13. **Gateway memory plane (e5o.3, AC15)**: a REAL route-restricted
+    memory key minted on the compose gateway is REFUSED on `/v1/models`
+    (the `allowed_routes` hard allowlist bites for every role) and
+    round-trips `PUT`/`GET`/`DELETE` on `/v1/memory` byte-equal — the
+    live mint-shape + round-trip probe.
+14. **Agent memory tools (e5o.3, AC16)**: the 06- boot hook installed
+    the baked `gateway-memory` plugin under `$HERMES_HOME/plugins/` (no
+    `__pycache__`), `plugins.enabled` carries it (the PluginManager
+    gate), and the plugin's own tool handlers write a memory row in one
+    process that a FRESH process (same delivered env — the session
+    boundary) reads back byte-equal.
 
 The device service runs the real registrant image (`registrant/dist/index.js`)
 — the same container shape the balenaOS device app uses (f57.6), with
