@@ -8,3 +8,4 @@ coverage/
 # (deploy/.env.e2e.tls + material under deploy/.e2e-tls/). Never committed.
 deploy/.env.e2e.tls
 deploy/.e2e-tls/
+scripts/__pycache__/
