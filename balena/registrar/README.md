@@ -388,6 +388,51 @@ discipline live in [docs/gateway-ops.md](../../docs/gateway-ops.md)
 (fleet-ops-e5o.6): process liveness alone is a heartbeat, not health —
 the pass asserts a real completion through a working key on top.
 
+### A2A mesh enrollment (j7g.1 — the automated mint)
+
+Enrolling a device in the A2A mesh is ONE ACTION — no hand-minted
+gateway keys, no console bundle surgery. The registrar's mesh-enroll
+capability does the whole chain server-side:
+
+1. **Mint or open** the `vs-<agent>-a2a` sentinel key at the gateway —
+   the shape is HARDCODED in registrar code (models empty, tpm unset,
+   `allowed_routes` locked to `/a2a`, `/a2a/*`, `/v1/agents`); the
+   caller's payload cannot widen it (LiteLLM never constrains minted
+   children, so shape control lives server-side).
+2. **Merge BOTH sides' bundles**: the enrollee's `config/a2a.json`
+   gains `identity_key` + `public_url` + every existing peer in
+   `trusted_peers`/`peer_tokens`; each existing mesh peer's bundle
+   gains the enrollee (so calls resolve and are trusted both ways).
+3. **Register the card row** on the gateway (`POST /v1/agents`,
+   `extra_headers: ["Authorization"]` — per-caller identity, no stored
+   secret).
+4. **Audit every outcome** — success AND failure — in the registrar's
+   delivery_log.
+
+Two trigger paths:
+
+- **Console**: device page → **Enroll in A2A mesh** (owner-side, one
+  click). Re-runs are idempotent (an already-enrolled agent verifies +
+  heals, `action=open`).
+- **Machine**: `POST /v1/mesh-enroll` with a primus-scoped `mk_` key
+  (the **Mesh-enroll keys** console page mints one show-once; deleting
+  the row is the owner kill switch). Primus drives it with the baked
+  CLI: `vs-mesh-enroll <agent>` (reads `MESH_ENROLL_KEY` from the
+  bundle's `config/agent.env` — never an image layer). The API returns
+  `{alias, action, merged}` ONLY: key material never crosses to the
+  caller.
+
+**Decision table**: alias absent → MINT; alias live + bundle carries
+it → OPEN (verify + heal — also the path for the f57.14 owner-minted
+`vs-primus-a2a` sentinel); alias live + bundle carries nothing →
+REFUSE with the console revocation step (never orphan a live
+credential silently). A per-device mint rate limit (1/hour) stops a
+runaway caller from minting a fan of keys.
+
+**The primus authority clause** (owner ruling 2026-10-07) ships as
+[docs/soul-amendment-mesh-enroll.md](../../docs/soul-amendment-mesh-enroll.md)
+— the owner pastes it into primus's bundle SOUL.md at tag time.
+
 ## The VS queue (dolt + scotty) — f57.15
 
 The master composition also carries the VS fleet's own work queue:

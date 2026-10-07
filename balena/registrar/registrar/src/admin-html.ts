@@ -38,7 +38,7 @@ export interface BlobRowView {
 }
 
 function nav(csrfToken: string): string {
-  return `<nav class="nav"><a href="/admin/devices">Devices</a> <a href="/admin/audit">Audit</a> <a href="/admin/admin-keys">Admin keys</a> <a href="/admin/new-device">New device</a> <form method="post" action="/admin/logout" class="inline-form"><input type="hidden" name="_csrf" value="${esc(csrfToken)}"><button type="submit" class="linklike">Log out</button></form></nav>`;
+  return `<nav class="nav"><a href="/admin/devices">Devices</a> <a href="/admin/audit">Audit</a> <a href="/admin/admin-keys">Admin keys</a> <a href="/admin/mesh-enroll-keys">Mesh-enroll keys</a> <a href="/admin/new-device">New device</a> <form method="post" action="/admin/logout" class="inline-form"><input type="hidden" name="_csrf" value="${esc(csrfToken)}"><button type="submit" class="linklike">Log out</button></form></nav>`;
 }
 
 export interface PageOpts {
@@ -178,6 +178,7 @@ export function deviceDetailPage(v: DeviceDetailView): string {
 ${toggleForm}
 <form method="post" action="/admin/devices/${esc(d.balenaUuid)}/regen-key"><input type="hidden" name="_csrf" value="${esc(v.csrfToken)}"><button type="submit">Regenerate device key</button></form>
 <form method="post" action="/admin/devices/${esc(d.balenaUuid)}/mint-memory-keys"><input type="hidden" name="_csrf" value="${esc(v.csrfToken)}"><button type="submit">Mint memory keys</button></form>
+<form method="post" action="/admin/devices/${esc(d.balenaUuid)}/mesh-enroll"><input type="hidden" name="_csrf" value="${esc(v.csrfToken)}"><button type="submit">Enroll in A2A mesh</button></form>
 </div>`;
   return page(
     d.agentName,
@@ -495,6 +496,68 @@ export function adminKeyMintedPage(
 <div class="card"><h2>Admin key (label: ${esc(label)}) — shown once, never stored</h2><div class="secret-once">${esc(keyOnce)}</div>
 <p class="muted">Store it in your password manager NOW. It cannot be retrieved again.</p></div>
 <p>Row id ${keyId}. <a href="/admin/admin-keys">Back to admin keys</a></p>`,
+    { csrfToken },
+  );
+}
+
+/**
+ * Mesh-enroll machine keys (fleet-ops-j7g.1): primus's scoped key rows
+ * for the /v1/mesh-enroll action. Same custody shape as admin keys —
+ * mint show-once, revoke = kill switch — plus the agent binding (the
+ * key authenticates AS its agent row for the audit trail).
+ */
+export interface MeshEnrollKeyRowView {
+  id: number;
+  agentName: string;
+  lastUsedAt: Date | null;
+}
+
+export function meshEnrollKeysPage(
+  rows: MeshEnrollKeyRowView[],
+  csrfToken: string,
+  error?: string,
+): string {
+  const trs = rows
+    .map(
+      (r) => `<tr><td>${r.id}</td><td>${esc(r.agentName)}</td><td>${r.lastUsedAt ? esc(r.lastUsedAt.toISOString()) : 'never'}</td><td>
+<form method="post" action="/admin/mesh-enroll-keys/${r.id}/revoke"><input type="hidden" name="_csrf" value="${esc(csrfToken)}"><button type="submit" class="danger">Revoke</button></form>
+</td></tr>`,
+    )
+    .join('\n');
+  return page(
+    'Mesh-enroll keys',
+    `<h1>Mesh-enroll keys (primus machine auth)</h1>
+${error ? `<p class="danger">${esc(error)}</p>` : ''}
+<p class="muted">Scoped machine keys for the <code>/v1/mesh-enroll</code> action — primus authenticates with one to enroll agents into the A2A mesh (mint or open the sentinel <code>vs-&lt;agent&gt;-a2a</code> key, merge both sides' bundles, register the gateway card row). Deleting a row revokes it instantly (the owner kill switch). The key never mints gateway keys by itself — the registrar holds the mint credential; this key only triggers the registrar-side action.</p>
+<table>
+<tr><th>Id</th><th>Agent</th><th>Last used</th><th></th></tr>
+${trs}
+</table>
+<div class="card"><h2>Mint a new mesh-enroll key</h2>
+<p class="muted">Shown once on the next page. Give the value to the agent's operator (primus: set it as <code>MESH_ENROLL_KEY</code> on the service env — never in image layers). Rotation: mint the new one, deliver, revoke the old row.</p>
+<form method="post" action="/admin/mesh-enroll-keys">
+<input type="hidden" name="_csrf" value="${esc(csrfToken)}">
+<label>Agent name</label>
+<input type="text" name="agent_name" required pattern="[a-zA-Z0-9][a-zA-Z0-9_.-]*">
+<button type="submit">Mint key</button>
+</form>
+</div>`,
+    { csrfToken },
+  );
+}
+
+export function meshEnrollKeyMintedPage(
+  agentName: string,
+  keyOnce: string,
+  keyId: number,
+  csrfToken: string,
+): string {
+  return page(
+    'Mesh-enroll key minted',
+    `<h1>Mesh-enroll key minted</h1>
+<div class="card"><h2>Mesh-enroll key (agent: ${esc(agentName)}) — shown once, never stored</h2><div class="secret-once">${esc(keyOnce)}</div>
+<p class="muted">Store it in your password manager NOW. On primus, set it as the <code>MESH_ENROLL_KEY</code> service variable — never in image layers. It cannot be retrieved again.</p></div>
+<p>Row id ${keyId}. <a href="/admin/mesh-enroll-keys">Back to mesh-enroll keys</a></p>`,
     { csrfToken },
   );
 }

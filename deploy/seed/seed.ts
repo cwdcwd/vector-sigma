@@ -34,7 +34,7 @@ import { Client } from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { eq } from 'drizzle-orm';
 import { hashKey } from '../../registrar/dist/db/key-crypto.js';
-import { devices, identityBlobs, deliverySlots, deliveryLog } from '../../registrar/dist/db/schema.js';
+import { devices, identityBlobs, deliverySlots, deliveryLog, adminKeys, meshEnrollKeys } from '../../registrar/dist/db/schema.js';
 import type { IdentityBundle } from '../../shared/dist/index.js';
 
 const env = {
@@ -218,13 +218,25 @@ async function main(): Promise<void> {
   }
 
   // ---- f57.11: admin key row so e2e.sh can drive the REAL console flow.
-  const { adminKeys } = await import('../../registrar/dist/db/schema.js');
   const adminHash = await hashKey(env.adminKey);
   await db
     .insert(adminKeys)
     .values({ hash: adminHash, label: 'e2e-admin' })
     .onConflictDoNothing();
   console.log('[seed] admin key seeded (label e2e-admin)');
+
+  // ---- j7g.1: the mesh-enroll machine key row (primus-scoped mk_ class)
+  // so e2e.sh can drive the REAL machine-auth route. Hash-stored only —
+  // e2e.sh reads the plaintext from compose env (E2E_MESH_ENROLL_KEY).
+  const meshEnrollHash = await hashKey(process.env.E2E_MESH_ENROLL_KEY ?? 'mk_e2e-mesh-enroll-key');
+  await db
+    .insert(meshEnrollKeys)
+    .values({ hash: meshEnrollHash, agentName: 'primus' })
+    .onConflictDoUpdate({
+      target: meshEnrollKeys.agentName,
+      set: { hash: meshEnrollHash },
+    });
+  console.log('[seed] mesh-enroll machine key seeded (agent primus, j7g.1 E2E)');
 
   // ---- f57.14: primus — the coordinator's own device row (active) with a
   // FULL bundle carrying every structured canonical (the exact file set the

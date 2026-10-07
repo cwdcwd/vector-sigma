@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { eq, desc } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { devices, identityBlobs, deliveryLog, deliverySlots, adminKeys } from './db/schema.js';
+import { devices, identityBlobs, deliveryLog, deliverySlots, adminKeys, meshEnrollKeys } from './db/schema.js';
 import { keyFingerprint, hashKey } from './db/key-crypto.js';
 import { audit } from './audit.js';
 import { AuthRateLimiter } from './rate-limit.js';
@@ -19,7 +19,7 @@ import {
   type StructuredFields,
 } from './structured-fields.js';
 import { readSlot } from './slots.js';
-import { mintAdminKey } from './keys.js';
+import { mintAdminKey, mintMeshEnrollKey } from './keys.js';
 import {
   mintMemoryKeys,
   MintConfigError,
@@ -27,6 +27,7 @@ import {
   MEMORY_KEY_ENV_VARS,
   memoryKeyAlias,
 } from './gateway-mint.js';
+import { enrollAgent, MeshEnrollError, MeshMintRateLimiter, meshKeyAlias } from './mesh-enroll.js';
 import { BALENA_UUID_SHORT_RE, BALENA_UUID_CANONICAL_RE, normalizeBalenaUuid } from '@vector-sigma/shared';
 import type { Clock } from './clock.js';
 import type { RegistrarConfig } from './config.js';
@@ -480,6 +481,168 @@ export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): v
       occurredAt: clock.now(),
     });
     return reply.redirect('/admin/admin-keys', 303);
+  });
+
+  // ---------- Mesh-enroll machine keys (fleet-ops-j7g.1) ----------
+  //
+  // Primus-scoped keys for the machine-auth trigger path (/v1/mesh-enroll).
+  // Same console custody as admin keys: session + CSRF + show-once mint +
+  // revoke-as-kill-switch. The mint writes ONLY the argon2id hash; the
+  // plaintext renders once for the operator to move into the primus
+  // service env (MESH_ENROLL_KEY) — never into image layers.
+
+  app.get('/admin/mesh-enroll-keys', async (request, reply) => {
+    const session = await requireSession(request);
+    if (!session) return redirectToLogin(reply);
+    const rows = await db.select().from(meshEnrollKeys).orderBy(desc(meshEnrollKeys.id));
+    const view = rows.map((r) => ({
+      id: Number(r.id),
+      agentName: r.agentName,
+      lastUsedAt: r.lastUsedAt,
+    }));
+    return securityHeaders(reply)
+      .type('text/html')
+      .send(html.meshEnrollKeysPage(view, session.csrfToken));
+  });
+
+  app.post('/admin/mesh-enroll-keys', async (request, reply) => {
+    const session = await requireSession(request);
+    if (!session) return redirectToLogin(reply);
+    if (!(await csrfGate(request, session))) return reply.status(403).type('text/html').send(csrfErrorPage());
+    const body = (request.body ?? new Map<string, string>()) as Map<string, string>;
+    const agentName = (body.get('agent_name') ?? '').trim();
+    const renderError = async (msg: string) => {
+      const rows = await db.select().from(meshEnrollKeys).orderBy(desc(meshEnrollKeys.id));
+      const view = rows.map((r) => ({
+        id: Number(r.id),
+        agentName: r.agentName,
+        lastUsedAt: r.lastUsedAt,
+      }));
+      return securityHeaders(reply)
+        .status(400)
+        .type('text/html')
+        .send(html.meshEnrollKeysPage(view, session.csrfToken, msg));
+    };
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(agentName)) {
+      return renderError('Agent name is required ([a-zA-Z0-9_.-], starting alphanumeric).');
+    }
+    const key = mintMeshEnrollKey();
+    const rows = await db
+      .insert(meshEnrollKeys)
+      .values({ hash: await hashKey(key), agentName })
+      .returning({ id: meshEnrollKeys.id });
+    const keyId = Number(rows[0].id);
+    await audit(db, {
+      deviceId: null,
+      outcome: 'admin',
+      reason: 'mesh_enroll_key_minted',
+      keyId: null,
+      sourceIp: request.ip,
+      occurredAt: clock.now(),
+    });
+    return securityHeaders(reply)
+      .type('text/html')
+      .send(html.meshEnrollKeyMintedPage(agentName, key, keyId, session.csrfToken));
+  });
+
+  app.post('/admin/mesh-enroll-keys/:id/revoke', async (request, reply) => {
+    const session = await requireSession(request);
+    if (!session) return redirectToLogin(reply);
+    if (!(await csrfGate(request, session))) return reply.status(403).type('text/html').send(csrfErrorPage());
+    const id = Number((request.params as { id: string }).id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return reply.status(404).type('text/html').send(notFoundPage());
+    }
+    const revoked = await db
+      .delete(meshEnrollKeys)
+      .where(eq(meshEnrollKeys.id, id))
+      .returning({ id: meshEnrollKeys.id });
+    if (revoked.length === 0) return reply.status(404).type('text/html').send(notFoundPage());
+    await audit(db, {
+      deviceId: null,
+      outcome: 'admin',
+      reason: 'mesh_enroll_key_revoked',
+      keyId: null,
+      sourceIp: request.ip,
+      occurredAt: clock.now(),
+    });
+    return reply.redirect('/admin/mesh-enroll-keys', 303);
+  });
+
+  // ---------- Console mesh-enroll action (fleet-ops-j7g.1) ----------
+  //
+  // The owner-side trigger of the same enrollAgent core the machine
+  // path uses — one click per device, no primus key needed. Default
+  // URLs derive from the mint base URL's scheme+host (the served
+  // edge); the operator can override both in the form (e.g. point the
+  // origin at the device's tailnet address when it differs from the
+  // compose network).
+
+  app.post('/admin/devices/:uuid/mesh-enroll', async (request, reply) => {
+    const session = await requireSession(request);
+    if (!session) return redirectToLogin(reply);
+    if (!(await csrfGate(request, session))) return reply.status(403).type('text/html').send(csrfErrorPage());
+    const uuid = (request.params as { uuid: string }).uuid;
+    const loaded = await loadDevice(uuid);
+    if (!loaded) return reply.status(404).type('text/html').send(notFoundPage());
+    const agentName = loaded.device.agentName;
+
+    const body = (request.body ?? new Map<string, string>()) as Map<string, string>;
+    const baseUrl = (process.env['GATEWAY_KEY_MINT_BASE_URL'] ?? '').replace(/\/+$/, '');
+    const schemeHost = baseUrl !== '' ? baseUrl : 'https://vector-sigma.tailb7207e.ts.net:8443';
+    const defaultPublicUrl = `${schemeHost}`;
+    const defaultOriginUrl = `${schemeHost}/a2a/${agentName}`;
+    const publicUrl = (body.get('public_url') ?? '').trim() || defaultPublicUrl;
+    const originUrl = (body.get('origin_url') ?? '').trim() || defaultOriginUrl;
+
+    const enrollFailure = async (msg: string) => {
+      const reloaded = await loadDevice(uuid);
+      if (!reloaded) return reply.status(404).type('text/html').send(notFoundPage());
+      return securityHeaders(reply)
+        .type('text/html')
+        .send(
+          html.deviceDetailPage({
+            ...reloaded,
+            csrfToken: session.csrfToken,
+            messages: [{ kind: 'danger', text: msg }],
+          }),
+        );
+    };
+
+    let outcome;
+    try {
+      const mintLimiter = new MeshMintRateLimiter(clock);
+      outcome = await enrollAgent(db, process.env, agentName, {
+        keyId: null,
+        sourceIp: request.ip,
+        originUrl,
+        publicUrl,
+        clock,
+        mintLimiter,
+      });
+    } catch (err) {
+      const message =
+        err instanceof MeshEnrollError
+          ? `Mesh enroll failed (${err.code}): ${err.message}`
+          : 'Mesh enroll failed unexpectedly.';
+      return enrollFailure(message);
+    }
+    const reloaded = await loadDevice(uuid);
+    if (!reloaded) return reply.status(404).type('text/html').send(notFoundPage());
+    return securityHeaders(reply)
+      .type('text/html')
+      .send(
+        html.deviceDetailPage({
+          ...reloaded,
+          csrfToken: session.csrfToken,
+          messages: [
+            {
+              kind: 'ok',
+              text: `A2A mesh enrolled (${outcome.action}): key alias ${outcome.alias} — bundles merged both sides (v${outcome.bundleVersion}), gateway card row registered. Delivered on the next device sync.`,
+            },
+          ],
+        }),
+      );
   });
 
   // ---------- Session gate ----------

@@ -1560,6 +1560,137 @@ ac15_memory_plane() {
 # bootstrap, BEFORE this AC. Instead the harness exports the REAL minted
 # key into both sessions' env directly (the delivered-env simulation of a
 # re-mint + re-delivery), proving the plugin honors its env contract.
+# AC17 (j7g.1 mesh-enroll): the CAPABILITY itself, end to end through the
+# REAL machine-auth route — the lane's close condition exercised in CI.
+# The seeded primus machine key (mk_ class, hash row) drives
+# POST /v1/mesh-enroll for the E2E device agent:
+#   1. the route authenticates the mk_ key (a device key bounces 401)
+#   2. the registrar mints the vs-<agent>-a2a sentinel at the REAL
+#      gateway (shape hardcoded server-side: allowed_routes mesh-only,
+#      models empty, tpm unset — verified by /key/info read-back)
+#   3. the card row is registered on the gateway (GET /v1/agents lists it)
+#   4. BOTH sides merged: the enrollee's bundle carries identity_key +
+#      public_url + primus in trusted_peers/peer_tokens; primus's bundle
+#      carries the enrollee in trusted_peers/peer_tokens (delivery_log
+#      carries the admin row)
+#   5. THE CONTRACT: the 200 response carries alias/action/merged/
+#      bundle_version ONLY — no key material anywhere in the body
+#   6. the audit trail: mesh_enrolled_mint admin row + the machine-key
+#      row's last_used_at stamped
+ac17_mesh_enroll_capability() {
+  note "AC17: mesh-enroll capability — machine-auth mint + both-sides merge + card row (j7g.1)"
+  local base="$GATEWAY_LB"
+  local mk mesh_base
+  mk="$(grep -E '^E2E_MESH_ENROLL_KEY=' "$ENV_FILE" | cut -d= -f2-)"
+  [ -z "$mk" ] && mk="mk_e2e-mesh-enroll-key"
+  local agent="optimus-prime-e2e"
+  local alias="vs-${agent}-a2a"
+  mesh_base="http://127.0.0.1:3000"
+
+  # 0. enrollee device row + bundle: the seed's E2E device carries the
+  # name from E2E_AGENT_NAME; the enroll targets that agent.
+  agent="$(grep -E '^E2E_AGENT_NAME=' "$ENV_FILE" | cut -d= -f2-)"
+  [ -z "$agent" ] && agent="sim-deploy-e2e"
+  alias="vs-${agent}-a2a"
+
+  # 1. the machine-auth gate: a device key must bounce (401).
+  local bad_code
+  bad_code="$(curl -s -o /dev/null -w '%{http_code}' -m 20 \
+    -X POST "$mesh_base/v1/mesh-enroll" \
+    -H "Authorization: Bearer $E2E_DEVICE_KEY" \
+    -H 'Content-Type: application/json' \
+    -d "{\"agent_name\":\"$agent\",\"origin_url\":\"http://device:9900\",\"public_url\":\"http://litellm:4000\"}" 2>/dev/null || true)"
+  if [ "$bad_code" = "401" ]; then
+    pass "AC17 key-class rejection" "device key (bk_) refused on the mesh-enroll surface (401)"
+  else
+    fail "AC17 key-class rejection" "device key answered $bad_code (want 401)"
+  fi
+
+  # 2. the enroll through the REAL route (creator key bootstrap from
+  #    the master key fires in-process; sentinel mint at the gateway).
+  local body=/tmp/ac17-enroll.json code
+  code="$(curl -s -o "$body" -w '%{http_code}' -m 60 \
+    -X POST "$mesh_base/v1/mesh-enroll" \
+    -H "Authorization: Bearer $mk" \
+    -H 'Content-Type: application/json' \
+    -d "{\"agent_name\":\"$agent\",\"origin_url\":\"http://device:9900\",\"public_url\":\"http://litellm:4000\"}" 2>/dev/null || true)"
+  if [ "$code" != "200" ]; then
+    fail "AC17 enroll 200" "POST /v1/mesh-enroll answered $code: $(head -c 300 "$body" 2>/dev/null)"
+    return
+  fi
+  # 3. THE CONTRACT: alias + action + merged + bundle_version ONLY.
+  if node -e '
+    const b = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+    const keys = Object.keys(b).sort().join(",");
+    const ok = keys === "action,alias,bundle_version,merged" && b.alias === process.argv[2] && b.merged === true && (b.action === "mint" || b.action === "open");
+    process.stdout.write(ok ? "ok" : "bad:" + keys + ":" + JSON.stringify(b).slice(0, 200));
+  ' "$body" "$alias" 2>/dev/null | grep -q '^ok$'; then
+    pass "AC17 response contract" "200 body = {alias, action, merged, bundle_version} only — no key material"
+  else
+    fail "AC17 response contract" "body: $(head -c 300 "$body")"
+    return
+  fi
+
+  # 4. the sentinel shape at the REAL gateway: mesh-only routes, no models.
+  #    /key/list?return_full_object=true — the same probe the registrar's
+  #    own module uses (shape verified on the pinned tag).
+  local info=/tmp/ac17-keyinfo.json
+  code="$(curl -s -o "$info" -w '%{http_code}' -m 20 \
+    "$base/key/list?key_alias=$alias&return_full_object=true" \
+    -H "Authorization: Bearer $(grep -E '^LITELLM_MASTER_KEY=' "$ENV_FILE" | cut -d= -f2-)" 2>/dev/null || true)"
+  if [ "$code" = "200" ] \
+    && node -e '
+      const b = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+      const row = (b.keys ?? [])[0] ?? {};
+      const routes = JSON.stringify(row.allowed_routes ?? "MISSING");
+      const models = JSON.stringify(row.models ?? "MISSING");
+      process.stdout.write(routes.includes("/a2a") && routes.includes("/v1/agents") && models === "[]" ? "ok" : "bad:" + routes + " models=" + models);
+    ' "$info" 2>/dev/null | grep -q '^ok$'; then
+    pass "AC17 sentinel shape live" "vs-<agent>-a2a at the gateway: allowed_routes mesh-only, models empty"
+  else
+    fail "AC17 sentinel shape live" "key/list answered $code: $(head -c 300 "$info" 2>/dev/null)"
+  fi
+
+  # 5. the card row registered on the gateway.
+  code="$(curl -s -o /tmp/ac17-agents.json -w '%{http_code}' -m 20 \
+    "$base/v1/agents" \
+    -H "Authorization: Bearer $(grep -E '^LITELLM_MASTER_KEY=' "$ENV_FILE" | cut -d= -f2-)" 2>/dev/null || true)"
+  if [ "$code" = "200" ] && grep -q "\"$agent\"" /tmp/ac17-agents.json 2>/dev/null; then
+    pass "AC17 card row" "agent '$agent' listed on the VS gateway (/v1/agents)"
+  else
+    fail "AC17 card row" "/v1/agents answered $code; '$agent' row: $(grep -c "$agent" /tmp/ac17-agents.json 2>/dev/null || echo 0) hits"
+  fi
+
+  # 6. BOTH sides merged: the enrollee bundle carries the identity +
+  #    primus; primus's bundle carries the enrollee (delivery_log proof).
+  local enrolled_rows peer_rows
+  enrolled_rows="$(psql_count "outcome='admin' AND reason='mesh_enrolled_mint'")"
+  peer_rows="$(psql_count "outcome='admin' AND reason = 'mesh_peer_token_merged:' || '$agent'")"
+  if [ "$enrolled_rows" -ge 1 ]; then
+    pass "AC17 target merged" "mesh_enrolled_mint audit row present ($enrolled_rows)"
+  else
+    fail "AC17 target merged" "no mesh_enrolled_mint audit row"
+  fi
+  if [ "$peer_rows" -ge 1 ]; then
+    pass "AC17 peer merged" "mesh_peer_token_merged:$agent audit row present ($peer_rows)"
+  else
+    fail "AC17 peer merged" "no mesh_peer_token_merged:$agent audit row"
+  fi
+
+  # 7. idempotence: a second enroll is the OPEN heal (no double mint,
+  #    no error) — the re-run-completes-partial-failures contract.
+  code="$(curl -s -o /tmp/ac17-reopen.json -w '%{http_code}' -m 60 \
+    -X POST "$mesh_base/v1/mesh-enroll" \
+    -H "Authorization: Bearer $mk" \
+    -H 'Content-Type: application/json' \
+    -d "{\"agent_name\":\"$agent\",\"origin_url\":\"http://device:9900\",\"public_url\":\"http://litellm:4000\"}" 2>/dev/null || true)"
+  if [ "$code" = "200" ] && grep -q '"action":"open"' /tmp/ac17-reopen.json 2>/dev/null; then
+    pass "AC17 idempotent heal" "re-enroll answered 200 action=open (verify + heal, no re-mint)"
+  else
+    fail "AC17 idempotent heal" "re-enroll answered $code: $(head -c 200 /tmp/ac17-reopen.json 2>/dev/null)"
+  fi
+}
+
 ac16_agent_memory_tools() {
   note "AC16: agent-side bake — plugin + allow-list + tool round-trip across a session boundary (e5o.3)"
   local hcontainer="$PROJECT-hermes-1"
@@ -1701,6 +1832,7 @@ ac13_primus_queue_tooling
 ac14_a2a_mesh_chain
 ac15_memory_plane
 ac16_agent_memory_tools
+ac17_mesh_enroll_capability
 echo
 echo "[e2e] ===== RESULT: $PASS passed, $FAIL failed ====="
 [ "$FAIL" -eq 0 ]

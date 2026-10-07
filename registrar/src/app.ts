@@ -10,8 +10,10 @@ import {
 } from '@vector-sigma/shared';
 import { identityBlobs } from './db/schema.js';
 import { devices } from './db/schema.js';
+import { meshEnrollKeys } from './db/schema.js';
 import { extractBearer } from './auth.js';
 import { verifyKey, keyFingerprint, hashKey } from './db/key-crypto.js';
+import { mintMeshEnrollKey, isMeshEnrollKey, MESH_ENROLL_KEY_PREFIX } from './keys.js';
 import { AuthRateLimiter } from './rate-limit.js';
 import { systemClock, type Clock } from './clock.js';
 import { consumeSlot, ensureSlot, readSlot, retryAfterSeconds, effectiveState } from './slots.js';
@@ -20,7 +22,8 @@ import type { RegistrarConfig } from './config.js';
 import { registerAdminRoutes, cookieMap } from './admin.js';
 import { verifyAdminKey } from './admin-auth.js';
 import { rotateBundle, rearmSlot } from './rotate.js';
-import { RearmRequestSchema, RotateRequestSchema } from '@vector-sigma/shared';
+import { RearmRequestSchema, RotateRequestSchema, MeshEnrollRequestSchema } from '@vector-sigma/shared';
+import { enrollAgent, bootstrapCreatorKey, MeshEnrollError, MeshMintRateLimiter, MESH_CREATOR_KEY_ENV, MESH_MASTER_KEY_ENV, MESH_GATEWAY_BASE_URL_ENV } from './mesh-enroll.js';
 import { SessionManager, SESSION_COOKIE } from './session.js';
 
 export interface BuildOptions {
@@ -130,6 +133,17 @@ export function buildApp(opts: BuildOptions): FastifyInstance {
     limiter,
     sessions,
   });
+
+  /** Per-device mint rate limiter for the mesh-enroll action (j7g.1). */
+  const mintLimiter = new MeshMintRateLimiter(clock);
+
+  /**
+   * The in-process bootstrapped creator key (j7g.1 design call): null
+   * until the first mesh-enroll call bootstraps it from the composition
+   * master key. One mint per registrar process; a restart re-mints
+   * (self-heal). Never written anywhere but this closure.
+   */
+  let bootstrappedCreatorKey: string | null = null;
 
   /**
    * Front door (fleet-ops-f57.9): GET / must never 404. A live admin
@@ -432,7 +446,162 @@ export function buildApp(opts: BuildOptions): FastifyInstance {
     });
   });
 
-  app.post('/v1/rotate', async (request, reply) => {
+  /**
+ * Machine-auth for the mesh-enroll action (fleet-ops-j7g.1): a
+ * PRIMUS-SCOPED key class, distinct from device keys (bk_) and admin
+ * keys (ak_) at the prefix, so a device or admin key can never
+ * authenticate the enroll surface (structural separation, the keys.ts
+ * contract). Rows live in mesh_enroll_keys with argon2id hashes only —
+ * the owner kill switch is deleting the row, which revokes instantly.
+ * Mirrors the device-API auth pattern: Bearer + hash verify + per-IP
+ * limiter + audit; a per-DEVICE (per-agent) success counter guards the
+ * mint surface from runaway callers.
+ */
+async function meshEnrollGate(
+  db: NodePgDatabase,
+  request: FastifyRequest,
+  limiter: AuthRateLimiter,
+  clock: Clock,
+): Promise<
+  | { ok: true; keyId: string; agentName: string }
+  | { ok: false; status: 401 | 403 | 429; reason: string; locked: number | null }
+> {
+  const ip = request.ip;
+  const presentedKey = extractBearer(request);
+  if (presentedKey === null) {
+    return { ok: false, status: 401, reason: 'missing_key', locked: null };
+  }
+  if (limiter.lockedRetryAfter(ip) !== null) {
+    return { ok: false, status: 429, reason: 'rate_limited', locked: limiter.lockedRetryAfter(ip) };
+  }
+  // Structural rejection: device keys and admin keys never enter the
+  // hash-verify path of this surface.
+  if (isMeshEnrollKey(presentedKey) === false) {
+    limiter.recordFailure(ip);
+    return { ok: false, status: 401, reason: 'bad_key_class', locked: null };
+  }
+  const rows = await db.select().from(meshEnrollKeys);
+  let matched: { agentName: string } | null = null;
+  for (const row of rows) {
+    const ok = await verifyKey(row.hash, presentedKey).catch(() => false);
+    if (ok) {
+      matched = { agentName: row.agentName };
+      break;
+    }
+  }
+  if (matched === null) {
+    limiter.recordFailure(ip);
+    return { ok: false, status: 401, reason: 'bad_key', locked: null };
+  }
+  await db
+    .update(meshEnrollKeys)
+    .set({ lastUsedAt: clock.now() })
+    .where(eq(meshEnrollKeys.agentName, matched.agentName));
+  const fp = keyFingerprint(presentedKey) ?? 'unknown';
+  return { ok: true, keyId: fp, agentName: matched.agentName };
+}
+
+app.post('/v1/mesh-enroll', async (request, reply) => {
+  const gate = await meshEnrollGate(db, request, limiter, clock);
+  if (!gate.ok) {
+    if (gate.status === 429) {
+      return reply
+        .status(429)
+        .header('Retry-After', String(gate.locked ?? 1))
+        .send({ error: 'rate_limited', retry_after_seconds: gate.locked ?? 1 });
+    }
+    return reply.status(gate.status).send({ error: 'unauthorized' });
+  }
+  const keyId = gate.keyId;
+  const ip = request.ip;
+
+  const parsed = MeshEnrollRequestSchema.safeParse(request.body ?? {});
+  if (!parsed.success) {
+    await audit(db, {
+      deviceId: null,
+      outcome: 'denied',
+      reason: 'mesh_enroll_invalid_body',
+      keyId,
+      sourceIp: ip,
+      occurredAt: clock.now(),
+    });
+    return reply.status(400).send({ error: 'invalid_request' });
+  }
+  const { agent_name: agentName, origin_url: originUrl, public_url: publicUrl } = parsed.data;
+
+  // Resolve the creator key: env first, then the one-time registrar-side
+  // bootstrap (design call, flagged in the PR). The bootstrap is cached
+  // in-process — one mint per registrar process; a restart re-mints
+  // (the self-heal). The value never leaves this process's memory.
+  let env: Record<string, string | undefined> = { ...process.env };
+  if ((env[MESH_CREATOR_KEY_ENV] ?? '').trim() === '') {
+    if (bootstrappedCreatorKey === null) {
+      try {
+        bootstrappedCreatorKey = await bootstrapCreatorKey(db, env);
+      } catch (err) {
+        const reason = err instanceof MeshEnrollError ? err.code : 'mesh_enroll_bootstrap_failed';
+        await audit(db, {
+          deviceId: null,
+          outcome: 'denied',
+          reason: `mesh_enroll_bootstrap:${reason}`,
+          keyId,
+          sourceIp: ip,
+          occurredAt: clock.now(),
+        });
+        return reply.status(err instanceof MeshEnrollError ? err.status : 500).send({
+          error: 'not_configured',
+          reason: err instanceof Error ? err.message : 'creator key bootstrap failed',
+        });
+      }
+    }
+    env = { ...env, [MESH_CREATOR_KEY_ENV]: bootstrappedCreatorKey };
+  }
+
+  let outcome;
+  try {
+    outcome = await enrollAgent(db, env, agentName, {
+      keyId,
+      sourceIp: ip,
+      originUrl,
+      publicUrl,
+      clock,
+      mintLimiter,
+    });
+  } catch (err) {
+    if (err instanceof MeshEnrollError) {
+      return reply.status(err.status).send({ error: err.code, reason: err.message });
+    }
+    request.log.error({ err }, 'mesh enroll failed');
+    return reply.status(500).send({ error: 'internal_error' });
+  }
+
+  // The API returns alias + merged ONLY — key material never crosses
+  // to the caller (shape B's own constraint, kept verbatim).
+  return reply.status(200).send({
+    alias: outcome.alias,
+    action: outcome.action,
+    merged: outcome.merged,
+    bundle_version: outcome.bundleVersion,
+  });
+});
+
+app.get('/v1/mesh-enroll/status', async (request, reply) => {
+  const gate = await meshEnrollGate(db, request, limiter, clock);
+  if (!gate.ok) {
+    if (gate.status === 429) {
+      return reply
+        .status(429)
+        .header('Retry-After', String(gate.locked ?? 1))
+        .send({ error: 'rate_limited', retry_after_seconds: gate.locked ?? 1 });
+    }
+    return reply.status(gate.status).send({ error: 'unauthorized' });
+  }
+  // A cheap liveness probe for the CLI: no mint, no merge, no rate cost
+  // beyond the gate itself.
+  return reply.status(200).send({ ok: true, agent: gate.agentName });
+});
+
+app.post('/v1/rotate', async (request, reply) => {
     const gate = await adminGate(request);
     if (!gate.ok) {
       if (gate.status === 429) {

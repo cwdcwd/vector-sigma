@@ -10,6 +10,8 @@ import { randomUUID } from 'node:crypto';
 
 export const DEVICE_KEY_PREFIX = 'bk_';
 export const ADMIN_KEY_PREFIX = 'ak_';
+/** Primus-scoped machine keys for the mesh-enroll action (fleet-ops-j7g.1). */
+export const MESH_ENROLL_KEY_PREFIX = 'mk_';
 
 /** Mint a fresh device bootstrap key. */
 export function mintDeviceKey(): string {
@@ -21,6 +23,11 @@ export function mintAdminKey(): string {
   return `${ADMIN_KEY_PREFIX}${randomUUID()}`;
 }
 
+/** Mint a fresh mesh-enroll machine key (primus-scoped class). */
+export function mintMeshEnrollKey(): string {
+  return `${MESH_ENROLL_KEY_PREFIX}${randomUUID()}`;
+}
+
 /** Structurally a device key (prefix namespace). */
 export function isDeviceKey(key: string): boolean {
   return key.startsWith(DEVICE_KEY_PREFIX);
@@ -29,4 +36,9 @@ export function isDeviceKey(key: string): boolean {
 /** Structurally an admin key (prefix namespace). */
 export function isAdminKey(key: string): boolean {
   return key.startsWith(ADMIN_KEY_PREFIX);
+}
+
+/** Structurally a mesh-enroll machine key (prefix namespace). */
+export function isMeshEnrollKey(key: string): boolean {
+  return key.startsWith(MESH_ENROLL_KEY_PREFIX);
 }
