@@ -56,7 +56,7 @@ services:
       E2E_MESH_IDENTITY_KEY: ${LITELLM_MASTER_KEY:?set in deploy/.env.e2e}
       # j7g.1 (mesh-enroll AC17): the primus machine key for the REAL
       # /v1/mesh-enroll route — deterministic so e2e.sh can present it.
-      E2E_MESH_ENROLL_KEY: ${E2E_MESH_ENROLL_KEY:-mk_e2e-mesh-enroll-key}
+      E2E_MESH_ENROLL_KEY: ${E2E_MESH_ENROLL_KEY:-mk_e2e-00000000-0000-0000-0000-000000000004}
       # Short auto-rearm window so the re-delivery path is observable in
       # seconds (production default is 1 hour).
       SEED_REARM_SECONDS: ${SEED_REARM_SECONDS:-45}

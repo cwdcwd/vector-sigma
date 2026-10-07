@@ -1581,15 +1581,17 @@ ac17_mesh_enroll_capability() {
   note "AC17: mesh-enroll capability — machine-auth mint + both-sides merge + card row (j7g.1)"
   local base="$GATEWAY_LB"
   local mk mesh_base
-  mk="$(grep -E '^E2E_MESH_ENROLL_KEY=' "$ENV_FILE" | cut -d= -f2-)"
-  [ -z "$mk" ] && mk="mk_e2e-mesh-enroll-key"
+  # NOTE the '|| true' — the driver runs set -euo pipefail and a grep
+  # finding nothing must NOT kill the driver; the fallback covers it.
+  mk="$(grep -E '^E2E_MESH_ENROLL_KEY=' "$ENV_FILE" | cut -d= -f2- || true)"
+  [ -z "$mk" ] && mk="mk_e2e-00000000-0000-0000-0000-000000000004"
   local agent="optimus-prime-e2e"
   local alias="vs-${agent}-a2a"
   mesh_base="http://127.0.0.1:3000"
 
   # 0. enrollee device row + bundle: the seed's E2E device carries the
   # name from E2E_AGENT_NAME; the enroll targets that agent.
-  agent="$(grep -E '^E2E_AGENT_NAME=' "$ENV_FILE" | cut -d= -f2-)"
+  agent="$(grep -E '^E2E_AGENT_NAME=' "$ENV_FILE" | cut -d= -f2- || true)"
   [ -z "$agent" ] && agent="sim-deploy-e2e"
   alias="vs-${agent}-a2a"
 

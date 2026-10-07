@@ -228,7 +228,7 @@ async function main(): Promise<void> {
   // ---- j7g.1: the mesh-enroll machine key row (primus-scoped mk_ class)
   // so e2e.sh can drive the REAL machine-auth route. Hash-stored only —
   // e2e.sh reads the plaintext from compose env (E2E_MESH_ENROLL_KEY).
-  const meshEnrollHash = await hashKey(process.env.E2E_MESH_ENROLL_KEY ?? 'mk_e2e-mesh-enroll-key');
+  const meshEnrollHash = await hashKey(process.env.E2E_MESH_ENROLL_KEY ?? 'mk_e2e-00000000-0000-0000-0000-000000000004');
   await db
     .insert(meshEnrollKeys)
     .values({ hash: meshEnrollHash, agentName: 'primus' })
