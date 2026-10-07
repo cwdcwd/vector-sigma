@@ -76,7 +76,7 @@ const vendoredFiles = [
   ['shared/src/index.ts', 'balena/registrar/registrar/shared/src/index.ts'],
   ['shared/tsconfig.json', 'balena/registrar/registrar/shared/tsconfig.json'],
   ['registrar/drizzle/0000_yielding_morlun.sql', 'balena/registrar/registrar/drizzle/0000_yielding_morlun.sql'],
-  ['registrar/drizzle/0001_mesh_enroll_keys.sql', 'balena/registrar/registrar/drizzle/0001_mesh_enroll_keys.sql'],
+  ['registrar/drizzle/0001_mesh_enroll.sql', 'balena/registrar/registrar/drizzle/0001_mesh_enroll.sql'],
   ['registrar/drizzle/meta/0000_snapshot.json', 'balena/registrar/registrar/drizzle/meta/0000_snapshot.json'],
   ['registrar/drizzle/meta/0001_snapshot.json', 'balena/registrar/registrar/drizzle/meta/0001_snapshot.json'],
   ['registrar/drizzle/meta/_journal.json', 'balena/registrar/registrar/drizzle/meta/_journal.json'],
