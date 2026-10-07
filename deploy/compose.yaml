@@ -96,6 +96,18 @@ services:
       MIGRATE_ON_START: "true"
       SESSION_SECRET: ${SESSION_SECRET:?set in deploy/.env}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # j7g.1 mesh-enroll + e5o.3 memory-key mint: the registrar's gateway
+      # client config. GATEWAY_KEY_MINT_BASE_URL is STRUCTURAL (the
+      # compose-internal gateway address). LITELLM_MASTER_KEY reaches the
+      # registrar ONLY for the one-time creator-key bootstrap (when
+      # GATEWAY_KEY_CREATOR_KEY is unset, the registrar mints its own
+      # scoped key-creator key from the master; env-set creator key always
+      # wins and needs no master here — see docs/gateway-ops.md). On the
+      # balena fleet these arrive via fleet-variable cascade (master) and
+      # the documented e5o.3 service variable (base URL); plain compose has
+      # no cascade, so both are explicit.
+      GATEWAY_KEY_MINT_BASE_URL: http://litellm:4000
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?set in deploy/.env}
     depends_on:
       postgres:
         condition: service_healthy
