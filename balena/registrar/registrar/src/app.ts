@@ -624,7 +624,10 @@ app.post('/v1/rotate', async (request, reply) => {
       db,
       clock,
       uuid,
-      { kind: 'replace', files: files.map((f) => ({ path: f.path, mode: '0600', content: f.content })) },
+      // 1py.5: spread the validated entry whole — encoding rides along
+      // (picked keys here was the same stripping class the rotate core
+      // just lost).
+      { kind: 'replace', files: files.map((f) => ({ ...f })) },
       { keyId: gate.keyId, sourceIp: clientIp(request), reason: 'bundle_rotated_api' },
     );
     return reply.status(200).send({

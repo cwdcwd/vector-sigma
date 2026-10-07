@@ -31,13 +31,22 @@
  * the delivered gateway key.
  */
 
-/** Canonical bundle file paths the structured fields render into. */
+/**
+ * Canonical bundle file paths the structured fields render into.
+ * logo (fleet-ops-1py.5): the per-device binary avatar — NOT a structured
+ * form field (it arrives via multipart upload only, renderCanonicalFiles
+ * never touches it); it lives here because CANONICAL_PATHS is the single
+ * source of truth for canonical bundle paths (the upload handler and the
+ * logo read route both key off it, and the drift-guarded editor tests
+ * derive from this module).
+ */
 export const CANONICAL_PATHS = {
   agentEnv: 'config/agent.env',
   soul: 'SOUL.md',
   a2a: 'config/a2a.json',
   secretsEnv: 'config/secrets.env',
   githubAppPem: 'config/github-app.pem',
+  logo: 'assets/logo.png',
 } as const;
 
 /** Field names as they appear on the form and in the save payload. */

@@ -22,16 +22,17 @@ afterAll(async () => {
 
 export function makeBundle(
   v: number,
-  files?: Array<{ path: string; content: string }>,
+  files?: Array<{ path: string; content: string; encoding?: 'base64' }>,
 ): IdentityBundle {
   return {
     schema_version: 1,
     bundle_version: v,
     generated_at: new Date().toISOString(),
     files: (files ?? [{ path: '.env', content: `API_KEY=secret-v${v}\n` }]).map((f) => ({
-      path: f.path,
+      // 1py.5: spread whole — picked keys here would strip `encoding`
+      // from binary test payloads before the store ever sees them.
+      ...f,
       mode: '0600' as const,
-      content: f.content,
     })),
   };
 }
@@ -309,5 +310,59 @@ describe('identity store', () => {
     expect(await store.readBundle()).toBeNull();
     await store.applyBundle(makeBundle(3));
     expect((await store.readBundle())?.bundle_version).toBe(3);
+  });
+
+  // ---- fleet-ops-1py.5: base64 (binary) bundle files ---------------------
+
+  it('1py.5: base64-encoded file decodes to exact BYTES on disk', async () => {
+    const dir = await tempDataDir();
+    const store = new IdentityStore(dir);
+    // Binary PNG-shaped payload incl. NUL, high bytes, and the PNG magic —
+    // every byte class a UTF-8 text write would mangle.
+    const logoBytes = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      Buffer.from([0x00, 0xff, 0x80, 0x7f, 0xc3, 0x28]),
+    ]);
+    const b = makeBundle(1, [
+      { path: 'assets/logo.png', content: logoBytes.toString('base64'), encoding: 'base64' },
+    ]);
+    await store.applyBundle(b as never);
+    const onDisk = await readFile(path.join(dir, 'assets/logo.png'));
+    expect(Buffer.isBuffer(onDisk)).toBe(true);
+    expect(onDisk.equals(logoBytes)).toBe(true);
+    expect(await fileMode(path.join(dir, 'assets/logo.png'))).toBe(0o600);
+  });
+
+  it('1py.5: mixed bundle — text files unchanged, binary files decoded', async () => {
+    const dir = await tempDataDir();
+    const store = new IdentityStore(dir);
+    const logoBytes = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46]);
+    const b = makeBundle(1, [
+      { path: 'config/agent.env', content: 'AGENT_NAME=mixed\n' },
+      { path: 'assets/logo.png', content: logoBytes.toString('base64'), encoding: 'base64' },
+    ]);
+    await store.applyBundle(b as never);
+    expect(await readFile(path.join(dir, 'config/agent.env'), 'utf8')).toBe('AGENT_NAME=mixed\n');
+    expect((await readFile(path.join(dir, 'assets/logo.png'))).equals(logoBytes)).toBe(true);
+  });
+
+  it('1py.5: oversize base64 file (>256KB decoded) rejected whole-bundle', async () => {
+    const dir = await tempDataDir();
+    const store = new IdentityStore(dir);
+    const big = Buffer.alloc(256 * 1024 + 1, 0x41);
+    const b = makeBundle(1, [
+      { path: 'config/agent.env', content: 'A=b\n' },
+      { path: 'assets/huge.bin', content: big.toString('base64'), encoding: 'base64' },
+    ]);
+    await expect(store.applyBundle(b as never)).rejects.toThrow(/bundle rejected|256KB|over the/i);
+    expect(await store.isReady()).toBe(false);
+  });
+
+  it('1py.5: non-base64 (invalid) encoding value rejected by the shared schema', async () => {
+    const dir = await tempDataDir();
+    const store = new IdentityStore(dir);
+    const b = makeBundle(1, [{ path: 'a.txt', content: 'aa' }]);
+    (b.files[0] as Record<string, unknown>)['encoding'] = 'hex';
+    await expect(store.applyBundle(b as never)).rejects.toThrow(/bundle rejected/i);
   });
 });

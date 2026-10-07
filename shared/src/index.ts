@@ -21,8 +21,38 @@ export const BundleFileSchema = z.object({
   path: relativeSafePath,
   mode: z.literal(BUNDLE_FILE_MODE),
   content: z.string(),
+  /**
+   * Binary payload encoding (fleet-ops-1py.5). When present and 'base64',
+   * `content` is a standard base64 payload whose DECODED byte length must
+   * stay within LOGO/BINARY_MAX_DECODED_BYTES (the cap is enforced here —
+   * schema layer — and again in the console upload handler, so a
+   * hand-rolled /v1/rotate caller cannot smuggle a multi-MB blob past the
+   * console's 256KB upload limit). Absent = text content, written as-is
+   * (the pre-1py.5 contract every deployed registrant already implements —
+   * additive optional field, schema_version stays 1).
+   */
+  encoding: z.literal('base64').optional(),
+}).superRefine((f, ctx) => {
+  if (f.encoding === 'base64') {
+    const decoded = Buffer.byteLength(f.content, 'base64');
+    if (decoded > BINARY_MAX_DECODED_BYTES) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['content'],
+        message: `base64 file ${f.path} decodes to ${decoded} bytes — over the ${BINARY_MAX_DECODED_BYTES}-byte cap`,
+      });
+    }
+  }
 });
 export type BundleFile = z.infer<typeof BundleFileSchema>;
+
+/**
+ * Hard cap on any single binary (base64) bundle file, decoded bytes
+ * (fleet-ops-1py.5): large enough for a 64–256KB device logo, far too
+ * small for the 3.5MB docs/logo.png or any bulk exfil through the
+ * bundle plane (the blob rides Postgres and every rotate).
+ */
+export const BINARY_MAX_DECODED_BYTES = 256 * 1024;
 
 export const IdentityBundleSchema = z.object({
   schema_version: z.literal(BUNDLE_SCHEMA_VERSION),
