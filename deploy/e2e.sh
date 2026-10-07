@@ -1399,10 +1399,24 @@ except Exception as e:
   # 3. gateway registration: the README runbook's card-registration step,
   #    extra_headers = Authorization forwarding (per-caller identity).
   reg_body='{"agent_name":"primus","agent_card_params":{"protocolVersion":"1.0","name":"primus","description":"VS coordinator Hermes (e2e)","url":"http://hermes:9900","version":"1.0.0","capabilities":{"streaming":false},"defaultInputModes":["text"],"defaultOutputModes":["text"],"skills":[]},"litellm_params":{},"extra_headers":["Authorization"]}'
-  reg_code="$(curl -s -o /tmp/ac14-reg.json -w '%{http_code}' -m 20 \
-    "$base/v1/agents" \
-    -H "Authorization: Bearer $master" \
-    -H 'Content-Type: application/json' -d "$reg_body" 2>/dev/null || true)"
+  reg_code=""
+  # Bounded retry (j7g.1, run-5 evidence): POST /v1/agents answered a
+  # gateway-internal 500 once on a fresh CI volume ('Error adding agent
+  # to DB: NoneType .get' — a prisma serialization path) after four
+  # green runs of the identical payload. A transient 5xx gets 3 spaced
+  # attempts; 200/409/400 land as before, anything else fails with the
+  # body. The assertion itself is unchanged — only the HTTP call
+  # re-attempts.
+  for reg_attempt in 1 2 3; do
+    reg_code="$(curl -s -o /tmp/ac14-reg.json -w '%{http_code}' -m 20 \
+      "$base/v1/agents" \
+      -H "Authorization: Bearer $master" \
+      -H 'Content-Type: application/json' -d "$reg_body" 2>/dev/null || true)"
+    case "$reg_code" in
+      200|409|400) break ;;
+      5*) [ "$reg_attempt" -lt 3 ] && sleep 5 ;;
+    esac
+  done
   # idempotence: a prior run's row with the same name 409s — treat both as
   # registered (the name is UNIQUE; the row already serving is the goal).
   if [ "$reg_code" = "200" ] || [ "$reg_code" = "409" ] || [ "$reg_code" = "400" ]; then

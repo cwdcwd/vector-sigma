@@ -98,9 +98,9 @@ describe('mesh-enroll sentinel shape is hardcoded server-side (j7g.1)', () => {
     const block = moduleSrc.slice(moduleSrc.indexOf('export async function bootstrapCreatorKey'));
     expect(block).toMatch(/MESH_MASTER_KEY_ENV/);
     expect(block).toMatch(/key-creator/);
-    // The route lock: the e5o.3 mint surface + /v1/agents (the enroll's
-    // card-row registration rides the creator key).
-    expect(block).toMatch(/allowed_routes: \[\n\s+'\/user\/new',\n\s+'\/team\/new',\n\s+'\/team\/list',\n\s+'\/team\/member_add',\n\s+'\/key\/generate',\n\s+'\/v1\/agents',\n\s+\]/);
+    // The creator route lock: the e5o.3 mint surface + the enroll's own
+    // surface (/key/list liveness probe + /v1/agents registration).
+    expect(block).toMatch(/allowed_routes: \[\n\s+'\/user\/new',\n\s+'\/team\/new',\n\s+'\/team\/list',\n\s+'\/team\/member_add',\n\s+'\/key\/generate',\n\s+'\/key\/list',\n\s+'\/v1\/agents',\n\s+\]/);
     expect(block).toMatch(/gatewayCreatorKey/);
     // the route only bootstraps when the env var is unset
     expect(appSrc).toMatch(/\(env\[MESH_CREATOR_KEY_ENV\] \?\? ''\)\.trim\(\) === ''/);

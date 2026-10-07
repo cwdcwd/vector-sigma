@@ -359,7 +359,8 @@ describe('creator-key bootstrap (registrar-side design call)', () => {
       ([, init]) => String((init?.headers as Record<string, string>)?.authorization),
     );
     expect(authHeaders.every((h) => h === 'Bearer sk-master-test')).toBe(true);
-    // The creator route lock includes the mint surface + /v1/agents
+    // The creator route lock includes the mint surface + /key/list (the
+    // liveness probe) + /v1/agents (the card-row registration)
     const gen = calls.find((c) => c.url.includes('/key/generate'));
     expect(gen?.body?.allowed_routes).toEqual([
       '/user/new',
@@ -367,6 +368,7 @@ describe('creator-key bootstrap (registrar-side design call)', () => {
       '/team/list',
       '/team/member_add',
       '/key/generate',
+      '/key/list',
       '/v1/agents',
     ]);
     // marker row persisted (hash only)

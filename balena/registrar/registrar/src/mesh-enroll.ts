@@ -648,14 +648,17 @@ export async function bootstrapCreatorKey(
   const mintRes = await gatewayCall(cfg, 'POST', '/key/generate', {
     key_alias: 'key-creator',
     user_id: 'key-creator',
-    // The e5o.3 mint surface + /v1/agents (the enroll's card-row
-    // registration rides the creator key too).
+    // The e5o.3 mint surface + the enroll's own surface (the liveness
+    // probe reads /key/list; the card-row registration rides
+    // /v1/agents) — the union both mint actions share on a
+    // bootstrapped gateway.
     allowed_routes: [
       '/user/new',
       '/team/new',
       '/team/list',
       '/team/member_add',
       '/key/generate',
+      '/key/list',
       '/v1/agents',
     ],
   });

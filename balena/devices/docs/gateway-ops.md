@@ -365,9 +365,9 @@ key can ride the mesh and nothing else — no model calls, no key
 management, no memory routes.
 
 **The creator key now also serves the mesh-enroll action.** Its
-`allowed_routes` lock extends the e5o.3 mint surface with `/v1/agents`
-(the enroll registers the agent's card row through the same scoped
-key). Two provisioning shapes, in priority order:
+`allowed_routes` lock extends the e5o.3 mint surface with `/key/list`
+(the enroll's liveness probe) and `/v1/agents` (the card-row
+registration). Two provisioning shapes, in priority order:
 
 1. `GATEWAY_KEY_CREATOR_KEY` set on the registrar service env (the
    e5o.3 owner setup) — used as-is; nothing changes.
