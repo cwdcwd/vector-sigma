@@ -1,0 +1,12 @@
+{
+  "TCP": {
+    "9900": { "HTTPS": true }
+  },
+  "Web": {
+    "${TS_CERT_DOMAIN}:9900": {
+      "Handlers": {
+        "/": { "Proxy": "http://127.0.0.1:9900" }
+      }
+    }
+  }
+}

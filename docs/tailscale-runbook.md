@@ -199,9 +199,9 @@ IS the TLS front door. What shipped:
 - **The master's tailscale service becomes a BUILD**:
   `balena/registrar/Dockerfile.tailscale` (FROM the same pinned
   `v1.102.5`) bakes `serve-config.json`; the compose sets
-  `TS_SERVE_CONFIG=/serve-config.json`. The devices fleet's tailscale
-  service stays on the stock image — devices join, they serve
-  nothing.
+  `TS_SERVE_CONFIG=/serve-config.json`. ~~The devices fleet's tailscale
+  service stays on the stock image~~ — superseded by the j7g.1 serve
+  form below (the devices now serve their own agent origin).
 - **The serve config** (the containerboot v1.102.5 dialect, verified
   from the pinned tag's own source — `cmd/containerboot/serve.go`):
   `TCP` map keyed by port with `HTTPS:true` (443/8443/8444); `Web`
@@ -262,6 +262,79 @@ Failure modes:
 - Everything else inherits the phase-1a failure modes (no
   application role; a dead tailscaled costs tailnet reachability
   only).
+
+## Phase 3: the devices' agent-origin serve edge (fleet-ops-j7g.1 — the AC3 serve form, owner decision 2026-10-08)
+
+The owner picked the TAILSCALE SERVE form for the AC3 live-leg
+origin ("can't tailscale handle that?" → "get it done, my friend.
+Drive this thing home"): the same serve-only TLS edge pattern the
+master's phase-2 release established, extended to the devices fleet
+for exactly ONE surface — the agent's A2A origin (:9900), the
+address the master gateway's proxy dials to deliver peer traffic.
+The live enroll's `origin_url` is the SERVE form
+(`https://<device>.tailb7207e.ts.net:9900`), never a tailnet IP +
+firewall, never a `:9900` host publish.
+
+What ships (repo-side, `balena/devices/`):
+
+- **`Dockerfile.tailscale` + `serve-config.json`** — the devices
+  fleet's tailscale service becomes a BUILD (FROM the same pinned
+  `v1.102.5`), baking a serve config that fronts `:9900` at the
+  node's own MagicDNS name, proxying the agent's loopback publish.
+- **The `${TS_CERT_DOMAIN}` placeholder** (the ONE deliberate
+  dialect delta vs the master's literal bake): the devices fleet is
+  N devices from one compose, so the `Web` map keys on
+  `${TS_CERT_DOMAIN}:9900` and containerboot substitutes each node's
+  own FQDN at apply time (`readServeConfig`'s `bytes.ReplaceAll`,
+  verified at the pinned tag; the cert domain is the netmap's
+  `CertDomains[0]`, the master's live LE certs prove the field is
+  populated). Each device serves at
+  `https://<device>.tailb7207e.ts.net:9900` with its own Let's
+  Encrypt certificate — provisioned automatically under the
+  tailnet-wide HTTPS enable already live (the lnf owner
+  prerequisite).
+- **The agent service publishes `127.0.0.1:9900:9900` loopback
+  ONLY** (the master's lnf publish pattern) — the LAN front door
+  stays dark; the serve edge is the only path to the origin.
+
+Access is the tailnet ACL story: the caller of a device origin is
+the MASTER gateway (the mesh proxy), so the policy needs a
+`tag:vs-master → tag:vs-agent:*` accept — the REVERSE of the
+phase-1a rule the runbook shipped (which covers agent→master). An
+ACL gap presents exactly as a dark data plane: disco pongs answer
+while TCP to the device's tailnet IP times out and the device's
+`ts-input` counter never moves — probe the counter, not the ping
+(`tailscale ping` is control-plane evidence only, per the phase-1a
+canary lesson).
+
+Deploy sequencing: tag `devices-v*` → canary (optimus-prime) pins →
+verify (below) → fleet pin → clear. The tailscale container
+recreates on the image change; the serve config applies on the
+first netmap update after boot.
+
+Canary additions (on top of the standing per-device set):
+
+- [ ] On-device loopback: `127.0.0.1:9900` answers from the device
+  host shell (the publish landed).
+- [ ] Served origin from a TAILNET vantage:
+  `https://<device>.tailb7207e.ts.net:9900/health` → 200, strict
+  TLS (no `-k`; issuer = Let's Encrypt), SNI pinned with
+  `--resolve` where the vantage's resolver cannot reach MagicDNS.
+- [ ] Serve config read back OUT of the running container
+  (`tailscale serve status`) — the container proves the bake landed,
+  not the git tree.
+- [ ] LAN front door dark: `:9900` at the device's LAN IP REFUSED.
+
+Failure modes:
+
+- Serve config never applied → the HTTPS-disabled refusal line
+  (phase-2 prerequisite — already live; the master's certs are the
+  proof) or a placeholder substitution failure (the `Web` key
+  substituted EMPTY means the node's netmap carried no cert domain
+  — re-check the tailnet's MagicDNS/HTTPS posture before touching
+  the config).
+- An origin probe timing out while `tailscale ping` pongs → the ACL
+  gap above; fix the policy, not the device.
 
 ## Canary evidence (per device, per release)
 
