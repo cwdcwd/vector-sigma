@@ -340,7 +340,7 @@ describe('1py.5 — detail page logo card', () => {
     const c = await loginClient();
     const before = await c.get(`/admin/devices/${env.device.uuid}`);
     expect(before.status).toBe(200);
-    expect(before.html).toContain('No logo yet.');
+    expect(before.html).toContain('No logo yet — upload one to see it in the device list.');
     expect(before.html).toContain('enctype="multipart/form-data"');
 
     const csrf = await detailCsrf(c);
