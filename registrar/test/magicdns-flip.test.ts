@@ -5,7 +5,8 @@ import { describe, expect, it } from 'vitest';
 
 /**
  * MagicDNS endpoint-flip guard (fleet-ops-lrb, j7g phase 1b;
- * REWORKED fleet-ops-lnf, phase 2 — the serve-only edge).
+ * REWORKED fleet-ops-lnf, phase 2 — the serve-only edge;
+ * REWORKED fleet-ops-lfk — the proxy-dial pin).
  *
  * The fleet's endpoint contract flipped (phase 1b) to the tailnet's
  * MagicDNS name; the canary (2026-10-02) DECIDED the mechanism:
@@ -25,14 +26,25 @@ import { describe, expect, it } from 'vitest';
  * and the TS_MASTER_DNS variable (the serve config bakes the FQDN
  * literally).
  *
+ * lfk (2026-10-08) ADDS the proxy-dial pin: the litellm service —
+ * the A2A proxy — gained a ts.net DIALING role (it follows a
+ * registered agent's origin card and dials the advertised url, the
+ * master's own name AND each enrolled device's serve name), so the
+ * URL-consumer rule now covers it too. The pin set a service needs
+ * is written for the ROLES it holds, not blanket; postgres/dolt/
+ * scotty/registrar/registrant-own/tailscale still carry no pin (no
+ * ts.net dialing role).
+ *
  * This test pins:
  *   1. The extra_hosts pin pair — byte-identical on every URL
  *      consumer: devices compose agent + registrant (REGISTRAR_URL),
  *      registrar compose hermes (GATEWAY_URL/A2A_PUBLIC_URL).
- *   2. The pin stays per-need: services that talk compose-internal
- *      names carry no pin.
- *   3. Provision-then-flip: no compose ships a flipped URL value.
- *   4. The serve config (the edge's fronting) keys on the SAME FQDN
+ *   2. The litellm proxy-dial pins (lfk): the master's own name +
+ *      every ENROLLED device serve name, one line each.
+ *   3. The pin stays per-need: services with no ts.net dialing role
+ *      carry no pin.
+ *   4. Provision-then-flip: no compose ships a flipped URL value.
+ *   5. The serve config (the edge's fronting) keys on the SAME FQDN
  *      the pins carry — one name, every surface.
  *
  * Full-line comments are stripped before scanning.
@@ -92,14 +104,34 @@ describe.each([
     }
   });
 
-  it('pins the pin to the URL consumers only (no blanket fleet pin)', () => {
-    // The pin is per-need: a service that talks compose-internal names
-    // (postgres, litellm, scotty, dolt, registrar, tailscale,
-    // registrant-own) must NOT gain it.
+  it('lfk: the litellm proxy dials ts.net too — its pin set covers the roles (master edge host + enrolled device serve names)', () => {
+    // The A2A proxy (litellm) follows a registered agent's origin card
+    // and dials the ADVERTISED url: the master's own MagicDNS name and
+    // each enrolled device's serve name. Without the pin every dial
+    // died gaierror (live-proven 2026-10-08, Defect A).
+    if (code !== balenaRegistrar) return; // the proxy lives on the master
+    const block = serviceBlock(code, 'litellm');
+    expect(block).toContain('extra_hosts');
+    // the master's own name (the card-rewrite host):
+    expect(block).toMatch(
+      new RegExp(`^\\s*- "${PIN_NAME.replace(/\./g, '\\.')}:${PIN_IP}"$`, 'm'),
+    );
+    // every ENROLLED device serve name carries a pin line (one per
+    // device — extra_hosts has no substitution path under the
+    // supervisor; the enrolled set today: optimus-prime):
+    expect(block).toMatch(
+      /^\s*- "optimus-prime\.tailb7207e\.ts\.net:100\.99\.56\.18"$/m,
+    );
+  });
+
+  it('pins the pin to the URL/dial consumers only (no blanket fleet pin)', () => {
+    // The pin is per-need, written for the ROLES a service holds:
+    // compose-internal-only services carry no pin. litellm gained a
+    // ts.net DIALING role at lfk and is pinned (the test above);
+    // these hold no ts.net role at all:
     const internal = [
       'postgres',
       'registrar',
-      'litellm',
       'dolt',
       'scotty',
       'registrant-own',

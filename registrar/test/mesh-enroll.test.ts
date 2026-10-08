@@ -81,6 +81,23 @@ describe('mesh-enroll sentinel shape is hardcoded server-side (j7g.1)', () => {
     expect(moduleSrc).toMatch(/mintAllowed\(agentName\)/);
   });
 
+  it('lfk: loop-form URLs are refused server-side, before any mint or merge', () => {
+    // The live AC3 Defect B fix: an edge/foreign-tailnet public_url
+    // loops the gateway's proxy — refused with 'loop_url'.
+    expect(moduleSrc).toMatch(/export function assertNoLoopUrl/);
+    expect(moduleSrc).toMatch(/assertNoLoopUrl\(agentName, opts\.originUrl, 'origin_url'\)/);
+    expect(moduleSrc).toMatch(/assertNoLoopUrl\(agentName, opts\.publicUrl, 'public_url'\)/);
+    expect(moduleSrc).toMatch(/'loop_url'/);
+    // the refusal fires BEFORE the gateway config resolve (no mint, no merge):
+    const refuseIdx = moduleSrc.indexOf('assertNoLoopUrl(agentName, opts.originUrl');
+    const cfgIdx = moduleSrc.indexOf('let cfg: GatewayConfig');
+    expect(refuseIdx).toBeGreaterThan(-1);
+    expect(refuseIdx).toBeLessThan(cfgIdx);
+    // the device serve form derivation (the CLI/console default shape):
+    expect(moduleSrc).toMatch(/export function deviceServeUrl/);
+    expect(moduleSrc).toMatch(/https:\/\/\$\{agentName\}\$\{MESH_TAILNET_SUFFIX\}:9900/);
+  });
+
   it('audit rows on failures, not just successes', () => {
     expect(moduleSrc).toMatch(/mesh_enroll_mint_failed/);
     expect(moduleSrc).toMatch(/mesh_enroll_register_failed/);
@@ -164,6 +181,23 @@ describe('vs-mesh-enroll CLI: thin, bundle-auth, drift-pinned (j7g.1)', () => {
     expect(cliSrc).toMatch(/config.*agent\.env|agent\.env/s);
     // the CLI never reads or prints key material from the API response
     expect(cliSrc).not.toMatch(/identity_key/);
+  });
+
+  it('lfk: the default public_url is the device serve form — NEVER $A2A_PUBLIC_URL', () => {
+    // The live Defect B vector: the CLI derived --public-url from the
+    // caller's own $A2A_PUBLIC_URL (the mesh edge) and baked the loop
+    // form into the enrollee's bundle. The default is now derived
+    // from the AGENT NAME (its serve form), and A2A_PUBLIC_URL is
+    // never a public_url source.
+    expect(cliSrc).toMatch(/def device_serve_url/);
+    expect(cliSrc).toMatch(/MESH_TAILNET_SUFFIX = "\.tailb7207e\.ts\.net"/);
+    expect(cliSrc).toMatch(/public_url = args\.public_url or device_serve_url\(args\.agent\)/);
+    expect(cliSrc).not.toMatch(/resolve_public_url/);
+    // the derivation order: public first, then origin = <public>/a2a/<agent>
+    const pubIdx = cliSrc.indexOf('public_url = args.public_url or device_serve_url(args.agent)');
+    const orgIdx = cliSrc.indexOf('origin_url = args.origin_url or');
+    expect(pubIdx).toBeGreaterThan(-1);
+    expect(pubIdx).toBeLessThan(orgIdx);
   });
 
   it('returns {alias, merged} only — never echoes key fields', () => {

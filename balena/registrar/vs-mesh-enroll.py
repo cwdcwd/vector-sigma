@@ -17,8 +17,17 @@ Auth resolution order (first hit wins):
 Usage:
   vs-mesh-enroll <agent-name> [--origin-url URL] [--public-url URL] [--status]
 
-Defaults: --origin-url and --public-url derive from $A2A_PUBLIC_URL
-(also bundle-delivered): origin = <edge>/a2a/<agent>, public = <edge>.
+Defaults (fleet-ops-lfk — BOTH URLs name the enrollee's OWN
+proxy-dialable origin, NEVER the mesh edge: the gateway's proxy
+follows the advertised url to deliver, so an edge public_url loops
+proxy->edge->proxy): a device derives
+  public_url = https://<agent-name>.tailb7207e.ts.net:9900  (the device's OWN serve form)
+  origin_url = <public_url>/a2a/<agent-name>
+$A2A_PUBLIC_URL in agent.env is GATEWAY_URL-class (the edge, for the
+agent's own outbound calls) and is NOT a public_url source — deriving
+from it produced the live loop-form defect. Pass --public-url only to
+override the device serve form for the master agent
+(http://hermes:9900, compose-internal).
 --status is the cheap liveness probe (GET /v1/mesh-enroll/status) —
 no mint, no merge.
 
@@ -34,8 +43,14 @@ import urllib.error
 import urllib.request
 
 ENV_KEY_NAME = "MESH_ENROLL_KEY"
-ENV_PUBLIC_URL = "A2A_PUBLIC_URL"
 DEFAULT_REGISTRAR = "http://registrar:3000"
+MESH_TAILNET_SUFFIX = ".tailb7207e.ts.net"
+DEVICE_SERVE_PORT = "9900"
+
+
+def device_serve_url(agent: str) -> str:
+    """The device's OWN tailscale serve form (fleet-ops-lfk)."""
+    return f"https://{agent}{MESH_TAILNET_SUFFIX}:{DEVICE_SERVE_PORT}"
 
 
 def read_env_file(path: str) -> dict:
@@ -73,19 +88,6 @@ def resolve_registrar() -> str:
     return url if url else DEFAULT_REGISTRAR
 
 
-def resolve_public_url() -> str | None:
-    url = os.environ.get(ENV_PUBLIC_URL, "").strip()
-    if url:
-        return url
-    home = os.environ.get("HERMES_HOME", "").strip()
-    if home:
-        env = read_env_file(os.path.join(home, "config", "agent.env"))
-        url = env.get(ENV_PUBLIC_URL, "").strip()
-        if url:
-            return url
-    return None
-
-
 def call(registrar: str, key: str, method: str, path: str, body: dict | None = None):
     url = f"{registrar}{path}"
     data = json.dumps(body).encode("utf-8") if body is not None else None
@@ -107,8 +109,8 @@ def call(registrar: str, key: str, method: str, path: str, body: dict | None = N
 def main() -> int:
     parser = argparse.ArgumentParser(prog="vs-mesh-enroll", description=(__doc__ or "").split("\n")[1])
     parser.add_argument("agent", nargs="?", help="the agent name to enroll (e.g. optimus-prime)")
-    parser.add_argument("--origin-url", help="the enrollee's A2A origin the gateway dials (default <edge>/a2a/<agent>)")
-    parser.add_argument("--public-url", help="the mesh edge written to the bundle public_url (default $A2A_PUBLIC_URL)")
+    parser.add_argument("--origin-url", help="the enrollee's A2A origin the gateway dials (default <public_url>/a2a/<agent>)")
+    parser.add_argument("--public-url", help="the enrollee's OWN proxy-dialable origin written to the bundle public_url (default the device serve form https://<agent>.tailb7207e.ts.net:9900 — NEVER the mesh edge; pass http://hermes:9900 for the master agent)")
     parser.add_argument("--status", action="store_true", help="liveness probe only (no mint, no merge)")
     args = parser.parse_args()
 
@@ -135,13 +137,14 @@ def main() -> int:
         print("vs-mesh-enroll: agent name required (or --status)", file=sys.stderr)
         return 1
 
-    public_url = args.public_url or resolve_public_url()
-    if not public_url:
-        print(
-            "vs-mesh-enroll: no --public-url and no $A2A_PUBLIC_URL — the mesh edge is required",
-            file=sys.stderr,
-        )
-        return 1
+    # fleet-ops-lfk: the default public_url is the enrollee's OWN device
+    # serve form — NEVER $A2A_PUBLIC_URL (that is GATEWAY_URL-class, the
+    # mesh edge for the agent's own outbound calls; deriving from it
+    # baked the live loop-form defect into optimus-prime's bundle).
+    # The registrar enforces the same contract server-side
+    # (assertNoLoopUrl); this default makes the CLI's happy path the
+    # correct shape without flags.
+    public_url = args.public_url or device_serve_url(args.agent)
     public_url = public_url.rstrip("/")
     origin_url = args.origin_url or f"{public_url}/a2a/{args.agent}"
 
