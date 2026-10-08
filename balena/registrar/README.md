@@ -429,6 +429,38 @@ REFUSE with the console revocation step (never orphan a live
 credential silently). A per-device mint rate limit (1/hour) stops a
 runaway caller from minting a fan of keys.
 
+**The URL contract (fleet-ops-lfk — both enroll URLs name the
+ENROLLEE'S OWN origin, never the mesh edge)**: the gateway's A2A
+proxy follows a registered agent's origin card and dials the
+ADVERTISED url to deliver peer traffic, so a `public_url` pointing at
+the edge loops `proxy→edge→proxy` (proven live 2026-10-08 — the
+enroll that baked the edge form broke AC3's round-trip at the
+proxy's DNS wall mid-loop). The shapes:
+
+- A **device** enrolls with its own tailscale serve form:
+  `public_url = https://<device>.tailb7207e.ts.net:9900` (the CLI's
+  default derives it from the agent name; the console's one-click
+  action uses it). `origin_url = <public_url>/a2a/<agent>`.
+- The **master agent (primus)** enrolls compose-internal:
+  `public_url = http://hermes:9900`.
+- The registrar REFUSES loop forms server-side (`loop_url`, 400,
+  audited — before any mint or merge): the edge host, the `litellm`
+  service, or a foreign tailnet name as the enrollee's origin.
+
+**The enrolled-device compose line (Defect A — the proxy-dial DNS
+pin)**: the litellm container's DNS chain has no ts.net route (the
+lrb canary verdict class), and the proxy dials each enrolled
+device's serve name. `extra_hosts` has no substitution path under the
+supervisor compose, so ONE LINE PER ENROLLED DEVICE IS THE
+MECHANISM: each newly enrolled device adds
+`- "<device>.tailb7207e.ts.net:<its tailnet IP>"` to the litellm
+service in `balena/registrar/docker-compose.yml`, then the master
+redeploys (a supervisor recreate of the litellm container; no full
+fleet pin cycle). The master's own name is pinned the same way. The
+pin test (`magicdns-flip.test.ts`) guards the set — a new enroll
+without its compose line is a red CI run, not a live round-trip
+discovery.
+
 **The primus authority clause** (owner ruling 2026-10-07) ships as
 [docs/soul-amendment-mesh-enroll.md](../../docs/soul-amendment-mesh-enroll.md)
 — the owner pastes it into primus's bundle SOUL.md at tag time.

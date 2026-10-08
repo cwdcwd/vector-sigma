@@ -30,7 +30,14 @@ import {
   MEMORY_KEY_ENV_VARS,
   memoryKeyAlias,
 } from './gateway-mint.js';
-import { enrollAgent, MeshEnrollError, MeshMintRateLimiter, meshKeyAlias } from './mesh-enroll.js';
+import {
+  enrollAgent,
+  MeshEnrollError,
+  MeshMintRateLimiter,
+  meshKeyAlias,
+  deviceServeUrl,
+  MASTER_AGENT_ORIGIN_HOST,
+} from './mesh-enroll.js';
 import { BALENA_UUID_SHORT_RE, BALENA_UUID_CANONICAL_RE, normalizeBalenaUuid, BINARY_MAX_DECODED_BYTES } from '@vector-sigma/shared';
 import type { Clock } from './clock.js';
 import type { RegistrarConfig } from './config.js';
@@ -587,10 +594,11 @@ export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): v
   //
   // The owner-side trigger of the same enrollAgent core the machine
   // path uses — one click per device, no primus key needed. Default
-  // URLs derive from the mint base URL's scheme+host (the served
-  // edge); the operator can override both in the form (e.g. point the
-  // origin at the device's tailnet address when it differs from the
-  // compose network).
+  // URLs are the enrollee's OWN origin (fleet-ops-lfk): the device
+  // serve form for a device row, the compose-internal origin for the
+  // master agent (primus) — NEVER the mesh edge (an edge public_url
+  // loops the gateway's proxy; proven live 2026-10-08). The operator
+  // can still override both in the form.
 
   app.post('/admin/devices/:uuid/mesh-enroll', async (request, reply) => {
     const session = await requireSession(request);
@@ -602,10 +610,16 @@ export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): v
     const agentName = loaded.device.agentName;
 
     const body = (request.body ?? new Map<string, string>()) as Map<string, string>;
-    const baseUrl = (process.env['GATEWAY_KEY_MINT_BASE_URL'] ?? '').replace(/\/+$/, '');
-    const schemeHost = baseUrl !== '' ? baseUrl : 'https://vector-sigma.tailb7207e.ts.net:8443';
-    const defaultPublicUrl = `${schemeHost}`;
-    const defaultOriginUrl = `${schemeHost}/a2a/${agentName}`;
+    // fleet-ops-lfk: the DEFAULT is the enrollee's own origin. A device
+    // row enrolls with its tailscale serve form; the master agent
+    // (primus) enrolls compose-internal. The mint base URL remains the
+    // GATEWAY CALL address (registrar -> litellm) and never a default
+    // here — it is not an origin of any agent.
+    const masterAgent = agentName === 'primus';
+    const defaultPublicUrl = masterAgent
+      ? `http://${MASTER_AGENT_ORIGIN_HOST}:9900`
+      : deviceServeUrl(agentName);
+    const defaultOriginUrl = `${defaultPublicUrl}/a2a/${agentName}`;
     const publicUrl = (body.get('public_url') ?? '').trim() || defaultPublicUrl;
     const originUrl = (body.get('origin_url') ?? '').trim() || defaultOriginUrl;
 

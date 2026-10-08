@@ -159,6 +159,32 @@ services:
       # the live root cause of the gateway completing against api.openai.com;
       # the fleet var override stays as belt-and-braces).
       OLLAMA_CLOUD_API_BASE: https://ollama.com/v1
+    # lfk (fleet-ops-lfk — the live AC3 Defect A fix): static hosts
+    # pins for the PROXY DIAL role. The A2A proxy inside this
+    # container follows a registered agent's origin card and dials the
+    # ADVERTISED url — the master's own MagicDNS name (card rewrite
+    # host) and each enrolled device's serve name
+    # (https://<device>.tailb7207e.ts.net:9900). Its container DNS
+    # chain (embedded 127.0.0.11 -> host dnsmasq -> upstream) has NO
+    # ts.net route (the lrb canary verdict class — accept-dns cannot
+    # reach the host dnsmasq chain from tailscaled's mount namespace),
+    # so every dial died gaierror until these pins (proven live
+    # 2026-10-08: with a temporary shim the proxy resolved the device
+    # name and got PAST the origin card fetch; TCP to the tailnet IP
+    # was open all along — pure DNS).
+    #
+    # SCALING CONTRACT: extra_hosts has NO substitution path under the
+    # supervisor compose, so ONE LINE PER ENROLLED DEVICE IS THE
+    # MECHANISM — each newly enrolled device = one line here + a
+    # master redeploy (a supervisor container recreate, not a full
+    # fleet pin cycle: the pins live on the litellm service only).
+    # The line's IP is the device's TAILNET IP (deterministic —
+    # ts-state persists node identity). Keep the set in lockstep with
+    # the enrolled devices; the mesh-enroll docs name this step.
+    # Currently enrolled: optimus-prime.
+    extra_hosts:
+      - "vector-sigma.tailb7207e.ts.net:100.124.197.78"
+      - "optimus-prime.tailb7207e.ts.net:100.99.56.18"
     # lnf (j7g phase 2): 127.0.0.1-ONLY host publish — the serve edge
     # (serve-config.json) fronts the gateway at the MagicDNS name :8443 ->
     # http://127.0.0.1:4000 (tailscaled is host-netns; compose names are

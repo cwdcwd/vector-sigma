@@ -40,6 +40,21 @@
  * secret stored on the row (source-verified on the pinned tag, the
  * AC14 precedent).
  *
+ * URL CONTRACT (fleet-ops-lfk — the live j7g.1 AC3 defect this fixes):
+ *   origin_url and public_url BOTH name the enrollee's OWN origin —
+ *   the address the gateway's proxy dials (the card row first, then
+ *   the origin card's advertised url to DELIVER peer traffic). For a
+ *   device that is its tailscale serve form,
+ *   https://<device>.tailb7207e.ts.net:9900; for the master's own
+ *   agent (primus) the compose-internal origin, http://hermes:9900.
+ *   NEVER the mesh edge: the proxy follows the advertised url to
+ *   deliver, so an edge public_url loops proxy->edge->proxy (proven
+ *   live 2026-10-08 — the enroll that baked the edge form died at the
+ *   proxy's DNS wall mid-loop). The enroll REFUSES loop forms
+ *   server-side, before any mint or merge: a URL pointing at the
+ *   gateway's own address, or at a tailnet name that is not the
+ *   enrollee's own serve name, fails with 'loop_url'.
+ *
  * Wire facts (gateway 1.100.1, same class as gateway-mint.ts):
  *   - POST /key/generate {key_alias, user_id, allowed_routes, metadata}
  *     -> 200 {key: "sk-…"}; alias unique gateway-wide.
@@ -119,6 +134,80 @@ export function meshKeyAlias(agentName: string): string {
   return `vs-${safe}-a2a`;
 }
 
+/** The tailnet's MagicDNS suffix (structural — same tailnet across both fleets). */
+export const MESH_TAILNET_SUFFIX = '.tailb7207e.ts.net';
+
+/** The master's own MagicDNS name = the mesh edge host (the served :8443). */
+export const MESH_EDGE_HOST = 'vector-sigma.tailb7207e.ts.net';
+
+/** The master agent's compose-internal origin (primus — the only non-device member). */
+export const MASTER_AGENT_ORIGIN_HOST = 'hermes';
+
+/**
+ * Derive the DEVICE serve form — the enrollee's OWN tailscale-served
+ * origin (fleet-ops-lfk): `https://<agent>.tailb7207e.ts.net:9900`.
+ * The agent name is the dashed form the enroll schema already
+ * enforces; MagicDNS machine names carry the same form (the rename
+ * step of the enroll preflight exists exactly for this).
+ */
+export function deviceServeUrl(agentName: string): string {
+  return `https://${agentName}${MESH_TAILNET_SUFFIX}:9900`;
+}
+
+/**
+ * Loop-form refusal (fleet-ops-lfk — the live AC3 defect class).
+ *
+ * The gateway's proxy follows the origin card's advertised url to
+ * DELIVER peer traffic, so a public_url pointing at the gateway's own
+ * address loops proxy->edge->proxy, and a tailnet URL that is not the
+ * enrollee's own serve name either loops (the edge) or dials a peer's
+ * origin as this agent's delivery address. REFUSED before any mint or
+ * merge — a loop-form enroll must never poison a bundle.
+ *
+ * Refusal shape (all relative to the caller-supplied URL's host):
+ *   - host == the master edge host (any port/scheme) — the edge loop;
+ *   - a .ts.net host that is NOT `<agent>.tailb7207e.ts.net` — a
+ *     foreign tailnet name (another device or the master) used as
+ *     THIS enrollee's delivery address;
+ *   - host == litellm / the compose gateway service itself.
+ * Compose-internal device origins (`http://device:9900`-style, the
+ * e2e shape) are NOT tailnet names and pass — the e2e stack dials
+ * them through compose DNS, no loop exists.
+ */
+export function assertNoLoopUrl(
+  agentName: string,
+  url: string,
+  field: 'origin_url' | 'public_url',
+): void {
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    throw new MeshEnrollError(`${field} is not a valid URL: ${url}`, 'loop_url', 400);
+  }
+  if (host === MESH_EDGE_HOST) {
+    throw new MeshEnrollError(
+      `${field} points at the mesh edge (${MESH_EDGE_HOST}) — the gateway's proxy follows the advertised url to deliver, so an edge ${field} loops proxy->edge->proxy. Use the enrollee's OWN origin: ${deviceServeUrl(agentName)} (device serve form) or http://${MASTER_AGENT_ORIGIN_HOST}:9900 (the master agent).`,
+      'loop_url',
+      400,
+    );
+  }
+  if (host.endsWith(MESH_TAILNET_SUFFIX) && host !== `${agentName}${MESH_TAILNET_SUFFIX}`) {
+    throw new MeshEnrollError(
+      `${field} carries the tailnet name ${host}, which is not '${agentName}'s own serve name — a foreign tailnet origin as THIS enrollee's delivery address loops or misroutes the proxy. Use the enrollee's own serve form: ${deviceServeUrl(agentName)}.`,
+      'loop_url',
+      400,
+    );
+  }
+  if (host === 'litellm') {
+    throw new MeshEnrollError(
+      `${field} points at the gateway service itself (litellm) — the proxy would dial itself to deliver. Use the enrollee's OWN origin: ${deviceServeUrl(agentName)} (device serve form) or http://${MASTER_AGENT_ORIGIN_HOST}:9900 (the master agent).`,
+      'loop_url',
+      400,
+    );
+  }
+}
+
 export class MeshEnrollError extends Error {
   constructor(
     message: string,
@@ -127,6 +216,7 @@ export class MeshEnrollError extends Error {
       | 'device_not_found'
       | 'no_bundle'
       | 'alias_live'
+      | 'loop_url'
       | 'gateway_call'
       | 'merge_failed',
     public readonly status: 400 | 404 | 409 | 429 | 500 | 502,
@@ -361,7 +451,12 @@ export interface MeshEnrollOptions {
   sourceIp: string | null;
   /** The target agent's A2A origin URL (the gateway card row's dial target). */
   originUrl: string;
-  /** The mesh edge URL written into the target's public_url. */
+  /**
+   * The enrollee's OWN origin — the PROXY-DIAL address the gateway's
+   * proxy follows to deliver peer traffic (fleet-ops-lfk: NEVER the
+   * mesh edge; a device carries its serve form, the master agent its
+   * compose-internal origin). Enforced by assertNoLoopUrl.
+   */
   publicUrl: string;
   clock: Clock;
   /** Per-device mint rate limiter (required; route-owned instance). */
@@ -408,6 +503,18 @@ export async function enrollAgent(
     );
   }
   const currentBundle = blobRows[0].bundle as { files: BundleFile[] };
+
+  // ── Loop-form refusal (fleet-ops-lfk — BEFORE any mint or merge) ────
+  // Both URLs name the enrollee's OWN origin; an edge/foreign-tailnet
+  // form poisons the bundle's public_url and breaks the proxy dial.
+  // Audited like every failure (the module's own contract).
+  try {
+    assertNoLoopUrl(agentName, opts.originUrl, 'origin_url');
+    assertNoLoopUrl(agentName, opts.publicUrl, 'public_url');
+  } catch (err) {
+    await fail(deviceId, 'mesh_enroll_loop_url');
+    throw err;
+  }
 
   // ── Gateway config ───────────────────────────────────────────────────
   let cfg: GatewayConfig;

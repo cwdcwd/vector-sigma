@@ -15,7 +15,7 @@ import type { DB } from 'pg-mem';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { eq } from 'drizzle-orm';
 import { hashKey } from '../src/db/key-crypto.js';
-import { identityBlobs, devices, meshEnrollKeys, gatewayCreatorKey } from '../src/db/schema.js';
+import { identityBlobs, devices, meshEnrollKeys, gatewayCreatorKey, deliveryLog } from '../src/db/schema.js';
 import type { IdentityBundle } from '@vector-sigma/shared';
 import {
   createTestEnv,
@@ -83,7 +83,11 @@ const CREATOR_ENV = {
   [MESH_GATEWAY_BASE_URL_ENV]: 'http://gateway:4000',
 };
 
-const MESH_EDGE = 'https://vsigma.lan:8443';
+// lfk: the enrollee's OWN serve-form origin (optimus-prime's
+// tailscale-served :9900 — the proxy-dial address the enroll
+// writes). NEVER the mesh edge: an edge public_url loops
+// proxy->edge->proxy (the live Defect B this lane fixes).
+const SERVE_ORIGIN = 'https://vsigma.lan:9900';
 
 function bundleWith(files: Array<{ path: string; content: string }>): IdentityBundle {
   return { schema_version: 1, bundle_version: 1, generated_at: '2026-01-01T00:00:00Z', files };
@@ -183,8 +187,8 @@ describe('enrollAgent decision table', () => {
     const outcome = await enrollAgent(env.db, CREATOR_ENV, 'optimus-prime', {
       keyId: 'fp-test',
       sourceIp: '127.0.0.1',
-      originUrl: `${MESH_EDGE}/a2a/optimus-prime`,
-      publicUrl: MESH_EDGE,
+      originUrl: `${SERVE_ORIGIN}/a2a/optimus-prime`,
+      publicUrl: SERVE_ORIGIN,
       clock: env.clock,
       mintLimiter: new MeshMintRateLimiter(env.clock),
     });
@@ -210,7 +214,7 @@ describe('enrollAgent decision table', () => {
     const blobs = await env.db.select().from(identityBlobs).where(eq(identityBlobs.deviceId, uuid));
     const a2a = readA2aFromBundle((blobs[0].bundle as { files: Array<{ path: string; content: string }> }).files);
     expect(a2a?.identity_key).toBe('sk-mesh-newkey');
-    expect(a2a?.public_url).toBe(MESH_EDGE);
+    expect(a2a?.public_url).toBe(SERVE_ORIGIN);
   });
 
   it('MINT merges the peer side too: primus gains the enrollee in peer_tokens + trusted_peers', async () => {
@@ -221,8 +225,8 @@ describe('enrollAgent decision table', () => {
     await enrollAgent(env.db, CREATOR_ENV, 'optimus-prime', {
       keyId: null,
       sourceIp: null,
-      originUrl: `${MESH_EDGE}/a2a/optimus-prime`,
-      publicUrl: MESH_EDGE,
+      originUrl: `${SERVE_ORIGIN}/a2a/optimus-prime`,
+      publicUrl: SERVE_ORIGIN,
       clock: env.clock,
       mintLimiter: new MeshMintRateLimiter(env.clock),
     });
@@ -253,7 +257,7 @@ describe('enrollAgent decision table', () => {
       keyId: null,
       sourceIp: null,
       originUrl: 'http://hermes:9900',
-      publicUrl: MESH_EDGE,
+      publicUrl: SERVE_ORIGIN,
       clock: env.clock,
       mintLimiter: new MeshMintRateLimiter(env.clock),
     });
@@ -274,8 +278,8 @@ describe('enrollAgent decision table', () => {
       enrollAgent(env.db, CREATOR_ENV, 'optimus-prime', {
         keyId: null,
         sourceIp: null,
-        originUrl: `${MESH_EDGE}/a2a/optimus-prime`,
-        publicUrl: MESH_EDGE,
+        originUrl: `${SERVE_ORIGIN}/a2a/optimus-prime`,
+        publicUrl: SERVE_ORIGIN,
         clock: env.clock,
         mintLimiter: new MeshMintRateLimiter(env.clock),
       }),
@@ -294,8 +298,8 @@ describe('enrollAgent decision table', () => {
       enrollAgent(env.db, CREATOR_ENV, 'optimus-prime', {
         keyId: null,
         sourceIp: null,
-        originUrl: `${MESH_EDGE}/a2a/optimus-prime`,
-        publicUrl: MESH_EDGE,
+        originUrl: `${SERVE_ORIGIN}/a2a/optimus-prime`,
+        publicUrl: SERVE_ORIGIN,
         clock: env.clock,
         mintLimiter: limiter,
       }),
@@ -308,7 +312,7 @@ describe('enrollAgent decision table', () => {
         keyId: null,
         sourceIp: null,
         originUrl: 'http://x:9900',
-        publicUrl: MESH_EDGE,
+        publicUrl: SERVE_ORIGIN,
         clock: env.clock,
         mintLimiter: new MeshMintRateLimiter(env.clock),
       }),
@@ -324,12 +328,121 @@ describe('enrollAgent decision table', () => {
         keyId: null,
         sourceIp: null,
         originUrl: 'http://x:9900',
-        publicUrl: MESH_EDGE,
+        publicUrl: SERVE_ORIGIN,
         clock: env.clock,
         mintLimiter: new MeshMintRateLimiter(env.clock),
       }),
     ).rejects.toMatchObject({ code: 'no_bundle' });
   });
+});
+
+describe('loop-form refusal (fleet-ops-lfk — Defect B, live-proven 2026-10-08)', () => {
+  let env: TestEnv;
+
+  beforeEach(async () => {
+    env = await createTestEnv();
+  });
+
+  it('REFUSES an edge-form public_url (the proxy->edge->proxy loop) BEFORE any mint or merge', async () => {
+    const uuid = await seedMeshAgent(env.db, 'optimus-prime', false);
+    route = gatewayHandlers({ keyListStatus: 200, keyListBody: { keys: [] } });
+
+    await expect(
+      enrollAgent(env.db, CREATOR_ENV, 'optimus-prime', {
+        keyId: null,
+        sourceIp: null,
+        originUrl: `${SERVE_ORIGIN}/a2a/optimus-prime`,
+        publicUrl: 'https://vector-sigma.tailb7207e.ts.net:8443',
+        clock: env.clock,
+        mintLimiter: new MeshMintRateLimiter(env.clock),
+      }),
+    ).rejects.toMatchObject({ code: 'loop_url' });
+
+    // NOTHING minted, NOTHING merged — the bundle is untouched:
+    const blobs = await env.db.select().from(identityBlobs).where(eq(identityBlobs.deviceId, uuid));
+    const a2a = readA2aFromBundle((blobs[0].bundle as { files: Array<{ path: string; content: string }> }).files);
+    expect(a2a).toBeNull();
+    expect(calls.filter((c) => c.url.includes('/key/generate'))).toHaveLength(0);
+  });
+
+  it('REFUSES an edge-form origin_url the same way', async () => {
+    await seedMeshAgent(env.db, 'optimus-prime', false);
+    route = gatewayHandlers({ keyListStatus: 200, keyListBody: { keys: [] } });
+
+    await expect(
+      enrollAgent(env.db, CREATOR_ENV, 'optimus-prime', {
+        keyId: null,
+        sourceIp: null,
+        originUrl: 'https://vector-sigma.tailb7207e.ts.net:8443/a2a/optimus-prime',
+        publicUrl: SERVE_ORIGIN,
+        clock: env.clock,
+        mintLimiter: new MeshMintRateLimiter(env.clock),
+      }),
+    ).rejects.toMatchObject({ code: 'loop_url' });
+  });
+
+  it('REFUSES a foreign tailnet name (a peer\'s serve name as THIS enrollee\'s delivery address)', async () => {
+    await seedMeshAgent(env.db, 'optimus-prime', false);
+    route = gatewayHandlers({ keyListStatus: 200, keyListBody: { keys: [] } });
+
+    await expect(
+      enrollAgent(env.db, CREATOR_ENV, 'optimus-prime', {
+        keyId: null,
+        sourceIp: null,
+        originUrl: `${SERVE_ORIGIN}/a2a/optimus-prime`,
+        publicUrl: 'https://wheeljack.tailb7207e.ts.net:9900',
+        clock: env.clock,
+        mintLimiter: new MeshMintRateLimiter(env.clock),
+      }),
+    ).rejects.toMatchObject({ code: 'loop_url' });
+  });
+
+  it('REFUSES the gateway service itself (litellm) as an origin', async () => {
+    await seedMeshAgent(env.db, 'optimus-prime', false);
+    route = gatewayHandlers({ keyListStatus: 200, keyListBody: { keys: [] } });
+
+    await expect(
+      enrollAgent(env.db, CREATOR_ENV, 'optimus-prime', {
+        keyId: null,
+        sourceIp: null,
+        originUrl: 'http://litellm:4000/a2a/optimus-prime',
+        publicUrl: SERVE_ORIGIN,
+        clock: env.clock,
+        mintLimiter: new MeshMintRateLimiter(env.clock),
+      }),
+    ).rejects.toMatchObject({ code: 'loop_url' });
+  });
+
+  it('ACCEPTS the enrollee\'s OWN serve form and the master agent\'s compose-internal origin (the two correct shapes)', async () => {
+    const uuid = await seedMeshAgent(env.db, 'optimus-prime', false);
+    route = gatewayHandlers({ keyListStatus: 200, keyListBody: { keys: [] } });
+
+    const outcome = await enrollAgent(env.db, CREATOR_ENV, 'optimus-prime', {
+      keyId: null,
+      sourceIp: null,
+      originUrl: `${SERVE_ORIGIN}/a2a/optimus-prime`,
+      publicUrl: SERVE_ORIGIN,
+      clock: env.clock,
+      mintLimiter: new MeshMintRateLimiter(env.clock),
+    });
+    expect(outcome.action).toBe('mint');
+
+    // the master agent (primus) enrolls compose-internal — allowed:
+    await seedMeshAgent(env.db, 'primus', false);
+    calls.length = 0; // reset the handler index (route picks by calls.length)
+    route = gatewayHandlers({ keyListStatus: 200, keyListBody: { keys: [] } });
+    const master = await enrollAgent(env.db, CREATOR_ENV, 'primus', {
+      keyId: null,
+      sourceIp: null,
+      originUrl: 'http://hermes:9900/a2a/primus',
+      publicUrl: 'http://hermes:9900',
+      clock: env.clock,
+      mintLimiter: new MeshMintRateLimiter(env.clock),
+    });
+    expect(master.action).toBe('mint');
+    expect(master.alias).toBe('vs-primus-a2a');
+  });
+
 });
 
 describe('creator-key bootstrap (registrar-side design call)', () => {
@@ -479,8 +592,8 @@ describe('POST /v1/mesh-enroll route (machine auth)', () => {
       url: '/v1/mesh-enroll',
       body: {
         agent_name: 'optimus-prime',
-        origin_url: `${MESH_EDGE}/a2a/optimus-prime`,
-        public_url: MESH_EDGE,
+        origin_url: `${SERVE_ORIGIN}/a2a/optimus-prime`,
+        public_url: SERVE_ORIGIN,
       },
       key: mk,
     });
@@ -525,8 +638,8 @@ describe('POST /v1/mesh-enroll route (machine auth)', () => {
       url: '/v1/mesh-enroll',
       body: {
         agent_name: 'optimus-prime',
-        origin_url: `${MESH_EDGE}/a2a/optimus-prime`,
-        public_url: MESH_EDGE,
+        origin_url: `${SERVE_ORIGIN}/a2a/optimus-prime`,
+        public_url: SERVE_ORIGIN,
       },
       key: mk,
     });
@@ -550,6 +663,29 @@ describe('POST /v1/mesh-enroll route (machine auth)', () => {
     });
     expect(locked.status).toBe(429);
     expect(locked.body.retry_after_seconds).toBeGreaterThan(0);
+  });
+
+  it('lfk: a loop-form POST answers 400 loop_url with an audit row (the live CLI defect shape)', async () => {
+    const mk = await seedMachineKey();
+    await seedMeshAgent(env.db, 'optimus-prime', false);
+    route = gatewayHandlers({ keyListStatus: 200, keyListBody: { keys: [] } });
+
+    const res = await env.request({
+      method: 'POST',
+      url: '/v1/mesh-enroll',
+      body: {
+        agent_name: 'optimus-prime',
+        // the EXACT live defect shape: public_url = the mesh edge
+        origin_url: 'https://optimus-prime.tailb7207e.ts.net:9900/a2a/optimus-prime',
+        public_url: 'https://vector-sigma.tailb7207e.ts.net:8443',
+      },
+      key: mk,
+    });
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ error: 'loop_url' });
+    // failure audit row landed (the refusal is audited like every failure)
+    const denied = await env.db.select().from(deliveryLog).where(eq(deliveryLog.outcome, 'denied'));
+    expect(denied.length).toBeGreaterThan(0);
   });
 });
 

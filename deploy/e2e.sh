@@ -332,7 +332,7 @@ ac7_console_structured_save() {
     --data-urlencode "structured_a2a_identity_key=a2a-e2e-key" \
     --data-urlencode "structured_a2a_trusted_peers=peer-a
 peer-b" \
-    --data-urlencode "structured_a2a_public_url=https://vsigma.lan:8443" \
+    --data-urlencode "structured_a2a_public_url=http://hermes:9900" \
     --data-urlencode "structured_a2a_peer_tokens=primus:a2a-e2e-key" \
     --data-urlencode "structured_slack_bot_token=xoxb-e2e-slack" \
     --data-urlencode "structured_github_app_pem=-----BEGIN RSA PRIVATE KEY-----
@@ -373,7 +373,7 @@ e2e-pem
       ["agent.env merged render", d.agentEnv.includes("AGENT_NAME=vs-agent-e2e") && d.agentEnv.includes("GATEWAY_API_KEY=sk-e2e-gateway") && d.agentEnv.includes("MODEL_ROUTE=openai/gpt-5.2") && d.agentEnv.includes("LOG_LEVEL=debug") && d.agentEnv.includes("SOURCE=vector-sigma-e2e")],
       ["secrets.env line-merge", d.secretsEnv.includes("SLACK_BOT_TOKEN=xoxb-e2e-slack") && d.secretsEnv.includes("SIMULATED_SECRET=e2e-rotate-me")],
       ["SOUL.md verbatim", d.soul.includes("# E2E Soul")],
-      ["a2a.json object render", (d.a2a.includes("a2a-e2e-key") && d.a2a.includes("peer-a") && d.a2a.includes("peer-b") && d.a2a.includes("https://vsigma.lan:8443") && d.a2a.includes("peer_tokens"))],
+      ["a2a.json object render", (d.a2a.includes("a2a-e2e-key") && d.a2a.includes("peer-a") && d.a2a.includes("peer-b") && d.a2a.includes("http://hermes:9900") && d.a2a.includes("peer_tokens"))],
       ["github-app.pem verbatim", d.pem.includes("BEGIN RSA PRIVATE KEY")],
     ];
     for (const [name, ok] of checks) console.log("[e2e] " + (ok ? "PASS" : "FAIL") + " AC7 " + name + (ok ? " — ok" : " — got " + JSON.stringify(d)));
@@ -1624,15 +1624,35 @@ ac17_mesh_enroll_capability() {
 
   # 2. the enroll through the REAL route (creator key bootstrap from
   #    the master key fires in-process; sentinel mint at the gateway).
+  #    lfk: the enroll URLs are the enrollee's OWN serve-form shapes —
+  #    compose-internal origins here (the e2e stack dials them through
+  #    compose DNS); NEVER the mesh edge. AC17a additionally posts the
+  #    EXACT live defect shape (public_url = the gateway's own address)
+  #    and asserts the loop_url refusal — the live AC3 defect class
+  #    this lane fixes, now guarded in CI.
   local body=/tmp/ac17-enroll.json code
   code="$(curl -s -o "$body" -w '%{http_code}' -m 60 \
     -X POST "$mesh_base/v1/mesh-enroll" \
     -H "Authorization: Bearer $mk" \
     -H 'Content-Type: application/json' \
-    -d "{\"agent_name\":\"$agent\",\"origin_url\":\"http://device:9900\",\"public_url\":\"http://litellm:4000\"}" 2>/dev/null || true)"
+    -d "{\"agent_name\":\"$agent\",\"origin_url\":\"http://device:9900\",\"public_url\":\"http://device:9900\"}" 2>/dev/null || true)"
   if [ "$code" != "200" ]; then
     fail "AC17 enroll 200" "POST /v1/mesh-enroll answered $code: $(head -c 300 "$body" 2>/dev/null)"
     return
+  fi
+  # 2a. lfk: the loop-form refusal — the live defect shape (the
+  #     enrollee's public_url pointing at the gateway's own address)
+  #     answers 400 loop_url and mints nothing.
+  local loop_body=/tmp/ac17-loop.json loop_code
+  loop_code="$(curl -s -o "$loop_body" -w '%{http_code}' -m 60 \
+    -X POST "$mesh_base/v1/mesh-enroll" \
+    -H "Authorization: Bearer $mk" \
+    -H 'Content-Type: application/json' \
+    -d "{\"agent_name\":\"$agent\",\"origin_url\":\"http://device:9900\",\"public_url\":\"http://litellm:4000\"}" 2>/dev/null || true)"
+  if [ "$loop_code" = "400" ] && grep -q '"error":"loop_url"' "$loop_body" 2>/dev/null; then
+    pass "AC17 loop-form refusal" "edge/gateway-form public_url refused (400 loop_url) — the lfk defect class guarded"
+  else
+    fail "AC17 loop-form refusal" "loop-form enroll answered $loop_code: $(head -c 200 "$loop_body" 2>/dev/null) (want 400 loop_url)"
   fi
   # 3. THE CONTRACT: alias + action + merged + bundle_version ONLY.
   if node -e '
@@ -1699,7 +1719,7 @@ ac17_mesh_enroll_capability() {
     -X POST "$mesh_base/v1/mesh-enroll" \
     -H "Authorization: Bearer $mk" \
     -H 'Content-Type: application/json' \
-    -d "{\"agent_name\":\"$agent\",\"origin_url\":\"http://device:9900\",\"public_url\":\"http://litellm:4000\"}" 2>/dev/null || true)"
+    -d "{\"agent_name\":\"$agent\",\"origin_url\":\"http://device:9900\",\"public_url\":\"http://device:9900\"}" 2>/dev/null || true)"
   if [ "$code" = "200" ] && grep -q '"action":"open"' /tmp/ac17-reopen.json 2>/dev/null; then
     pass "AC17 idempotent heal" "re-enroll answered 200 action=open (verify + heal, no re-mint)"
   else

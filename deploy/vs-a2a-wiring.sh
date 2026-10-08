@@ -23,10 +23,13 @@
 #        trusted_peers -> A2A_TRUSTED_PEERS (the allow-list of resolved
 #                        identities that may run tasks — setting it
 #                        ACTIVATES enforcement)
-#        public_url    -> A2A_PUBLIC_URL (the mesh edge — the master
-#                        gateway's served edge; the device's card is
-#                        served by the gateway, peers are called through
-#                        it: https://<edge>/a2a/<name>)
+#        public_url    -> A2A_PUBLIC_URL (the enrollee's OWN
+#                        proxy-dialable origin — the device's serve
+#                        form https://<device>...:9900, primus's
+#                        compose-internal origin; NEVER the mesh edge:
+#                        the gateway's proxy follows it to DELIVER
+#                        peer traffic, an edge form loops
+#                        proxy->edge->proxy — lfk)
 #        + A2A_PORT=9900 + A2A_HOST=0.0.0.0 written when (and only when)
 #          an identity key exists — the A2A platform auto-enables on
 #          A2A_PORT, so a bundle with no mesh identity never starts the
