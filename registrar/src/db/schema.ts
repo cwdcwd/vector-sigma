@@ -80,3 +80,35 @@ export const adminKeys = pgTable('admin_keys', {
   hash: text('hash').notNull(),
   label: text('label').notNull(),
 });
+
+/**
+ * Primus-scoped machine keys for the mesh-enroll action
+ * (fleet-ops-j7g.1 shape B). Hash-stored only — deleting the row is the
+ * owner kill switch. One row per agent_name (primus); minting a second
+ * key for the same name replaces the hash (revoke-by-replace).
+ */
+export const meshEnrollKeys = pgTable('mesh_enroll_keys', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  hash: text('hash').notNull(),
+  agentName: text('agent_name').notNull().unique(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+});
+
+/**
+ * The registrar's persisted scoped key-creator key (fleet-ops-j7g.1
+ * creator-key design call: registrar-side bootstrap). The plaintext is
+ * minted once from the composition's master key, delivered to the
+ * gateway, and stored here ONLY as its argon2id hash — the row exists
+ * so the registrar can VERIFY its own configured creator key still
+ * authenticates at the gateway, and so bootstrap never re-mints while
+ * a live row exists. The actual key VALUE the service uses still lives
+ * in the service env (GATEWAY_KEY_CREATOR_KEY) — this row is the
+ * bootstrap's dedupe marker, not a credential store.
+ */
+export const gatewayCreatorKey = pgTable('gateway_creator_key', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  keyHash: text('key_hash').notNull(),
+  alias: text('alias').notNull().unique(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});

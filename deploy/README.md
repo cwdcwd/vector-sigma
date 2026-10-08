@@ -165,6 +165,16 @@ What the E2E proves, in order (the bead's acceptance criteria):
     gate), and the plugin's own tool handlers write a memory row in one
     process that a FRESH process (same delivered env — the session
     boundary) reads back byte-equal.
+15. **Mesh-enroll capability (j7g.1, AC17)**: the REAL machine-auth
+    route end to end — the seeded primus machine key (`mk_` class)
+    authenticates `POST /v1/mesh-enroll` (a device key bounces 401),
+    the registrar mints the `vs-<agent>-a2a` sentinel at the live
+    gateway (mesh-only `allowed_routes`, empty `models` — the
+    hardcoded shape verified by read-back), registers the card row,
+    merges BOTH sides' bundles (audit rows for target + every peer),
+    and the 200 body carries `{alias, action, merged, bundle_version}`
+    ONLY — key material never crosses to the caller. A re-run is the
+    idempotent OPEN heal (`action=open`, no re-mint).
 
 The device service runs the real registrant image (`registrant/dist/index.js`)
 — the same container shape the balenaOS device app uses (f57.6), with

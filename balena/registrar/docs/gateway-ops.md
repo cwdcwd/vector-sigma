@@ -354,6 +354,57 @@ any `memory-*` alias whose agent no longer exists in the registrar, and
 (b) any key carrying `allowed_routes` containing `/v1/memory` whose
 alias does NOT match the `memory-*` scheme — both are drift signals.
 
+## The A2A mesh plane (j7g.1)
+
+Mesh identity keys (`vs-<agent>-a2a`) are minted by the REGISTRAR's
+mesh-enroll action — never by hand, never by an agent. The minted
+shape is hardcoded server-side (registrar/src/mesh-enroll.ts): models
+empty, tpm unset, `allowed_routes` locked to `/a2a`, `/a2a/*`,
+`/v1/agents`. The route lock is the whole containment story: a mesh
+key can ride the mesh and nothing else — no model calls, no key
+management, no memory routes.
+
+**The creator key now also serves the mesh-enroll action.** Its
+`allowed_routes` lock extends the e5o.3 mint surface with `/key/list`
+(the enroll's liveness probe) and `/v1/agents` (the card-row
+registration). Two provisioning shapes, in priority order:
+
+1. `GATEWAY_KEY_CREATOR_KEY` set on the registrar service env (the
+   e5o.3 owner setup) — used as-is; nothing changes.
+2. **Registrar-side bootstrap** (the j7g.1 design call): when the env
+   var is unset, the first mesh-enroll call mints the scoped
+   key-creator key from the composition master key
+   (`LITELLM_MASTER_KEY` must reach the registrar service for this),
+   caches it in-process, and records its argon2id hash in the
+   `gateway_creator_key` table. The bootstrap is SELF-HEALING: a
+   registrar restart re-mints (the old registrar-managed alias is
+   deleted first via the master key). A hand-minted `key-creator`
+   alias with no marker row is REFUSED — an owner-held credential is
+   never silently destroyed; the message names the manual step.
+
+The master key is therefore used ONLY by the bootstrap (and never
+reaches the enroll's steady-state calls). When the owner later
+service-scopes `LITELLM_MASTER_KEY` (the standing hardening option),
+the env-set creator key (shape 1) keeps the capability green with no
+registrar access to the master at all.
+
+**Daily pass addition (the mesh leg):** `GET /key/list` for each
+enrolled `vs-<agent>-a2a` alias → present, `models: []`, mesh-only
+`allowed_routes`. `GET /v1/agents` → every enrolled agent's row
+present. A missing alias means the mesh key was deleted (re-enroll
+heals); a widened `allowed_routes` means the row was hand-edited —
+revoke and re-enroll.
+
+**Inventory audit addition:** flag any `vs-*-a2a` alias whose agent
+row is absent from the registrar, and any key with mesh routes whose
+alias does NOT match the `vs-*-a2a` scheme.
+
+**Kill switches:** deleting the primus machine-key row
+(`mesh_enroll_keys`, console → Mesh-enroll keys → Revoke) kills the
+machine-auth trigger instantly; revoking the `key-creator` alias at
+the gateway kills all minting (the registrar refuses with the
+not-configured fallback on the next call). Both are owner actions.
+
 ## Evidence discipline
 
 Whatever lands on the work-tracking thread: aliases, hash prefixes,

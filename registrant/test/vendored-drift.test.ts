@@ -66,6 +66,8 @@ const vendoredFiles = [
   ['registrar/src/slots.ts', 'balena/registrar/registrar/src/slots.ts'],
   // f57.11: structured-fields renderer is a registrar source — vendored
   ['registrar/src/structured-fields.ts', 'balena/registrar/registrar/src/structured-fields.ts'],
+  // j7g.1: the A2A mesh-enroll module is a registrar source — vendored
+  ['registrar/src/mesh-enroll.ts', 'balena/registrar/registrar/src/mesh-enroll.ts'],
   // zbq.2: embedded persona library (generated module) is a registrar source — vendored
   ['registrar/src/persona-library.ts', 'balena/registrar/registrar/src/persona-library.ts'],
   ['registrar/src/db/key-crypto.ts', 'balena/registrar/registrar/src/db/key-crypto.ts'],
@@ -74,7 +76,9 @@ const vendoredFiles = [
   ['shared/src/index.ts', 'balena/registrar/registrar/shared/src/index.ts'],
   ['shared/tsconfig.json', 'balena/registrar/registrar/shared/tsconfig.json'],
   ['registrar/drizzle/0000_yielding_morlun.sql', 'balena/registrar/registrar/drizzle/0000_yielding_morlun.sql'],
+  ['registrar/drizzle/0001_mesh_enroll.sql', 'balena/registrar/registrar/drizzle/0001_mesh_enroll.sql'],
   ['registrar/drizzle/meta/0000_snapshot.json', 'balena/registrar/registrar/drizzle/meta/0000_snapshot.json'],
+  ['registrar/drizzle/meta/0001_snapshot.json', 'balena/registrar/registrar/drizzle/meta/0001_snapshot.json'],
   ['registrar/drizzle/meta/_journal.json', 'balena/registrar/registrar/drizzle/meta/_journal.json'],
   // f57.13: the CA shim ships in BOTH the deploy/ image and the balena
   // devices registrant image — one file, two COPY targets, byte-pinned.

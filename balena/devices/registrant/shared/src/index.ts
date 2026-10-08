@@ -102,6 +102,26 @@ export const RotateRequestSchema = z.object({
 });
 export type RotateRequest = z.infer<typeof RotateRequestSchema>;
 
+/**
+ * Mesh-enroll request (fleet-ops-j7g.1): primus's machine-authenticated
+ * call to enroll one agent into the A2A mesh. Note what is NOT here:
+ * no key-shape parameters of any kind — the sentinel shape (models
+ * empty, tpm unset, mesh-only routes) is hardcoded in the registrar's
+ * mesh-enroll module and a caller cannot widen it.
+ */
+export const MeshEnrollRequestSchema = z.object({
+  agent_name: z
+    .string()
+    .min(1)
+    .max(64)
+    .regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/, 'agent_name must be [a-zA-Z0-9_.-], starting alphanumeric'),
+  /** The enrollee's A2A origin the gateway card row dials (proxy-reachable). */
+  origin_url: z.string().url(),
+  /** The mesh edge the enrollee's peers reach it through (its public_url). */
+  public_url: z.string().url(),
+});
+export type MeshEnrollRequest = z.infer<typeof MeshEnrollRequestSchema>;
+
 export const ApiErrorSchema = z.object({
   error: z.string(),
   reason: z.string().optional(),

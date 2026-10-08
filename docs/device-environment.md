@@ -159,6 +159,15 @@ The runtime wiring is a CODE contract, not yours to maintain:
   resolves the name from `A2A_PEER_TOKENS` and enforces
   `A2A_TRUSTED_PEERS`.
 
+### How you got here (j7g.1 mesh-enroll)
+
+Your mesh identity was minted BY THE REGISTRAR — primus (the
+coordinator) or the owner triggered the enroll action; the gateway key
+`vs-<you>-a2a` and every peer entry in your bundle arrived through the
+registrar's bundle plane. You hold no minting authority of your own;
+if a rotation is ever needed, it is triggered the same way (the
+re-run is an idempotent heal — nothing is lost).
+
 ## Shared memory (e5o.3)
 
 Your image carries the `gateway-memory` plugin (installed by the

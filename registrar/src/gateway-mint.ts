@@ -75,6 +75,8 @@ interface GatewayConfig {
   creatorKey: string;
 }
 
+export type { GatewayConfig };
+
 /** Resolve gateway + creator-key config; throws MintConfigError when unset. */
 export function resolveGatewayConfig(env: Record<string, string | undefined>): GatewayConfig {
   const baseUrl = (env[GATEWAY_BASE_URL_ENV] ?? '').trim();
@@ -87,7 +89,7 @@ export function resolveGatewayConfig(env: Record<string, string | undefined>): G
   return { baseUrl: baseUrl.replace(/\/+$/, ''), creatorKey };
 }
 
-async function gatewayCall(
+export async function gatewayCall(
   cfg: GatewayConfig,
   method: 'GET' | 'POST',
   path: string,

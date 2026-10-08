@@ -108,6 +108,16 @@ COPY vs-github-identity.sh /etc/cont-init.d/05-vs-github-identity
 COPY vs-github-identity.py /usr/local/bin/vs-github-identity
 RUN chmod 0755 /etc/cont-init.d/05-vs-github-identity /usr/local/bin/vs-github-identity
 
+# j7g.1 mesh-enroll: the thin primus CLI (drift-pinned vs scripts/,
+# one source of truth). One command per agent: vs-mesh-enroll <agent>
+# calls the registrar's /v1/mesh-enroll machine-auth action, which
+# mints/opens the vs-<agent>-a2a sentinel server-side and merges BOTH
+# sides' bundles. The CLI reads its auth (MESH_ENROLL_KEY) from the
+# bundle's config/agent.env via $HERMES_HOME — NEVER from image layers.
+# The venv python the image already ships runs it (stdlib-only).
+COPY vs-mesh-enroll.py /usr/local/bin/vs-mesh-enroll
+RUN chmod 0755 /usr/local/bin/vs-mesh-enroll
+
 # e5o.3: the gateway-memory plugin + its install hook. The plugin copy
 # (gateway-memory/, product-agnostic VS copy of the origin fleet-memory
 # plugin) is byte-pinned to deploy/gateway-memory/ by the vendored-drift

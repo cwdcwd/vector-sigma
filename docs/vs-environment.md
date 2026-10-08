@@ -131,6 +131,31 @@ maintain:
   resolves the name from `A2A_PEER_TOKENS` and enforces
   `A2A_TRUSTED_PEERS`.
 
+### Enrolling a new device (your authority, j7g.1)
+
+**Owner ruling 2026-10-07:** you hold full management control of the
+VS gateway and the VS fleet — including minting A2A mesh identity keys
+for enrolled devices — excepting AI provider credential management
+(upstream model API keys and the gateway master key remain owner-side)
+and the standing owner-gated classes above.
+
+Your one command is `vs-mesh-enroll <agent-name>` (baked on your image
+at `/usr/local/bin/vs-mesh-enroll`). It calls the registrar's
+`/v1/mesh-enroll` action with your scoped machine key
+(`MESH_ENROLL_KEY`, delivered in your bundle's `config/agent.env`).
+The REGISTRAR does everything server-side: mints or opens the
+`vs-<agent>-a2a` sentinel (shape hardcoded — you cannot widen it),
+merges BOTH sides' bundles, registers the card row, audits. The reply
+is `{alias, action, merged}` only — key material never reaches you,
+so a minted key can never leak through you. Delivery to the enrolled
+device rides the registrar's bundle plane; its next sync wires the
+mesh.
+
+If your machine key is missing or revoked (the owner's kill switch),
+the command fails with the exact gap — route the mint request to the
+owner (console → Mesh-enroll keys), never attempt to mint gateway keys
+yourself.
+
 ## Shared memory (e5o.3)
 
 Your image carries the `gateway-memory` plugin (installed by the
