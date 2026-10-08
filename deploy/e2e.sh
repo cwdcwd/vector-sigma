@@ -1819,6 +1819,90 @@ urllib.request.urlopen(req, timeout=10)
 " "$probe_key" >/dev/null 2>&1 || true
 }
 
+# AC-logo (fleet-ops-1py.5): the per-device logo plane, console → bundle →
+# device volume. Drives the REAL console (login → CSRF → multipart upload →
+# rotate), then the narrow read route, then the delivered bytes on the
+# device-data volume after a volume wipe + re-delivery.
+ac_logo_plane() {
+  note "AC-logo: console logo upload → bundle → device volume (1py.5)"
+  # Reuse the AC7 console session pattern: login CSRF, session cookie, then
+  # the device-detail page's own CSRF for the multipart POST.
+  local csrf session_cookie upload_csrf
+  csrf="$(tls_curl -D - -o /dev/null "$BASE_URL/admin/login" \
+    | tr -d '\r' | grep -i '^set-cookie: vsigma_csrf=' | cut -d' ' -f2- | cut -d';' -f1 | tr -d ' ')"
+  if [ -z "$csrf" ]; then fail AC-logo "no csrf cookie on login page"; return; fi
+  session_cookie="$(tls_curl -D - -o /dev/null -X POST "$BASE_URL/admin/login" \
+    -H "Cookie: ${csrf}" \
+    --data-urlencode "admin_key=$E2E_ADMIN_KEY" \
+    --data-urlencode "_csrf=${csrf#vsigma_csrf=}" \
+    | tr -d '\r' | grep -i '^set-cookie: vsigma_admin=' | cut -d' ' -f2- | cut -d';' -f1 | tr -d ' ')"
+  if [ -z "$session_cookie" ]; then fail AC-logo "no session cookie after login"; return; fi
+  # The device-detail page hosts the upload form's CSRF.
+  tls_curl -H "Cookie: ${csrf}; ${session_cookie}" \
+    "$BASE_URL/admin/devices/$E2E_DEVICE_UUID" > /tmp/e2e-detail.html
+  upload_csrf="$(awk 'match($0, /name="_csrf" value="[^"]*"/) { print substr($0, RSTART+20, RLENGTH-21); exit }' \
+    /tmp/e2e-detail.html)"
+  if [ -z "$upload_csrf" ]; then fail AC-logo "no csrf on device detail (session rejected?)"; return; fi
+
+  # 1. Multipart upload of a real (tiny) PNG through the console route.
+  printf '\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52' > /tmp/e2e-logo.png
+  local upload_code
+  upload_code="$(tls_curl -o /dev/null -w '%{http_code}' -X POST \
+    "$BASE_URL/admin/devices/$E2E_DEVICE_UUID/logo" \
+    -H "Cookie: ${csrf}; ${session_cookie}" \
+    -F "_csrf=$upload_csrf" \
+    -F "logo=@/tmp/e2e-logo.png;type=image/png")"
+  expect "AC-logo console upload" "$upload_code" "303"
+  [ "$upload_code" = "303" ] || return
+
+  # 2. The narrow read route serves the stored entry as image/png.
+  local logo_head logo_ct
+  logo_head="$(tls_curl -o /tmp/e2e-logo-served.bin -w '%{http_code}' \
+    -H "Cookie: ${csrf}; ${session_cookie}" \
+    "$BASE_URL/admin/devices/$E2E_DEVICE_UUID/logo")"
+  expect "AC-logo read route status" "$logo_head" "200"
+  logo_ct="$(tls_curl -D - -o /dev/null -H "Cookie: ${csrf}; ${session_cookie}" \
+    "$BASE_URL/admin/devices/$E2E_DEVICE_UUID/logo" \
+    | tr -d '\r' | grep -i '^content-type:' | cut -d' ' -f2- | tr -d ';')"
+  if [ "$logo_ct" = "image/png" ]; then
+    pass "AC-logo content-type" "$logo_ct"
+  else
+    fail "AC-logo content-type" "got: $logo_ct"
+  fi
+  # Served bytes are the uploaded bytes (magic + IHDR chunk head).
+  if cmp -s /tmp/e2e-logo.png /tmp/e2e-logo-served.bin; then
+    pass "AC-logo served bytes" "round-trip byte-identical to the upload"
+  else
+    fail "AC-logo served bytes" "served payload differs from the upload"
+  fi
+  # Unauthenticated read is gated.
+  local anon_code
+  anon_code="$(tls_curl -o /dev/null -w '%{http_code}' "$BASE_URL/admin/devices/$E2E_DEVICE_UUID/logo")"
+  expect "AC-logo anon read redirects" "$anon_code" "302"
+
+  # 3. Delivery: wipe the device volume + re-up (the AC7 shape) — the
+  #    re-armed slot re-delivers the bundle; assets/logo.png must land as
+  #    DECODED bytes.
+  $COMPOSE rm -f -s device >/dev/null 2>&1 || $COMPOSE stop device >/dev/null 2>&1 || true
+  docker volume rm -f "${PROJECT}_device-data" >/dev/null 2>&1 || true
+  $COMPOSE up -d --no-deps device || { fail AC-logo "device re-up failed"; return; }
+  if ! wait_marker; then
+    fail AC-logo "device never became ready after logo re-delivery"
+    docker logs "$PROJECT-device-1" 2>&1 | tail -30
+    return
+  fi
+  local logo_on_disk
+  logo_on_disk="$(docker exec "$PROJECT-device-1" node -e "
+    const b = require('fs').readFileSync('/data/agent/assets/logo.png');
+    process.stdout.write(b.subarray(0, 8).toString('hex') + ':' + b.length);
+  " 2>/dev/null)" || logo_on_disk=""
+  if [ "$logo_on_disk" = "89504e470d0a1a0a:16" ]; then
+    pass "AC-logo device volume" "assets/logo.png decoded PNG bytes on disk"
+  else
+    fail "AC-logo device volume" "got: ${logo_on_disk:-absent}"
+  fi
+}
+
 # f57.13: the TLS env file is (re)generated on --up; ensure it exists for
 # assert-only and --down paths too (compose refuses a missing --env-file).
 
@@ -1849,6 +1933,7 @@ ac14_a2a_mesh_chain
 ac15_memory_plane
 ac16_agent_memory_tools
 ac17_mesh_enroll_capability
+ac_logo_plane
 echo
 echo "[e2e] ===== RESULT: $PASS passed, $FAIL failed ====="
 [ "$FAIL" -eq 0 ]

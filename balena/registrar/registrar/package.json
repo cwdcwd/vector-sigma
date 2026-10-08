@@ -12,6 +12,7 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
+    "@fastify/multipart": "10.1.2",
     "@node-rs/argon2": "2.2.1",
     "@vector-sigma/shared": "*",
     "drizzle-orm": "0.45.2",

@@ -1,4 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import multipart from '@fastify/multipart';
+import type { MultipartFile } from '@fastify/multipart';
 import { eq, desc } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
@@ -10,6 +12,7 @@ import { SessionManager, SESSION_COOKIE, CSRF_COOKIE, type AdminSession } from '
 import { verifyAdminKey } from './admin-auth.js';
 import { mintDeviceKey } from './keys.js';
 import { rotateBundle, rearmSlot, parseConsoleFiles, EmptyBundleError, InvalidBundleError } from './rotate.js';
+import { CANONICAL_PATHS } from './structured-fields.js';
 import {
   FIELD_NAMES,
   SECRET_FIELDS,
@@ -28,7 +31,7 @@ import {
   memoryKeyAlias,
 } from './gateway-mint.js';
 import { enrollAgent, MeshEnrollError, MeshMintRateLimiter, meshKeyAlias } from './mesh-enroll.js';
-import { BALENA_UUID_SHORT_RE, BALENA_UUID_CANONICAL_RE, normalizeBalenaUuid } from '@vector-sigma/shared';
+import { BALENA_UUID_SHORT_RE, BALENA_UUID_CANONICAL_RE, normalizeBalenaUuid, BINARY_MAX_DECODED_BYTES } from '@vector-sigma/shared';
 import type { Clock } from './clock.js';
 import type { RegistrarConfig } from './config.js';
 import * as html from './admin-html.js';
@@ -156,7 +159,7 @@ function sanitizeSubmittedPreFill(submitted: StructuredFields): StructuredFields
 }
 
 interface BlobBundleShape {
-  files: Array<{ path: string; content: string }>;
+  files: Array<{ path: string; content: string; encoding?: 'base64' }>;
 }
 
 export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): void {
@@ -167,6 +170,17 @@ export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): v
 
   app.addContentTypeParser('application/x-www-form-urlencoded', { parseAs: 'string' }, (_req, body, done) => {
     done(null, parseFormBody(String(body)));
+  });
+
+  // fleet-ops-1py.5: multipart parsing for the per-device logo upload.
+  // fastify-plugin-wrapped (verified: Symbol.for('skip-override') === true),
+  // so registering inside this plugin scope is equivalent to app-level —
+  // request.file() is decorated app-wide and the urlencoded parser above
+  // is untouched. Limits are the SECOND cap layer (the schema-side
+  // BINARY_MAX_DECODED_BYTES check is the first): busboy aborts an
+  // oversized stream mid-upload instead of buffering it whole.
+  void app.register(multipart, {
+    limits: { fileSize: BINARY_MAX_DECODED_BYTES, files: 1, fields: 2 },
   });
 
   app.get('/admin/static/editor.js', async (_req, reply) => {
@@ -685,7 +699,15 @@ export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): v
             version: blob.version,
             fileCount: bundle.files.length,
             updatedAt: blob.updatedAt,
-            files: bundle.files.map((f) => ({ path: f.path, bytes: Buffer.byteLength(f.content, 'utf8') })),
+            files: bundle.files.map((f) => ({
+              path: f.path,
+              // 1py.5: report DECODED bytes for base64 entries — the base64
+              // text length overstates a binary by 4/3.
+              bytes:
+                f.encoding === 'base64'
+                  ? Buffer.byteLength(f.content, 'base64')
+                  : Buffer.byteLength(f.content, 'utf8'),
+            })),
           }
         : null;
     return {
@@ -694,6 +716,9 @@ export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): v
         ? { state: slotSnap.state, deliveryCount: slotSnap.deliveryCount, deliveredAt: slotSnap.deliveredAt }
         : null,
       blob: blobView,
+      // 1py.5: does the current bundle carry a logo entry? Drives the
+      // detail page's avatar + upload card.
+      hasLogo: bundle?.files.some((f) => f.path === CANONICAL_PATHS.logo) ?? false,
     };
   }
 
@@ -891,6 +916,124 @@ export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): v
       );
   });
 
+  // fleet-ops-1py.5: the per-device logo. Two routes, both narrow by
+  // design — the bundle carries PEMs and API keys, so NO general
+  // bundle-file read path exists or may exist (DECIDED, peer consult
+  // 2026-10-07): the read route serves ONE canonical path, the write
+  // route stores ONE canonical path, and neither accepts an arbitrary
+  // path parameter.
+  const LOGO_MIME: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg' };
+
+  /** Magic-byte sniff of an image buffer: 'png' | 'jpg' | null. */
+  function sniffImage(buf: Buffer): 'png' | 'jpg' | null {
+    if (buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'png';
+    if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'jpg';
+    return null;
+  }
+
+  // -- read: session-gated, canonical path only, 404 when absent -------
+  app.get('/admin/devices/:uuid/logo', async (request, reply) => {
+    const session = await requireSession(request);
+    if (!session) return redirectToLogin(reply);
+    const uuid = (request.params as { uuid: string }).uuid;
+    const loaded = await loadDevice(uuid);
+    if (!loaded) return reply.status(404).type('text/html').send(notFoundPage());
+    const current = await loadCurrentFileEntries(uuid);
+    const entry = current.get(CANONICAL_PATHS.logo);
+    if (!entry) return reply.status(404).type('text/html').send(notFoundPage());
+    const bytes = entry.encoding === 'base64' ? Buffer.from(entry.content, 'base64') : Buffer.from(entry.content, 'utf8');
+    const kind = sniffImage(bytes);
+    if (!kind) return reply.status(404).type('text/html').send(notFoundPage());
+    // Cache-Control keyed to the bundle version (spec): the payload is
+    // immutable per version — any new upload bumps the version, so a
+    // strong validator with a version-keyed ETag is safe and revalidates
+    // cheaply after every rotate.
+    const version = loaded.blob?.version ?? 0;
+    return reply
+      .header('cache-control', 'private, no-cache')
+      .header('etag', `"logo-v${version}"`)
+      .type(LOGO_MIME[kind])
+      .send(bytes);
+  });
+
+  // -- write: multipart upload, session + CSRF gated, single field ----
+  app.post('/admin/devices/:uuid/logo', async (request, reply) => {
+    const session = await requireSession(request);
+    if (!session) return redirectToLogin(reply);
+    const uuid = (request.params as { uuid: string }).uuid;
+    const loaded = await loadDevice(uuid);
+    if (!loaded) return reply.status(404).type('text/html').send(notFoundPage());
+
+    // Multipart: one file part + the _csrf field part. Busboy enforces
+    // the 256KB fileSize limit mid-stream; the schema cap is the second
+    // layer for any path that reaches rotate without this handler.
+    const data = (await request.file()) as MultipartFile | undefined;
+    if (!data) {
+      return securityHeaders(reply)
+        .status(400)
+        .type('text/html')
+        .send(html.deviceDetailPage({ ...loaded, csrfToken: session.csrfToken, messages: [{ kind: 'danger', text: 'No file received — choose a PNG or JPG under 256KB.' }] }));
+    }
+    let bytes: Buffer;
+    try {
+      bytes = await data.toBuffer();
+    } catch {
+      return securityHeaders(reply)
+        .status(413)
+        .type('text/html')
+        .send(html.deviceDetailPage({ ...loaded, csrfToken: session.csrfToken, messages: [{ kind: 'danger', text: 'File exceeds the 256KB limit.' }] }));
+    }
+    // CSRF: the multipart field part (NOT the urlencoded body map —
+    // request.body is not populated for multipart). Verified against
+    // @fastify/multipart v10.1.2 live: a text field arrives as a
+    // single { value } object on data.fields (arrays only for
+    // repeated field names).
+    const csrfField: unknown = data.fields['_csrf'];
+    const csrfValue =
+      Array.isArray(csrfField)
+        ? (csrfField[0] as { value?: unknown } | undefined)?.value
+        : (csrfField as { value?: unknown } | undefined)?.value;
+    if (typeof csrfValue !== 'string' || !sessions.verifyCsrf(session, csrfValue)) {
+      return reply.status(403).type('text/html').send(csrfErrorPage());
+    }
+    const kind = sniffImage(bytes);
+    if (!kind) {
+      return securityHeaders(reply)
+        .status(400)
+        .type('text/html')
+        .send(html.deviceDetailPage({ ...loaded, csrfToken: session.csrfToken, messages: [{ kind: 'danger', text: 'Only PNG or JPG images are accepted (magic-byte validated).' }] }));
+    }
+    if (bytes.length > BINARY_MAX_DECODED_BYTES) {
+      return securityHeaders(reply)
+        .status(413)
+        .type('text/html')
+        .send(html.deviceDetailPage({ ...loaded, csrfToken: session.csrfToken, messages: [{ kind: 'danger', text: `Logo exceeds the ${BINARY_MAX_DECODED_BYTES}-byte cap.` }] }));
+    }
+
+    // Store through the ONE rotate path (merge): keep everything except
+    // the logo path, add the base64 entry as an addition. The rotate core
+    // spreads kept entries, so every other bundle file — including other
+    // base64 entries — carries through untouched.
+    const keep = new Set<string>(
+      (await loadCurrentFileEntries(uuid)).keys(),
+    );
+    keep.delete(CANONICAL_PATHS.logo);
+    await rotateBundle(db, clock, uuid, {
+      kind: 'merge',
+      keep,
+      updates: new Map(),
+      additions: [{ path: CANONICAL_PATHS.logo, mode: '0600', content: bytes.toString('base64'), encoding: 'base64' }],
+    }, { sourceIp: request.ip, reason: 'device_logo_uploaded_console' });
+    await audit(db, {
+      deviceId: uuid,
+      outcome: 'admin',
+      reason: 'device_logo_uploaded',
+      sourceIp: request.ip,
+      occurredAt: clock.now(),
+    });
+    return reply.redirect(`/admin/devices/${uuid}`, 303);
+  });
+
   // fleet-ops-e5o.3: the memory-key mint action. One click per device:
   // mints the two route-restricted gateway memory keys (shared
   // team-scoped + private) with the SCOPED key-creator key — never the
@@ -1010,6 +1153,27 @@ export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): v
     const bundleShape = blobRows[0]?.bundle as BlobBundleShape | undefined;
     const out = new Map<string, string>();
     for (const f of bundleShape?.files ?? []) out.set(f.path, f.content);
+    return out;
+  }
+
+  /**
+   * Current bundle file ENTRIES by path (fleet-ops-1py.5): content plus
+   * the binary encoding marker, whole — callers must never re-reconstruct
+   * entries from content alone (that strips encoding). Used by the logo
+   * routes; contents still never render into any page.
+   */
+  async function loadCurrentFileEntries(
+    uuid: string,
+  ): Promise<Map<string, { path: string; content: string; encoding?: 'base64' }>> {
+    const blobRows = await db
+      .select({ bundle: identityBlobs.bundle })
+      .from(identityBlobs)
+      .where(eq(identityBlobs.deviceId, uuid));
+    const bundleShape = blobRows[0]?.bundle as
+      | { files: Array<{ path: string; content: string; encoding?: 'base64' }> }
+      | undefined;
+    const out = new Map<string, { path: string; content: string; encoding?: 'base64' }>();
+    for (const f of bundleShape?.files ?? []) out.set(f.path, { ...f });
     return out;
   }
 

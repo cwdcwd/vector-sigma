@@ -84,7 +84,15 @@ export class IdentityStore {
       for (const [i, f] of parsed.data.files.entries()) {
         const target = path.join(root, f.path);
         const tmp = path.join(staging, `file-${i}`);
-        await writeFile(tmp, f.content, { mode: 0o600 });
+        // 1py.5: base64-encoded files (the device logo et al.) decode to
+        // BYTES before the write — writeFile(content-as-string) would land
+        // the base64 text at the path, and any NUL/0x80+ byte would arrive
+        // mangled as UTF-8. Text files keep the exact prior behavior.
+        if (f.encoding === 'base64') {
+          await writeFile(tmp, Buffer.from(f.content, 'base64'), { mode: 0o600 });
+        } else {
+          await writeFile(tmp, f.content, { mode: 0o600 });
+        }
         await mkdir(path.dirname(target), { recursive: true });
         await rename(tmp, target);
       }

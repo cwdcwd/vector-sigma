@@ -151,6 +151,8 @@ export interface DeviceDetailView {
   messages?: Array<{ kind: 'ok' | 'danger'; text: string }>;
   /** Plaintext device key shown exactly once after (re)generation; never stored. */
   keyOnce?: string | null;
+  /** fleet-ops-1py.5: device has a logo entry in the current bundle. */
+  hasLogo?: boolean;
 }
 
 export function deviceDetailPage(v: DeviceDetailView): string {
@@ -169,6 +171,19 @@ export function deviceDetailPage(v: DeviceDetailView): string {
         `<tr><td><code>${esc(f.path)}</code></td><td>${f.bytes} bytes</td><td class="muted">masked — write-only</td></tr>`,
     )
     .join('\n');
+  // fleet-ops-1py.5: the per-device logo card. The avatar renders from the
+  // session-gated /admin/devices/:uuid/logo route (same-origin — CSP
+  // img-src 'self' covers it); the upload posts multipart (file + _csrf)
+  // to the same path. enctype is REQUIRED for any file input.
+  const logoCard = `<div class="card"><h2>Device logo</h2>
+${v.hasLogo ? `<p><img src="/admin/devices/${esc(d.balenaUuid)}/logo" alt="${esc(d.agentName)} logo" style="max-width:96px;max-height:96px;border-radius:8px"></p>` : '<p class="muted">No logo yet.</p>'}
+<form method="post" action="/admin/devices/${esc(d.balenaUuid)}/logo" enctype="multipart/form-data">
+<input type="hidden" name="_csrf" value="${esc(v.csrfToken)}">
+<input type="file" name="logo" accept="image/png,image/jpeg" required>
+<button type="submit">Upload logo</button>
+</form>
+<p class="muted">PNG or JPG, up to 256KB. Replaces any existing logo.</p>
+</div>`;
   const toggleForm =
     d.status === 'active'
       ? `<form method="post" action="/admin/devices/${esc(d.balenaUuid)}/revoke"><input type="hidden" name="_csrf" value="${esc(v.csrfToken)}"><button type="submit" class="danger">Revoke</button></form>`
@@ -197,6 +212,7 @@ ${
     : `<p class="muted">No bundle yet.</p><p><a href="/admin/devices/${esc(d.balenaUuid)}/bundle">Create one</a></p>`
 }
 </div>
+${logoCard}
 ${actions}`,
     { csrfToken: v.csrfToken },
   );

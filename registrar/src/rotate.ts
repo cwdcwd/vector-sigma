@@ -13,9 +13,18 @@ import type { Clock } from './clock.js';
  * same core here.
  */
 
+/**
+ * A bundle file as the rotate plane carries it (fleet-ops-1py.5): encoding
+ * rides along so a merge/replace never strips binary payloads back to their
+ * base64 text. Every site that reconstructs a file MUST spread the source
+ * entry (or copy encoding explicitly) — picked-keys `{path, mode, content}`
+ * is the corruption class this lane closes.
+ */
+export type RotateFile = { path: string; mode: '0600'; content: string; encoding?: 'base64' };
+
 export type RotateInput =
-  | { kind: 'replace'; files: Array<{ path: string; mode: '0600'; content: string }> }
-  | { kind: 'merge'; keep: Set<string>; updates: Map<string, string>; additions: Array<{ path: string; mode: '0600'; content: string }> };
+  | { kind: 'replace'; files: RotateFile[] }
+  | { kind: 'merge'; keep: Set<string>; updates: Map<string, string>; additions: RotateFile[] };
 
 export interface RotateResult {
   bundle: IdentityBundle;
@@ -35,7 +44,8 @@ export function parseConsoleFiles(fields: {
    * that join the same merge as existing-file content updates. The admin
    * route has already resolved raw-upload-vs-rendered precedence (raw
    * same-path upload wins), so this list carries only the effective
-   * renders.
+   * renders. Text-only by construction (structured-fields.ts renders no
+   * binary) — encoding stays unset.
    */
   structured_updates?: Array<{ path: string; mode: '0600'; content: string }>;
 }): RotateInput {
@@ -72,22 +82,33 @@ export function buildNextBundle(
   now: Date,
 ): { bundle: IdentityBundle; version: number } {
   const version = (current?.bundle_version ?? 0) + 1;
-  let files: Array<{ path: string; mode: '0600'; content: string }> = [];
+  let files: RotateFile[] = [];
 
   if (input.kind === 'replace') {
-    files = input.files.map((f) => ({ path: f.path, mode: '0600', content: f.content }));
+    // Spread, not picked keys: a replace input that already carries
+    // encoding (REST /v1/rotate, 1py.5) keeps it through the rebuild —
+    // with mode re-pinned to the plane's fixed literal (rotate owns
+    // mode; only per-file DATA rides the spread).
+    files = input.files.map((f) => ({ ...f, mode: '0600' as const }));
   } else {
-    const byPath = new Map<string, { path: string; mode: '0600'; content: string }>();
+    const byPath = new Map<string, RotateFile>();
     for (const f of current?.files ?? []) {
       if (input.keep.has(f.path)) {
-        byPath.set(f.path, { path: f.path, mode: '0600', content: f.content });
+        // 1py.5 carry-through: the kept entry is spread whole so a merge
+        // (structured save, mint-memory-keys, console raw save) never
+        // strips encoding off a kept binary file — the logo corruption
+        // class this lane closes. Mode is re-pinned to the plane's fixed
+        // literal: rotate OWNS mode (pre-1py.5 rebuilds normalized it —
+        // the contract mesh-enroll's seeded blobs and any legacy row
+        // rely on), while per-file data (encoding) rides the spread.
+        byPath.set(f.path, { ...f, mode: '0600' as const });
       }
     }
     for (const [path, content] of input.updates) {
       byPath.set(path, { path, mode: '0600', content });
     }
     for (const f of input.additions) {
-      byPath.set(f.path, { path: f.path, mode: '0600', content: f.content });
+      byPath.set(f.path, { ...f, mode: '0600' as const });
     }
     files = [...byPath.values()];
   }
