@@ -158,6 +158,17 @@ The runtime wiring is a CODE contract, not yours to maintain:
 - A peer calling you: it presents its own mesh key; your inbound
   resolves the name from `A2A_PEER_TOKENS` and enforces
   `A2A_TRUSTED_PEERS`.
+- Your served origin (the j7g.1 serve form): your `:9900` inbound
+  publishes loopback-only on your host; your device's tailscale
+  serve edge fronts it at
+  `https://<this-device>.tailb7207e.ts.net:9900` — that URL is the
+  `public_url` your bundle carries, and the master gateway's proxy
+  dials it to deliver peer traffic. If it is unreachable, probe in
+  this order: on-host `127.0.0.1:9900` (the publish), the served
+  URL from a tailnet vantage (the serve edge + cert), then the
+  tailnet ACL (a dark TCP with live `tailscale ping` pongs is an
+  ACL gap, not a device fault — see the tailscale runbook's
+  phase-3 section).
 
 ### How you got here (j7g.1 mesh-enroll)
 

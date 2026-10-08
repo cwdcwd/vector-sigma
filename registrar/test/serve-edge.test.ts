@@ -31,11 +31,16 @@ import { describe, expect, it } from 'vitest';
  *      serve image and declares TS_SERVE_CONFIG; NO caddy service; no
  *      caddy-data volume; registrar/litellm/scotty publish loopback
  *      ONLY (no unprefixed host publishes anywhere).
- *   4. balena/devices compose: the tailscale service stays STOCK
- *      (devices join; they serve nothing) — the deliberate master/
- *      devices delta.
+ *   4. balena/devices compose (j7g.1, the AC3 serve form): the
+ *      tailscale service BUILDS the devices' own serve image
+ *      (Dockerfile.tailscale + serve-config.json keyed on the
+ *      ${TS_CERT_DOMAIN} placeholder — N devices from one compose)
+ *      fronting the agent's A2A origin at :9900; the agent publishes
+ *      loopback-only. The master/devices delta is now WHAT each edge
+ *      serves (management surfaces vs the agent origin), not WHETHER
+ *      either serves.
  *   5. No compose anywhere publishes to the LAN front door (80/443/
- *      8443/8444 without a 127.0.0.1 prefix).
+ *      8443/8444/9900 without a 127.0.0.1 prefix).
  *
  * Full-line comments are stripped before scanning.
  */
@@ -150,12 +155,51 @@ describe('balena/registrar compose: the serve-only edge (lnf)', () => {
   });
 });
 
-describe('balena/devices compose: stock overlay, no serve (the deliberate delta)', () => {
-  it('the tailscale service stays on the stock pinned image', () => {
+describe('balena/devices compose: the agent-origin serve edge (j7g.1 — the AC3 serve form)', () => {
+  it('the tailscale service BUILDS the serve image and declares TS_SERVE_CONFIG', () => {
+    // j7g.1 (the owner's AC3 live-leg origin decision): the devices
+    // fleet's tailscale service becomes a BUILD — the same serve-only
+    // TLS edge pattern the master's lnf build established, fronting
+    // the ONE device surface the mesh needs: the agent's A2A origin.
     const ts = serviceBlock(devicesCompose, 'tailscale');
-    expect(ts).toMatch(/^    image: tailscale\/tailscale:v1\.102\.5$/m);
-    expect(ts).not.toMatch(/TS_SERVE_CONFIG/);
-    expect(ts).not.toMatch(/dockerfile:/);
+    expect(ts).toMatch(/dockerfile: Dockerfile\.tailscale/);
+    expect(ts).toMatch(/TS_SERVE_CONFIG: \/serve-config\.json/);
+  });
+
+  it('the agent publishes its A2A origin loopback-only (the served target)', () => {
+    const agent = serviceBlock(devicesCompose, 'agent');
+    expect(agent).toMatch(/- "127\.0\.0\.1:9900:9900"/);
+  });
+
+  it('publishes nothing to the LAN front door (IP-prefixed only)', () => {
+    const publishes = devicesCompose.match(/- "[^"]+:\d+"$/gm) ?? [];
+    for (const p of publishes) {
+      expect(p.startsWith('- "127.0.0.1:')).toBe(true);
+    }
+  });
+
+  it('serve-config.json keys the served origin on the ${TS_CERT_DOMAIN} placeholder', () => {
+    // The devices fleet is N devices from one compose — a literal FQDN
+    // cannot serve every node, so the config keys the ${TS_CERT_DOMAIN}
+    // PLACEHOLDER and containerboot substitutes each node's own
+    // MagicDNS FQDN at apply time (readServeConfig's bytes.ReplaceAll,
+    // verified at the pinned v1.102.5 tag). The MASTER's config stays
+    // literal (single device, known name) — this is the ONE deliberate
+    // dialect delta between the two serve configs.
+    const sc = JSON.parse(read('balena/devices/serve-config.json'));
+    expect(Object.keys(sc.TCP)).toEqual(['9900']);
+    expect(sc.TCP['9900']).toEqual({ HTTPS: true });
+    expect(Object.keys(sc.Web)).toEqual(['${TS_CERT_DOMAIN}:9900']);
+    expect(sc.Web['${TS_CERT_DOMAIN}:9900'].Handlers['/'].Proxy).toBe(
+      'http://127.0.0.1:9900',
+    );
+  });
+
+  it('Dockerfile.tailscale pins the same tailscale tag both fleets build from', () => {
+    const dfCode = stripComments(read('balena/devices/Dockerfile.tailscale'));
+    expect(dfCode).toMatch(/FROM tailscale\/tailscale:v1\.102\.5/);
+    expect(dfCode).not.toMatch(/:latest/);
+    expect(dfCode).toMatch(/COPY serve-config\.json \/serve-config\.json/);
   });
 });
 

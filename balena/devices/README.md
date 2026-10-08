@@ -7,8 +7,10 @@ balena remote builders when a `devices-v*` tag is pushed
 
 ```
 balena/devices/
-├── docker-compose.yml        # agent + registrant + tailscale overlay, shared volume, healthchecks
+├── docker-compose.yml        # agent + registrant + tailscale serve edge, shared volume, healthchecks
 ├── Dockerfile.agent-hermes   # the agent runtime (j7g.1): official Hermes image + bd 1.2.2 + gate + A2A hook
+├── Dockerfile.tailscale      # the devices' serve edge (j7g.1 serve form): pinned tailscale + baked serve config
+├── serve-config.json         # fronts :9900 at ${TS_CERT_DOMAIN} (each node's own MagicDNS name)
 ├── agent/
 │   ├── Dockerfile            # the RETIRED placeholder image (kept for history; not built since j7g.1)
 │   ├── gate.sh               # blocks on /data/agent/ready.marker, then execs the image's own entrypoint dispatcher
@@ -66,10 +68,26 @@ dashboard variable (`REGISTRAR_URL`, `REGISTRAR_KEY` per device;
 `BALENA_DEVICE_UUID` auto-injected). The full table:
 [balena-devices-runbook.md](../docs/balena-devices-runbook.md). The
 `tailscale` service is the one structural exception: it carries the
-single static `TS_STATE_DIR` env entry (its state path — structural,
-not a secret); its auth key and MagicDNS name arrive the same
-dashboard-variable way (`TS_AUTHKEY` service-scoped to tailscale,
-`TS_HOSTNAME` device-scoped — see the tailscale runbook).
+static `TS_STATE_DIR` / `TS_USERSPACE` / `TS_BOOT_TIMEOUT` /
+`TS_SERVE_CONFIG` env entries (structural, not secrets); its auth
+key and MagicDNS name arrive the same dashboard-variable way
+(`TS_AUTHKEY` service-scoped to tailscale, `TS_HOSTNAME`
+device-scoped — see the tailscale runbook).
+
+**The served agent origin (j7g.1 — the AC3 serve form).** The
+`agent` service publishes `127.0.0.1:9900:9900` LOOPBACK ONLY; the
+`tailscale` service BUILDS the serve edge
+(`Dockerfile.tailscale` + `serve-config.json`) and fronts that
+origin at each device's own MagicDNS name,
+`https://<device>.tailb7207e.ts.net:9900` — the URL the live
+enroll's `origin_url` carries (the master gateway's proxy dials it
+to deliver peer traffic). The serve config keys on the
+`${TS_CERT_DOMAIN}` placeholder: containerboot substitutes the
+node's own FQDN at apply time, so N devices serve from one compose.
+The LAN front door stays dark — no unprefixed publish exists. See
+the tailscale runbook's phase-3 section for the canary checks and
+the ACL note (the master→device direction needs its own accept
+rule).
 
 ## Layout constraints honored
 

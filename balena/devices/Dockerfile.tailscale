@@ -1,0 +1,48 @@
+# balena/devices/Dockerfile.tailscale — the VS devices fleet's tailscale
+# overlay service image (fleet-ops-j7g.1: the served agent origin — the
+# owner-decided serve form for the AC3 live leg).
+#
+# The devices fleet's tailscale service JOINED only through devices-v1.1.0
+# (stock pinned image, serves nothing — the lnf master/devices delta).
+# This build promotes it to the devices' own SERVE edge for exactly ONE
+# surface: the agent's A2A origin (:9900), which the master gateway's
+# proxy dials to deliver peer traffic. Same serve-only TLS edge pattern
+# as the master's lnf build (Dockerfile.tailscale in balena/registrar):
+# ACLs govern access, TLS auto-provisioned, identity headers intact,
+# zero new firewall surface — the origin is published at the device's
+# own MagicDNS name, never at a host port.
+#
+# THE ${TS_CERT_DOMAIN} PLACEHOLDER (unlike the master's literal bake):
+# the devices fleet is N devices from ONE compose — a literal FQDN
+# cannot serve every node. containerboot substitutes ${TS_CERT_DOMAIN}
+# with the node's own cert domain at apply time (cmd/containerboot/
+# serve.go readServeConfig: bytes.ReplaceAll(j, []byte("${TS_CERT_DOMAIN}"),
+# []byte(certDomain)) — verified at the pinned v1.102.5 tag), and on a
+# non-kube node the cert domain is the node's own MagicDNS FQDN (the
+# netmap's st.CertDomains[0] — main.go nmState.certDomains.At(0); the
+# live master proves the field non-empty: its serve config applied and
+# Let's Encrypt certificates issued). Each device therefore serves its
+# A2A origin at https://<device>.tailb7207e.ts.net:9900 with its own LE
+# certificate — provisioned the same way the master's are, no owner
+# step beyond the tailnet-wide HTTPS enable already in place (lnf).
+#
+# Dialect note (same as the master's build — verified from the pinned
+# image's own source, v1.102.5, cmd/containerboot/serve.go
+# readServeConfig): TS_SERVE_CONFIG is a raw ipn.ServeConfig JSON file.
+#   TCP  — map keyed by PORT number ("9900"), value { "HTTPS": true }
+#   Web  — map keyed "SNI:port" (no implicit 443 in this dialect), each
+#          a Handlers map keyed by mount point, "/" proxying the
+#          loopback publish of the agent service (127.0.0.1:9900 —
+#          tailscaled runs in the host network namespace where compose
+#          names don't resolve, the same reason the master's serve
+#          config proxies loopback).
+# The apply is REFUSED with a logged refusal line when the tailnet has
+# HTTPS certificates disabled; the owner prerequisite (admin console →
+# MagicDNS → HTTPS Certificates) has been live since lnf — the master's
+# own cert lines are the primary-source proof.
+# A file change re-applies via fsnotify (with a 5s-ticker fallback), so
+# the baked bytes are also the recovery path after any drift.
+
+FROM tailscale/tailscale:v1.102.5
+
+COPY serve-config.json /serve-config.json
