@@ -44,10 +44,18 @@ minting click-path).
 | Agent | GitHub identity | GitHub App | App id |
 |---|---|---|---|
 | primus | `vectorsigma-primus[bot]` | VectorSigma-Primus | 5137374 |
+| optimus-prime | `vectorsigma-optimusprime[bot]` | VectorSigma-OptimusPrime | 5244856 |
 
 *(Registry rows are added by PR when the owner mints a new agent's App
 — the PR that documents a minted App lands after the mint, never
 before; the App id is public record, the PEM never enters the repo.)*
+
+*Slug note:* record the slug the owner ACTUALLY minted (verify live,
+`GET /apps/<slug>`), never the naming convention's spelling — for
+optimus-prime the minted App is `VectorSigma-OptimusPrime`
+(`vectorsigma-optimusprime[bot]`, one word, not
+`vectorsigma-optimus-prime[bot]`), and the `[bot]` login derives from
+the live slug.
 
 These are **documented designations, not GitHub-enforced roles** — the
 same advisory-only posture as primus's entry above.
