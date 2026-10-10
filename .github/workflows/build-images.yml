@@ -1,0 +1,186 @@
+name: Build and publish private VS images
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'shared/**'
+      - 'registrar/**'
+      - 'balena/**'
+      - 'deploy/**'
+      - '.github/workflows/build-images.yml'
+  pull_request:
+    paths:
+      - 'shared/**'
+      - 'registrar/**'
+      - 'balena/**'
+      - 'deploy/**'
+      - '.github/workflows/build-images.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.component }} (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: registrar
+            context: balena/registrar/registrar
+            dockerfile: balena/registrar/registrar/Dockerfile
+            platform: linux/amd64
+            arch_tag: amd64
+            runner: ubuntu-latest
+          - component: registrar
+            context: balena/registrar/registrar
+            dockerfile: balena/registrar/registrar/Dockerfile
+            platform: linux/arm64
+            arch_tag: arm64
+            runner: ubuntu-24.04-arm
+          - component: registrant
+            context: balena/registrar/registrant-own
+            dockerfile: balena/registrar/registrant-own/Dockerfile
+            platform: linux/amd64
+            arch_tag: amd64
+            runner: ubuntu-latest
+          - component: registrant
+            context: balena/registrar/registrant-own
+            dockerfile: balena/registrar/registrant-own/Dockerfile
+            platform: linux/arm64
+            arch_tag: arm64
+            runner: ubuntu-24.04-arm
+          - component: scotty
+            context: balena/registrar
+            dockerfile: balena/registrar/Dockerfile.scotty
+            platform: linux/amd64
+            arch_tag: amd64
+            runner: ubuntu-latest
+          - component: scotty
+            context: balena/registrar
+            dockerfile: balena/registrar/Dockerfile.scotty
+            platform: linux/arm64
+            arch_tag: arm64
+            runner: ubuntu-24.04-arm
+          - component: hermes
+            context: balena/registrar
+            dockerfile: balena/registrar/Dockerfile.hermes
+            platform: linux/amd64
+            arch_tag: amd64
+            runner: ubuntu-latest
+          - component: hermes
+            context: balena/registrar
+            dockerfile: balena/registrar/Dockerfile.hermes
+            platform: linux/arm64
+            arch_tag: arm64
+            runner: ubuntu-24.04-arm
+          - component: postgres
+            context: balena/registrar
+            dockerfile: balena/registrar/Dockerfile.postgres
+            platform: linux/amd64
+            arch_tag: amd64
+            runner: ubuntu-latest
+          - component: postgres
+            context: balena/registrar
+            dockerfile: balena/registrar/Dockerfile.postgres
+            platform: linux/arm64
+            arch_tag: arm64
+            runner: ubuntu-24.04-arm
+          - component: litellm
+            context: balena/registrar
+            dockerfile: balena/registrar/Dockerfile.litellm
+            platform: linux/amd64
+            arch_tag: amd64
+            runner: ubuntu-latest
+          - component: litellm
+            context: balena/registrar
+            dockerfile: balena/registrar/Dockerfile.litellm
+            platform: linux/arm64
+            arch_tag: arm64
+            runner: ubuntu-24.04-arm
+          - component: tailscale
+            context: balena/registrar
+            dockerfile: balena/registrar/Dockerfile.tailscale
+            platform: linux/amd64
+            arch_tag: amd64
+            runner: ubuntu-latest
+          - component: tailscale
+            context: balena/registrar
+            dockerfile: balena/registrar/Dockerfile.tailscale
+            platform: linux/arm64
+            arch_tag: arm64
+            runner: ubuntu-24.04-arm
+          - component: agent
+            context: balena/devices
+            dockerfile: balena/devices/Dockerfile.agent-hermes
+            platform: linux/amd64
+            arch_tag: amd64
+            runner: ubuntu-latest
+          - component: agent
+            context: balena/devices
+            dockerfile: balena/devices/Dockerfile.agent-hermes
+            platform: linux/arm64
+            arch_tag: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Log into GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push architecture image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platform }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ghcr.io/${{ github.repository }}/${{ matrix.component }}:${{ github.sha }}-${{ matrix.arch_tag }}
+          # GHA cache allows at most 10 scopes per repository; 8 component scopes
+          # (shared by both architectures) stay under that limit.
+          cache-from: type=gha,scope=${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}
+      - name: Record image digest
+        if: github.event_name != 'pull_request'
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}/${{ matrix.component }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          echo "Built image: $IMAGE@${DIGEST}"
+
+  manifest:
+    name: Assemble multi-arch image manifests
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        component: [registrar, registrant, scotty, hermes, postgres, litellm, tailscale, agent]
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - name: Log into GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Assemble and inspect immutable multi-arch manifest
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}/${{ matrix.component }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            --tag "$IMAGE:${GITHUB_SHA}" \
+            "$IMAGE:${GITHUB_SHA}-amd64" \
+            "$IMAGE:${GITHUB_SHA}-arm64"
+          docker buildx imagetools inspect "$IMAGE:${GITHUB_SHA}"
