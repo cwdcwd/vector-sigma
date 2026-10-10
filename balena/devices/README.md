@@ -1,9 +1,10 @@
 # balena/devices — devices-fleet app
 
 The balena multi-container app for the **devices fleet**: agent runtime
-+ registrant sharing the persistent `agent-data` volume. Built by
-balena remote builders when a `devices-v*` tag is pushed
-(`deploy-devices.yml`). Deployed fleet: `g_c_d/vector-sigma`.
++ registrant sharing the persistent `agent-data` volume. Images built on
+GHA runners from a `devices-v*` tag push (`release-devices.yml`): GHCR
+prebuilts, trivy + smoke gates, digest-pinned compose, `balena deploy`.
+Deployed fleet: `g_c_d/vector-sigma`.
 
 ```
 balena/devices/
@@ -33,8 +34,8 @@ balena/devices/
 
 balena build contexts are **confined to the app source dir** —
 `build.context` must point inside the app (`docs.balena.io/reference/
-supervisor/docker-compose`), and this dir is what the deploy workflow
-uploads to the remote builders. The registrant + shared sources
+supervisor/docker-compose`), and this dir is what the release workflow
+builds from at tag-cut. The registrant + shared sources
 therefore cannot reference `../../registrant` the way `deploy/`'s
 compose does.
 

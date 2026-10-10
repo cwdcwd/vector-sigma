@@ -1,0 +1,304 @@
+name: Release registrar fleet
+
+# fleet-ops-1py.7 rung 2: tags-only releases (owner ruling 2026-09-18) with
+# PREBUILT images — the source-push action (balena-io/deploy-to-balena-action,
+# balena push --source under the hood) is RETIRED. One workflow run:
+#   build    — registrar-app components x amd64/arm64 native matrix (no QEMU)
+#              push <sha>-<arch> tags to GHCR (private repo images)
+#   manifest — assemble the multi-arch index per component
+#   scan     — trivy CRITICAL,HIGH gate on the built images (fail = no release)
+#   smoke    — scripts/release-smoke.sh boot-path gate on the multi-arch tags
+#   render   — scripts/render-release-compose.mjs writes the digest-pinned
+#              compose (arm64 CHILD digests — devices are aarch64; the runner
+#              is x86, so pinning the INDEX digest would resolve wrong-arch)
+#   deploy   — pinned balena CLI `balena deploy` pulls the prebuilts and
+#              uploads them to the balenaCloud registry; devices pull from
+#              balena, never GHCR. registry-secrets ride the run's
+#              GITHUB_TOKEN (per-run GHCR auth — the same run that built).
+# No source leaves the repo for builds; no drafts; the fleet pin advance
+# stays the canary's job (docs/balena-architecture.md).
+on:
+  push:
+    tags: ["registrar-v*"]
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY_NS: cwdcwd/vector-sigma
+  BALENA_CLI_VERSION: "25.2.6"
+  # sha256 of balena-cli-v25.2.6-linux-x64-standalone.tar.gz (pinned at lane
+# time 2026-10-10 from the GitHub release API) — supply-chain posture matches
+# the bd/scotty tarball pins: fail-loud on mismatch, never a floating fetch.
+  BALENA_CLI_SHA256: "687ba0d0fd35fad6bb672763c739535b546fbf9aa5ab2909e670c5534a36e3d6"
+
+jobs:
+  build:
+    name: Build ${{ matrix.component }} (${{ matrix.arch_tag }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: registrar
+            context: balena/registrar/registrar
+            dockerfile: balena/registrar/registrar/Dockerfile
+            platform: linux/amd64
+            arch_tag: amd64
+            runner: ubuntu-latest
+          - component: registrar
+            context: balena/registrar/registrar
+            dockerfile: balena/registrar/registrar/Dockerfile
+            platform: linux/arm64
+            arch_tag: arm64
+            runner: ubuntu-24.04-arm
+          - component: registrant
+            context: balena/registrar/registrant-own
+            dockerfile: balena/registrar/registrant-own/Dockerfile
+            platform: linux/amd64
+            arch_tag: amd64
+            runner: ubuntu-latest
+          - component: registrant
+            context: balena/registrar/registrant-own
+            dockerfile: balena/registrar/registrant-own/Dockerfile
+            platform: linux/arm64
+            arch_tag: arm64
+            runner: ubuntu-24.04-arm
+          - component: scotty
+            context: balena/registrar
+            dockerfile: balena/registrar/Dockerfile.scotty
+            platform: linux/amd64
+            arch_tag: amd64
+            runner: ubuntu-latest
+          - component: scotty
+            context: balena/registrar
+            dockerfile: balena/registrar/Dockerfile.scotty
+            platform: linux/arm64
+            arch_tag: arm64
+            runner: ubuntu-24.04-arm
+          - component: hermes
+            context: balena/registrar
+            dockerfile: balena/registrar/Dockerfile.hermes
+            platform: linux/amd64
+            arch_tag: amd64
+            runner: ubuntu-latest
+          - component: hermes
+            context: balena/registrar
+            dockerfile: balena/registrar/Dockerfile.hermes
+            platform: linux/arm64
+            arch_tag: arm64
+            runner: ubuntu-24.04-arm
+          - component: postgres
+            context: balena/registrar
+            dockerfile: balena/registrar/Dockerfile.postgres
+            platform: linux/amd64
+            arch_tag: amd64
+            runner: ubuntu-latest
+          - component: postgres
+            context: balena/registrar
+            dockerfile: balena/registrar/Dockerfile.postgres
+            platform: linux/arm64
+            arch_tag: arm64
+            runner: ubuntu-24.04-arm
+          - component: litellm
+            context: balena/registrar
+            dockerfile: balena/registrar/Dockerfile.litellm
+            platform: linux/amd64
+            arch_tag: amd64
+            runner: ubuntu-latest
+          - component: litellm
+            context: balena/registrar
+            dockerfile: balena/registrar/Dockerfile.litellm
+            platform: linux/arm64
+            arch_tag: arm64
+            runner: ubuntu-24.04-arm
+          - component: tailscale
+            context: balena/registrar
+            dockerfile: balena/registrar/Dockerfile.tailscale
+            platform: linux/amd64
+            arch_tag: amd64
+            runner: ubuntu-latest
+          - component: tailscale
+            context: balena/registrar
+            dockerfile: balena/registrar/Dockerfile.tailscale
+            platform: linux/arm64
+            arch_tag: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Log into GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push architecture image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/${{ matrix.arch_tag }}
+          push: true
+          tags: ghcr.io/${{ env.REGISTRY_NS }}/${{ matrix.component }}:${{ github.sha }}-${{ matrix.arch_tag }}
+          # GHA cache: one scope per component, shared by both arches — the
+          # 10-scope/repo cap is why the matrix does not get 14 scopes.
+          cache-from: type=gha,scope=${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}
+      - name: Record image digest
+        env:
+          IMAGE: ghcr.io/${{ env.REGISTRY_NS }}/${{ matrix.component }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          echo "Built image: $IMAGE@${DIGEST}"
+
+  manifest:
+    name: Assemble multi-arch manifest
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [registrar, registrant, scotty, hermes, postgres, litellm, tailscale]
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - name: Log into GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Assemble and inspect immutable multi-arch manifest
+        env:
+          IMAGE: ghcr.io/${{ env.REGISTRY_NS }}/${{ matrix.component }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            --tag "$IMAGE:${GITHUB_SHA}" \
+            "$IMAGE:${GITHUB_SHA}-amd64" \
+            "$IMAGE:${GITHUB_SHA}-arm64"
+          docker buildx imagetools inspect "$IMAGE:${GITHUB_SHA}"
+
+  scan:
+    name: Vulnerability gate (trivy CRITICAL,HIGH)
+    needs: manifest
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        component: [registrar, registrant, scotty, hermes, postgres, litellm, tailscale]
+    steps:
+      - name: Log into GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Scan ${{ matrix.component }}:${{ github.sha }}
+        uses: aquasecurity/trivy-action@0.36.0
+        with:
+          image-ref: ghcr.io/${{ env.REGISTRY_NS }}/${{ matrix.component }}:${{ github.sha }}
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+          skip-setup-trivy: false
+
+  smoke:
+    name: Release image smoke gate
+    needs: manifest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Log into GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Boot-path smoke (registrar app components)
+        run: scripts/release-smoke.sh cwdcwd/vector-sigma ${{ github.sha }} registrar
+
+  render:
+    name: Render digest-pinned compose
+    needs: [smoke, scan]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install renderer deps
+        run: npm install --silent yaml@2.9.1
+      - name: Log into GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Render balena/registrar digest-pinned compose
+        run: |
+          set -euo pipefail
+          node scripts/render-release-compose.mjs \
+            --app registrar \
+            --registry-owner cwdcwd \
+            --repo vector-sigma \
+            --sha "$GITHUB_SHA" \
+            --out release/registrar
+          echo "=== rendered compose ==="
+          cat release/registrar/docker-compose.yml
+          echo "=== provenance ==="
+          cat release/registrar/registrar.release.json
+      - name: Upload render artifact
+        uses: actions/upload-artifact@v4
+        with:
+          path: release/registrar/
+          name: registrar-release-compose
+          retention-days: 30
+
+  deploy:
+    name: balena deploy (prebuilts -> balenaCloud registry)
+    needs: render
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download rendered compose
+        uses: actions/download-artifact@v4
+        with:
+          name: registrar-release-compose
+          path: release/registrar
+      - name: Log into GitHub Container Registry (pull prebuilts)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install pinned balena CLI (sha256-verified)
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/balena-cli.tar.gz \
+            "https://github.com/balena-io/balena-cli/releases/download/v${BALENA_CLI_VERSION}/balena-cli-v${BALENA_CLI_VERSION}-linux-x64-standalone.tar.gz"
+          echo "${BALENA_CLI_SHA256}  /tmp/balena-cli.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/balena-cli.tar.gz -C /opt
+          /opt/balena/bin/balena version
+      - name: balena login (token)
+        run: /opt/balena/bin/balena login --token "${BALENA_TOKEN}"
+        env:
+          BALENA_TOKEN: ${{ secrets.BALENA_TOKEN }}
+      - name: GHCR registry-secrets file (per-run GITHUB_TOKEN auth)
+        run: |
+          set -euo pipefail
+          printf 'ghcr.io:\n  username: %s\n  password: %s\n' \
+            "${{ github.actor }}" "${{ secrets.GITHUB_TOKEN }}" > /tmp/registry-secrets.yml
+      - name: Deploy prebuilt images to ${{ vars.REGISTRAR_FLEET }}
+        run: |
+          set -euo pipefail
+          cd release/registrar
+          /opt/balena/bin/balena deploy "${{ vars.REGISTRAR_FLEET }}" \
+            --source . \
+            --registry-secrets /tmp/registry-secrets.yml \
+            --release-tag "git-tag" "${GITHUB_REF_NAME}" \
+            --note "vector-sigma ${GITHUB_REF_NAME} — prebuilt images at ${GITHUB_SHA} (1py.7 rung 2)"

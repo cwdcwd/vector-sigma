@@ -47,7 +47,36 @@ Both share the named volume `agent-data`, mounted at `/data/agent`. Identity liv
 
 ## Releases
 
-Tags-only, per [balena-architecture.md](balena-architecture.md): push `devices-v*` → `deploy-devices.yml` builds a **final** release on balena remote builders → no device moves until a pin advances. Canary pin → verify (checklist) → fleet pin → clear canary pin.
+Tags-only, per [balena-architecture.md](balena-architecture.md): push `devices-v*` → `release-devices.yml` builds images on GHA runners, gates them (trivy + smoke), renders the digest-pinned compose, and `balena deploy` uploads the prebuilts to the balenaCloud registry → **final** release, no device moves until a pin advances. Canary pin → verify (checklist) → fleet pin → clear canary pin.
+
+## Rollback
+
+There is no "revert" button and none is wanted: a release is immutable
+byte-for-byte (digest-pinned compose), so a rollback is a **forward** move
+to a previously-good release. Per the owner ruling (2026-09-18, tags-only),
+rollback = **re-pin**:
+
+1. **Identify the last-good release.** Dashboard → Devices fleet →
+   *Releases* — or the workflow log of the last-green `devices-v*` tag.
+   Its provenance file (artifact `devices-release-compose`, 30-day
+   retention) records the exact GHCR digests shipped.
+2. **Pin the fleet to it.** `balena fleet pin g_c_d/vector-sigma <COMMIT>`
+   (or dashboard → Devices fleet → *Release pin* → pick the release).
+   Every unpinned device updates to that release.
+3. **If no last-good release exists** (bad first release, or the bad
+   release IS the current fleet pin): cut a `devices-v*` tag from the
+   known-good git commit — CI builds fresh images at that SHA, gates
+   and deploys exactly as a normal release. That new release is the
+   rollback target; pin to it.
+4. **Devices already on the bad release** and not answering the pin
+   (rare — only if the bad release broke the supervisor link): the
+   reflash path is the registrar-identity survival guarantee — identity
+   lives on the data partition, a reflash re-fetches nothing, the
+   device comes back as itself on the last release it can reach.
+
+Rollback is a fleet-pin move only — never edit the compose, never rebuild
+on a device, never force-push tags (a re-cut tag from the same commit
+rebuilds identical bytes and is fine; a moved tag breaks provenance).
 
 ## Registrar outage survival
 

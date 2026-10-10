@@ -11,8 +11,9 @@ principle). The gateway serves the models front door, virtual keys, and the
 
 The balena multi-container app for the **registrar fleet**: the Vector
 Sigma registrar API + admin console, backed by its own Postgres, on one
-dedicated balenaOS device (Raspberry Pi 5). Built by balena remote
-builders when a `registrar-v*` tag is pushed (`deploy-registrar.yml`).
+dedicated balenaOS device (Raspberry Pi 5). Images built on GHA runners
+from a `registrar-v*` tag push (`release-registrar.yml`): GHCR prebuilts,
+trivy + smoke gates, digest-pinned compose, `balena deploy`.
 Deployed fleet: `g_c_d/vector-sigma-master`.
 
 ```
