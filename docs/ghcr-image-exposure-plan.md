@@ -10,9 +10,24 @@ The owner has authorized accepting a full Vector Sigma redeploy or rebuild if th
 
 ## What is in scope
 
-The repo's image workflow builds eight components for amd64 and arm64 and publishes on pushes to `main`; release workflows later use those images to build balena releases ([build workflow](../.github/workflows/build-images.yml), [balena architecture](balena-architecture.md)). The registrar and device images explicitly copy vendored operational documentation into their layers ([registrar Dockerfile](../balena/registrar/Dockerfile.hermes), [device Dockerfile](../balena/devices/Dockerfile.agent-hermes)). The master Tailscale image copies a serve configuration into its layer ([serve config](../balena/registrar/serve-config.json), [Dockerfile](../balena/registrar/Dockerfile.tailscale)). Compose also contains literal `extra_hosts` mappings for the tailnet master and enrolled device ([registrar compose](../balena/registrar/docker-compose.yml), [devices compose](../balena/devices/docker-compose.yml)).
+The repo's image workflow builds eight components for amd64 and arm64 and publishes on pushes to `main` and on manual `workflow_dispatch` runs — registry login and push are gated only on `pull_request` events, so dispatch runs publish too ([build workflow](../.github/workflows/build-images.yml), [balena architecture](balena-architecture.md)). Each publish produces per-architecture tags (`<sha>-amd64`, `<sha>-arm64`) plus a multi-arch index per component at `<sha>` (the workflow's manifest job); the inventory must list both the per-arch child digests and the index digests. Release workflows later use these images to build balena releases. The registrar and device images explicitly copy vendored operational documentation into their layers ([registrar Dockerfile](../balena/registrar/Dockerfile.hermes), [device Dockerfile](../balena/devices/Dockerfile.agent-hermes)). The master Tailscale image copies a serve configuration into its layer ([serve config](../balena/registrar/serve-config.json), [Dockerfile](../balena/registrar/Dockerfile.tailscale)). Compose also contains literal `extra_hosts` mappings for the tailnet master and enrolled device ([registrar compose](../balena/registrar/docker-compose.yml), [devices compose](../balena/devices/docker-compose.yml)).
 
 Before choosing deletion targets, inventory the live GHCR package namespaces, versions/tags/digests, visibility, download counts, and consumers. Do not infer package ownership or public status from workflow comments. Confirm the images and their current layers with anonymous pulls and registry metadata; preserve the inventory as review evidence. Scan every built image, not just the two images already known to copy docs.
+
+## The repo is public: images alone cannot achieve the goal
+
+The same live values the plan wants out of image layers are in tracked files and git history of this repository, which is public: the MagicDNS FQDN in `serve-config.json` and Dockerfile comments, the tailnet IP pins in both compose files, and the operational maps under `docs/`. Deleting GHCR versions removes one copy of data that stays publicly readable in git.
+
+A decision is required on one of:
+
+- make the repository private (and first confirm what that does to linked GHCR package visibility — package access may not follow the repo unless inheritance was selected), or
+- scrub the values from tracked files and decide whether history rewrite is warranted, accepting that existing clones and forks keep the values regardless.
+
+This plan treats that decision as a required owner gate: record it before section D executes, since its answer determines whether section D is proportionate at all. If the values remain public in git, removing images buys little.
+
+## Threat model (what exposure actually grants)
+
+The values at issue are internal names, private-network addresses, and service maps — not credentials (no credentials were found in the image audit). Tailnet IPs and MagicDNS names are reachable only from inside the tailnet, which is ACL-gated; LAN addresses are reachable only from the LAN. An unauthenticated puller learns topology, not access. This is a privacy/hygiene exposure, not a breach: deleting versions, rewriting history, or escalating through GitHub Support should be sized against that. If any credential is ever found in a layer, treat it as compromised and rotate immediately regardless of any deletion.
 
 ## Data classification and target state
 
@@ -25,8 +40,8 @@ Before choosing deletion targets, inventory the live GHCR package namespaces, ve
 
 Balena's Supervisor Compose dialect is a hard constraint: this repo documents no `${VAR}` substitution and specifically notes no variable path for `extra_hosts` in [devices compose](../balena/devices/docker-compose.yml). Do not claim a dashboard variable can directly replace an `extra_hosts` literal.
 
-- **Tailscale serve config:** replace the master's baked live FQDN with startup-generated configuration from a validated balena runtime variable (or supported per-device Tailscale data). Preserve the pinned upstream entrypoint/containerboot behavior. Reject missing, malformed, or unexpected hostnames before starting the service. Test generated JSON, certificate/serve application, all three master routes, and devices' per-node `${TS_CERT_DOMAIN}` behavior on the pinned version.
-- **Name-to-address reachability:** first test whether the existing runtime DNS path can resolve the tailnet name from every consumer container, including cold boot and after Tailscale reconnect. The runbook reports that the current DNS chain cannot resolve `ts.net`, which is why static hosts pins were introduced ([tailscale runbook](tailscale-runbook.md)). If runtime DNS fails, prototype and canary a runtime resolver/host-map mechanism compatible with balenaOS and Supervisor. Keep a per-deployment Compose pin only as a documented fallback if no tested runtime mechanism works; never substitute a made-up env-var syntax.
+- **Tailscale serve config:** resolve the `${TS_CERT_DOMAIN}` question FIRST, before designing any runtime variable. Verified against containerboot v1.102.5 source at the pinned tag: `readServeConfig` in `cmd/containerboot/serve.go` does `bytes.ReplaceAll` of `${TS_CERT_DOMAIN}` with the node's `certDomain`, and `cmd/containerboot/main.go` sets `certDomain` from the netmap's `CertDomains[0]` (falling back to a "no-HTTPS" sentinel) on ANY node type — the substitution is not k8s-only. So the devices serve config already works via the placeholder, and the MASTER can use the same placeholder form: the master's own cert domain is its MagicDNS FQDN, so no deployment value needs to be baked at all and the earlier "validated balena runtime variable" design can be dropped. This must be proven with a canary deploy of the placeholder form on the master before it ships (the master's serve config currently bakes the FQDN literally). If the placeholder form fails on the master for any reason, fall back to the runtime-variable design with fail-closed validation.
+- **Name-to-address reachability:** test the `dns:` compose key first — balena's Supervisor supports the `dns` service field (docs.balena.io compose reference), and `100.100.100.100` is Tailscale's fixed MagicDNS resolver address, not a deployment-specific value. Pointing consumer containers (`agent`, `registrant`, and the master's `hermes` service) at it may replace the `extra_hosts` pins outright, since tailscaled runs in the host network namespace. Verify on-device: (a) the Supervisor accepts `dns:` in this compose and containers resolve both tailnet names AND non-tailnet names (confirm whether MagicDNS here forwards to upstream resolvers or falls back to OS config — a container whose only resolver is 100.100.100.100 must still resolve whatever it needs), (b) resolution works at cold boot and after Tailscale reconnects. If `dns:` fails, prototype and canary a runtime resolver/host-map mechanism compatible with balenaOS and Supervisor. Keep a per-deployment Compose pin only as a documented fallback if no tested runtime mechanism works; never substitute a made-up env-var syntax.
 - **Queue join:** generate the config-only Beads join files from explicit runtime values where possible, preserve the canonical project ID and fail closed on mismatch. Never run `bd init` as part of an image build or startup. Keep queue behavior and client-version pins intact.
 - **Build contexts and vendored docs:** remove or sanitize image COPY inputs and update vendored-drift tests/sync scripts so root docs cannot silently reintroduce live values. Ensure source context, build args, labels, and build logs do not leak them either.
 
@@ -34,13 +49,14 @@ Balena's Supervisor Compose dialect is a hard constraint: this repo documents no
 
 ### A. Inventory and baseline
 
-- Enumerate exact GHCR packages, all affected versions and multi-arch child digests, public accessibility, download counts, retention/restore window, and consumers. Save package metadata and image digests in the PR or a linked restricted evidence record; don't publish credentials or unnecessary live values in the PR.
+- Enumerate exact GHCR packages, all affected versions, per-arch child digests and multi-arch index digests, public accessibility, download counts, retention/restore window, and consumers. Include images published by `workflow_dispatch` runs, not just `main` pushes. Also inventory the GitHub Actions build caches: the eight `type=gha` component scopes (`cache-from`/`cache-to` in the build workflow) hold the same layer content and are restorable from PR runs on a public repo. Save package metadata and image digests in the PR or a linked restricted evidence record; don't publish credentials or unnecessary live values in the PR.
+- Also inventory balena-side copies: the release workflows push the same built images to the balenaCloud registry via `balena deploy`, and devices pull from balena, never GHCR. Those balena-hosted images carry the same contents (`/opt/vs/docs`, baked serve config) but are fleet-private; record them as lower-exposure, in-scope-for-rollback copies rather than deletion targets.
 - Pull each relevant image by digest without authentication and inspect image config, every filesystem layer (including deleted files retained in lower layers), labels, build metadata, and embedded docs. Produce a baseline scan with exact file/layer locations and classify each finding as secret, deployment-specific, or stable contract.
 - Confirm the active balena release, pinned release policy, devices, named volumes, backup/recovery paths, and whether any outside consumer depends on GHCR. No deletion or deployment during this phase.
 
 ### B. Implement and prove corrected images
 
-- Change the repository build inputs and runtime configuration according to the validated design above. Add regression tests that fail if known live topology patterns or credential-shaped values enter published image layers; keep a reviewed allowlist for unavoidable stable contracts.
+- Change the repository build inputs and runtime configuration according to the validated design above. Add regression tests that fail if known live topology patterns or credential-shaped values enter published image layers; keep a reviewed allowlist for unavoidable stable contracts (e.g. the queue project ID, which is a non-secret fleet contract and appears in Dockerfile comments). Add a repo-level CI scan of tracked files for the same disallowed patterns, so live values cannot be reintroduced via source files either.
 - Build every component/platform locally or in PR CI without publishing. Scan final image layers and build metadata; compare against the baseline. Require zero secrets and zero disallowed live topology in every image.
 - Exercise runtime-variable validation, Tailscale serve and name resolution, registrar/device enrollment, queue identity, health checks, and upgrade behavior on a disposable/canary deployment before any fleet-wide release.
 
@@ -48,7 +64,8 @@ Balena's Supervisor Compose dialect is a hard constraint: this repo documents no
 
 - Build/publish corrected images under new immutable digests; verify registry contents and anonymous pull behavior. Do not overwrite or delete the old versions yet.
 - Prefer an in-place balena release/canary if tests show named volumes remain intact and runtime changes work. Verify `pgdata`, `doltdata`, `agent-data`, `ts-state`, and `primus-data` remain present and readable. A full reflash/fleet recreation, fleet move, volume purge, or identity reset requires explicit per-volume backup/restore and re-enrollment steps—even though a fresh deployment is acceptable to the owner.
-- Verify all services become healthy, TLS/serve routes work, devices can register and reach the master, the queue project ID still matches, credentials/bundles remain delivered by their intended runtime path, and rollback to the prior balena release is understood. Record exact release IDs, image digests, and evidence.
+- Verify all services become healthy, TLS/serve routes work, devices can register and reach the master, the queue project ID still matches, credentials/bundles remain delivered by their intended runtime path, and rollback to the prior balena release is understood. Record exact release IDs, image digests, and evidence. Note: the rollback path itself deploys a prior balena release that still contains the old image contents — a known and accepted trade-off, recorded here, since the old release lives in the fleet-private balena registry.
+- After corrected images are live, purge the eight `type=gha` build-cache scopes so the old layer content is not restorable from Actions cache; verify the purge.
 
 ### D. Remove exposed GHCR versions
 
@@ -58,12 +75,17 @@ Balena's Supervisor Compose dialect is a hard constraint: this repo documents no
 
 ## Acceptance criteria
 
-- Exact package/version/digest inventory and affected-consumer list reviewed.
-- Every release image and architecture passes a layer-level scan: zero credentials and zero disallowed live deployment details, including in lower layers and build metadata.
-- Runtime config is validated fail-closed; no unsupported Compose interpolation is relied upon; tailnet reachability, TLS identity, queue contract and device enrollment pass canary tests.
-- Persistent-data disposition and rollback are documented and tested before any destructive redeploy.
+- Decision recorded on the public-repo question: repo stays public or goes private, and if public, whether values are scrubbed from tracked files and whether history rewrite is warranted (this gates section D).
+- Exact package/version/digest inventory (per-arch + index digests, dispatch-run publishes included) and affected-consumer list reviewed; GHA cache scopes included and their purge verified after corrected images land.
+- Every release image and architecture passes a layer-level scan: zero credentials and zero disallowed live deployment details, including in lower layers and build metadata; repo-level CI scan enforces the same patterns on tracked files.
+- Runtime config is validated fail-closed; no unsupported Compose interpolation is relied upon; the `${TS_CERT_DOMAIN}` placeholder form is canary-proven on the master (or the documented fallback adopted); tailnet reachability via the `dns:` form is tested and working (or the documented fallback adopted); queue contract and device enrollment pass canary tests.
+- Persistent-data disposition and rollback are documented and tested before any destructive redeploy; the rollback release still containing old contents is a recorded, accepted trade-off.
 - Corrected images are deployed and verified before old public versions are removed.
 - Any GHCR deletion is limited to reviewed targets, subject to GitHub's actual eligibility, and is verified afterward. Report plainly that already-pulled copies cannot be recalled.
+
+## Threat model addendum: severity in light of the public repo
+
+Given the values remain readable in the public repository until the owner decides otherwise (see "The repo is public" above), the incremental risk of the GHCR copies is modest: an anonymous puller gets the same topology that git already exposes, in image form. The plan keeps section D (deletion) gated behind the corrected-image deployment precisely because deletion alone buys little while the repo stays public. Revisit the proportionality of deletion, history rewrite, or GitHub Support escalation as part of the owner's decision — and if any actual credential surfaces in any layer, rotate it immediately; that case is a breach, unlike this one.
 
 ## Out of scope for this plan PR
 
