@@ -68,6 +68,8 @@ Five workflows, `.github/workflows/`:
   `shared/`, `registrar/`, `registrant/` (pg-mem in-process, no
   Postgres service needed) + the compose-simulated device E2E
   (`deploy/e2e.sh --up`) on a compose-capable runner.
+- **`device-logs.yml`** — workflow-dispatch log collection for device
+  diagnostics (owner/App `actions:write` scope required to dispatch).
 - **`build-images.yml`** — every push to `main`: builds all 8 components
   x amd64/arm64 on native runners (no QEMU) and pushes
   `<sha>-<arch>` tags to GHCR (`ghcr.io/cwdcwd/vector-sigma/<component>`).

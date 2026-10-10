@@ -150,7 +150,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Scan ${{ matrix.component }}:${{ github.sha }}
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ghcr.io/${{ env.REGISTRY_NS }}/${{ matrix.component }}:${{ github.sha }}
           format: table
@@ -172,7 +172,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Boot-path smoke (registrar app components)
+      - name: Boot-path smoke (devices app components)
         run: scripts/release-smoke.sh cwdcwd/vector-sigma ${{ github.sha }} devices
 
   render:
@@ -221,7 +221,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: devices-release-compose
-          path: release/registrar
+          path: release/devices
       - name: Log into GitHub Container Registry (pull prebuilts)
         uses: docker/login-action@v3
         with:

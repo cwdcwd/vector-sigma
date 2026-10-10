@@ -111,7 +111,7 @@ case "$APP" in
     expect_file  "registrar dist" "$GHCR/registrar:$IMAGE_SHA" /app/dist/index.js
     expect_file  "registrar drizzle" "$GHCR/registrar:$IMAGE_SHA" /app/drizzle/0000_yielding_morlun.sql
     expect_grep  "registrar fail-loud config" "$GHCR/registrar:$IMAGE_SHA" \
-      "node -e 'try{require(\"/app/dist/config.js\")}catch(e){console.log(e.message)}' 2>&1 | head -2" "invalid registrar configuration"
+      "node -e 'try{require(\"/app/dist/config.js\").loadConfig()}catch(e){console.log(e.message)}' 2>&1 | head -2" "invalid registrar configuration"
 
     # litellm: config + entrypoint shim baked
     expect_file  "litellm config baked"   "$GHCR/litellm:$IMAGE_SHA" /app/config.yaml
@@ -156,7 +156,7 @@ case "$APP" in
     # agent: gate + bd + hooks + docs + plugin
     expect_file  "agent gate"      "$GHCR/agent:$IMAGE_SHA" /usr/local/bin/gate.sh
     expect_grep  "agent gate marker" "$GHCR/agent:$IMAGE_SHA" \
-      "grep -c 'ready.marker' /usr/local/bin/gate.sh" "1"
+      "grep -q 'ready.marker' /usr/local/bin/gate.sh && echo ready.marker" "ready.marker"
     expect_grep  "agent gate budget" "$GHCR/agent:$IMAGE_SHA" \
       "grep -c 'POLL_BUDGET:-900' /usr/local/bin/gate.sh" "1"
     expect_file  "agent bd"        "$GHCR/agent:$IMAGE_SHA" /usr/local/bin/bd
