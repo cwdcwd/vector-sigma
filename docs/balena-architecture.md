@@ -28,9 +28,10 @@ balena/
 └── devices/       # fleet 2 app: agent + registrant compose
 ```
 
-One dir per fleet, one deploy workflow per dir. Each app is a standard
-balena multi-container compose app; balena remote builders build every
-image — never device-side.
+One dir per fleet, one release workflow per dir. Each app is a standard
+balena multi-container compose app; images are built by GitHub Actions
+runners (rung 2: prebuilts in GHCR, `balena deploy` uploads them) —
+never device-side, never balena remote builders.
 
 ## Releases (tags-only)
 
@@ -61,24 +62,45 @@ patch never rebuilds or redeploys device apps, and vice versa.
 
 ## GitHub Actions
 
-Three workflows, `.github/workflows/`:
+Five workflows, `.github/workflows/`:
 
 - **`ci.yml`** — every PR: typecheck + unit tests across
   `shared/`, `registrar/`, `registrant/` (pg-mem in-process, no
   Postgres service needed) + the compose-simulated device E2E
   (`deploy/e2e.sh --up`) on a compose-capable runner.
-- **`deploy-registrar.yml`** — tag `registrar-v*`: build + deploy
-  the `balena/registrar/` app to the registrar fleet.
-- **`deploy-devices.yml`** — tag `devices-v*`: build + deploy the
-  `balena/devices/` app to the devices fleet.
+- **`build-images.yml`** — every push to `main`: builds all 8 components
+  x amd64/arm64 on native runners (no QEMU) and pushes
+  `<sha>-<arch>` tags to GHCR (`ghcr.io/cwdcwd/vector-sigma/<component>`).
+- **`release-registrar.yml`** — tag `registrar-v*`: build the 7
+  registrar-app components on native runners → GHCR → trivy
+  CRITICAL/HIGH gate → boot-path smoke gate → render the
+  digest-pinned compose (arm64 child digests) → `balena deploy` of
+  the prebuilt images to the registrar fleet. No source leaves
+  the repo for builds.
+- **`release-devices.yml`** — tag `devices-v*`: same pipeline for the
+  devices app (agent + registrant + the devices tailscale bake).
+- **`device-logs.yml`** — manual (`workflow_dispatch`): fetches a
+  device's logs via the pinned balena CLI, redacting
+  credential-shaped values (Bearer/token/api_key) before they land
+  in the workflow log. Read-only operator evidence; no build or
+  release side effects (dispatch requires the owner/App
+  `actions:write` scope — the fleet Apps 403 on dispatch without it).
 
-Deploy workflows use `balena-io/deploy-to-balena-action` **pinned to a
-release tag** (`v2.3.1`), never `@master`. `balena_token` is a repo
-Actions secret; fleet slugs are workflow inputs (per-instance values —
-names of the org/fleets live in the workflow dispatch args or repo
-variables, not in code). Balena remote builders do the actual builds,
-so runner minutes stay low and the remote-build-only rule holds
-everywhere, CI included.
+Devices-smoke cross-bake note: the devices release's smoke gate also
+inspects the **master's** `tailscale:<sha>` multi-arch index (built by
+`release-registrar.yml` or `build-images.yml`, not by
+`release-devices.yml`) as a deliberate parity check. The implicit
+dependency: a `devices-v*` tag cut at a commit whose `registrar-v*`/main
+build never ran will fail the smoke gate loudly — by design.
+
+Release workflows use pinned actions only (`docker/build-push-action@v6`,
+`docker/login-action@v3`, etc.), a sha256-pinned balena CLI tarball, and
+`GITHUB_TOKEN` for GHCR auth within the run that built the images.
+`balena_token` is a repo Actions secret; fleet slugs are repo variables
+(`REGISTRAR_FLEET`, `DEVICES_FLEET`). Runner minutes stay low — no
+remote-builder minutes are spent, and the prebuilts are uploaded to the
+balenaCloud registry by `balena deploy` itself; devices pull from
+balena, never from GHCR.
 
 ## Secrets posture
 

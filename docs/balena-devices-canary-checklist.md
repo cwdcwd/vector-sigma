@@ -13,8 +13,8 @@ For fleet/release policy context see [balena-architecture.md](balena-architectur
 
 ## 2. Build the release
 
-- [ ] Push the `devices-v*` tag → GitHub Actions `deploy-devices.yml` builds a final release on balena remote builders.
-- [ ] Workflow ends green; note the **release id** from the workflow log (`Built release <id>`).
+- [ ] Push the `devices-v*` tag → GitHub Actions `release-devices.yml` builds prebuilts (GHCR), gates (trivy + smoke), renders the digest-pinned compose, and `balena deploy` uploads them as a final release.
+- [ ] Workflow ends green; note the **release id** from the `balena deploy` step output — the CLI prints `Deploy succeeded!` and `Release: <commit>` (the 40-char commit of the tag). For the numeric release id, run `balena release list <FLEET_SLUG>` or open the dashboard → Releases (the render step's provenance artifact records the exact GHCR digests shipped, keyed to the same commit).
 - [ ] Dashboard → Devices fleet → *Releases*: the new release appears as **final** (not draft).
 
 ## 3. Canary: pin, deploy, verify identity state
@@ -45,6 +45,11 @@ For the real agent runtime (placeholder heartbeat has no WAL): on the supervised
 - [ ] Advance the fleet pin: dashboard → Devices fleet → *Release pin* (or `balena fleet pin g_c_d/vector-sigma <COMMIT>`); every unpinned device updates.
 - [ ] Clear the canary's device pin (device → *Track fleet*) so it rejoins fleet policy — a left pin blocks the next canary cycle.
 - [ ] Spot-check one non-canary device: both services Running, identity-present path in logs.
+
+## 7. Rollback (if the canary fails)
+
+- [ ] Do NOT advance the fleet pin — an unpinned fleet stays on the current release.
+- [ ] Follow the runbook Rollback section ([balena-devices-runbook.md](balena-devices-runbook.md)): rollback = re-pin to the last-good release (or cut a fresh tag from the known-good commit if no last-good release exists). Never move an existing tag.
 
 ## Evidence standard for the bead thread
 
