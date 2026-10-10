@@ -68,8 +68,6 @@ Five workflows, `.github/workflows/`:
   `shared/`, `registrar/`, `registrant/` (pg-mem in-process, no
   Postgres service needed) + the compose-simulated device E2E
   (`deploy/e2e.sh --up`) on a compose-capable runner.
-- **`device-logs.yml`** — workflow-dispatch log collection for device
-  diagnostics (owner/App `actions:write` scope required to dispatch).
 - **`build-images.yml`** — every push to `main`: builds all 8 components
   x amd64/arm64 on native runners (no QEMU) and pushes
   `<sha>-<arch>` tags to GHCR (`ghcr.io/cwdcwd/vector-sigma/<component>`).
@@ -81,6 +79,19 @@ Five workflows, `.github/workflows/`:
   the repo for builds.
 - **`release-devices.yml`** — tag `devices-v*`: same pipeline for the
   devices app (agent + registrant + the devices tailscale bake).
+- **`device-logs.yml`** — manual (`workflow_dispatch`): fetches a
+  device's logs via the pinned balena CLI, redacting
+  credential-shaped values (Bearer/token/api_key) before they land
+  in the workflow log. Read-only operator evidence; no build or
+  release side effects (dispatch requires the owner/App
+  `actions:write` scope — the fleet Apps 403 on dispatch without it).
+
+Devices-smoke cross-bake note: the devices release's smoke gate also
+inspects the **master's** `tailscale:<sha>` multi-arch index (built by
+`release-registrar.yml` or `build-images.yml`, not by
+`release-devices.yml`) as a deliberate parity check. The implicit
+dependency: a `devices-v*` tag cut at a commit whose `registrar-v*`/main
+build never ran will fail the smoke gate loudly — by design.
 
 Release workflows use pinned actions only (`docker/build-push-action@v6`,
 `docker/login-action@v3`, etc.), a sha256-pinned balena CLI tarball, and

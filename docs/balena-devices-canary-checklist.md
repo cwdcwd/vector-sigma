@@ -14,7 +14,7 @@ For fleet/release policy context see [balena-architecture.md](balena-architectur
 ## 2. Build the release
 
 - [ ] Push the `devices-v*` tag → GitHub Actions `release-devices.yml` builds prebuilts (GHCR), gates (trivy + smoke), renders the digest-pinned compose, and `balena deploy` uploads them as a final release.
-- [ ] Workflow ends green; note the **balena release commit** from the deploy step output (`Release: <commit>`). Use the balena dashboard or `balena release list` to look up its release id.
+- [ ] Workflow ends green; note the **release id** from the `balena deploy` step output — the CLI prints `Deploy succeeded!` and `Release: <commit>` (the 40-char commit of the tag). For the numeric release id, run `balena release list <FLEET_SLUG>` or open the dashboard → Releases (the render step's provenance artifact records the exact GHCR digests shipped, keyed to the same commit).
 - [ ] Dashboard → Devices fleet → *Releases*: the new release appears as **final** (not draft).
 
 ## 3. Canary: pin, deploy, verify identity state

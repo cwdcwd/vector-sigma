@@ -24,9 +24,19 @@ IMAGE_SHA="${2:?usage: release-smoke.sh <owner/repo> <sha> <app>}"
 APP="${3:?usage: release-smoke.sh <owner/repo> <sha> <app>}"
 GHCR="ghcr.io/${REGISTRY_NS}"
 
-# Run docker as the docker group where the ambient shell lacks membership
-# (CI runners run docker natively; the local gate wraps via sg docker -c).
-if docker version >/dev/null 2>&1; then
+# Dockerless mode (SMOKE_DOCKERLESS=1): every DRUN call routes through
+# scripts/smoke-docker-shim.mjs, which answers the same docker CLI surface
+# against raw GHCR bytes (registry manifests + layer tars materialized to
+# a local cache) — the assertions below run UNCHANGED on hosts with no
+# docker. Born from review 5480276420 on PR #59: findings 4 and 5 were
+# assertions that could never pass against a healthy image, invisible
+# until the list actually ran against real image bytes.
+# Normal mode: docker directly, or via the docker group where the ambient
+# shell lacks membership (CI runners run docker natively; the local gate
+# wraps via sg docker -c).
+if [ "${SMOKE_DOCKERLESS:-0}" = "1" ]; then
+  DRUN() { node "${0%/*}/smoke-docker-shim.mjs" "$@"; }
+elif docker version >/dev/null 2>&1; then
   DRUN() { docker "$@"; }
 else
   DRUN() { sg docker -c "docker $*"; }
@@ -110,6 +120,11 @@ case "$APP" in
     # registrar: built output + fail-loud config path reachable
     expect_file  "registrar dist" "$GHCR/registrar:$IMAGE_SHA" /app/dist/index.js
     expect_file  "registrar drizzle" "$GHCR/registrar:$IMAGE_SHA" /app/drizzle/0000_yielding_morlun.sql
+    # Fail-loud proof: importing the config module is NOT enough — loadConfig
+    # is exported, never invoked at module scope (review finding 4 on PR #59),
+    # so a healthy image would import cleanly and print nothing. Invoke the
+    # function itself: an env-barren container fails loadConfig() exactly as
+    # the real boot does (index.ts calls it inside main()).
     expect_grep  "registrar fail-loud config" "$GHCR/registrar:$IMAGE_SHA" \
       "node -e 'try{require(\"/app/dist/config.js\").loadConfig()}catch(e){console.log(e.message)}' 2>&1 | head -2" "invalid registrar configuration"
 
@@ -155,8 +170,14 @@ case "$APP" in
 
     # agent: gate + bd + hooks + docs + plugin
     expect_file  "agent gate"      "$GHCR/agent:$IMAGE_SHA" /usr/local/bin/gate.sh
+    # Presence, not count: gate.sh legitimately contains ready.marker on four
+    # lines (comment, MARKER= assignment, poll message, timeout message) —
+    # review finding 5 on PR #59: a count-based assertion fails a HEALTHY
+    # image. The matched lines print the needle itself; an absent marker
+    # exits 1 with no output, failing on both axes. POLL_BUDGET below is
+    # genuinely 1 and keeps the count shape.
     expect_grep  "agent gate marker" "$GHCR/agent:$IMAGE_SHA" \
-      "grep -q 'ready.marker' /usr/local/bin/gate.sh && echo ready.marker" "ready.marker"
+      "grep 'ready.marker' /usr/local/bin/gate.sh" "ready.marker"
     expect_grep  "agent gate budget" "$GHCR/agent:$IMAGE_SHA" \
       "grep -c 'POLL_BUDGET:-900' /usr/local/bin/gate.sh" "1"
     expect_file  "agent bd"        "$GHCR/agent:$IMAGE_SHA" /usr/local/bin/bd
