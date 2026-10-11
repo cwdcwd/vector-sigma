@@ -20,9 +20,12 @@ import { describe, expect, it } from 'vitest';
  *      readServeConfig + ipn/serve.go): TCP map keyed by PORT with
  *      HTTPS:true; Web map keyed "SNI:port" (there is NO implicit port
  *      443 in this dialect); handlers proxy the loopback publishes.
- *      The ${TS_CERT_DOMAIN} placeholder is Kubernetes-ONLY (outside
- *      kube containerboot substitutes an empty cert domain) — the
- *      MagicDNS FQDN is baked literally.
+ *      BOTH serve configs key Web on the ${TS_CERT_DOMAIN} placeholder
+ *      (fleet-ops-1py.14, per the merged image-exposure plan's
+ *      two-way verification: containerboot substitutes the node's own
+ *      cert domain on ANY node type at the pinned tag; the devices
+ *      fleet has served on the placeholder form since j7g.1) — NO
+ *      MagicDNS FQDN is baked into any image layer.
  *   2. Dockerfile.tailscale: FROM the same pinned tag the devices
  *      fleet's stock service uses (never :latest); the serve config
  *      is baked (the supervisor cannot bind-mount — the f57.12
@@ -88,24 +91,24 @@ describe('serve-config.json: the containerboot v1.102.5 dialect (lnf)', () => {
     }
   });
 
-  it('keys Web by SNI:port with the full MagicDNS FQDN (no implicit 443)', () => {
-    const name = 'vector-sigma.tailb7207e.ts.net';
+  it('keys Web by SNI:port on the ${TS_CERT_DOMAIN} placeholder (1py.14 — no baked FQDN)', () => {
     expect(Object.keys(sc.Web).sort()).toEqual([
-      `${name}:443`,
-      `${name}:8443`,
-      `${name}:8444`,
+      '${TS_CERT_DOMAIN}:443',
+      '${TS_CERT_DOMAIN}:8443',
+      '${TS_CERT_DOMAIN}:8444',
     ]);
   });
 
   it('proxies the loopback publishes: registrar 3000 / gateway 4000 / scotty 3306', () => {
-    const name = 'vector-sigma.tailb7207e.ts.net';
-    expect(sc.Web[`${name}:443`].Handlers['/'].Proxy).toBe('http://127.0.0.1:3000');
-    expect(sc.Web[`${name}:8443`].Handlers['/'].Proxy).toBe('http://127.0.0.1:4000');
-    expect(sc.Web[`${name}:8444`].Handlers['/'].Proxy).toBe('http://127.0.0.1:3306');
+    expect(sc.Web['${TS_CERT_DOMAIN}:443'].Handlers['/'].Proxy).toBe('http://127.0.0.1:3000');
+    expect(sc.Web['${TS_CERT_DOMAIN}:8443'].Handlers['/'].Proxy).toBe('http://127.0.0.1:4000');
+    expect(sc.Web['${TS_CERT_DOMAIN}:8444'].Handlers['/'].Proxy).toBe('http://127.0.0.1:3306');
   });
 
-  it('never uses the Kubernetes-only ${TS_CERT_DOMAIN} placeholder', () => {
-    expect(read('balena/registrar/serve-config.json')).not.toContain('TS_CERT_DOMAIN');
+  it('carries no tailnet-qualified name (the exposure fix, plan PR #60)', () => {
+    expect(read('balena/registrar/serve-config.json')).not.toMatch(
+      /[a-z0-9-]+\.[a-z0-9-]+\.ts\.net/i,
+    );
   });
 });
 

@@ -89,12 +89,12 @@ describe('structured-fields — renderCanonicalFiles (f57.11)', () => {
     const fresh = renderCanonicalFiles({
       a2a_identity_key: 'a2a-k',
       a2a_trusted_peers: 'primus',
-      a2a_public_url: 'https://vector-sigma.tailb7207e.ts.net:8443',
+      a2a_public_url: 'https://vsigma-master.synth-tailnet.ts.net:8443',
     });
     expect(JSON.parse(contentsOf(fresh).get(CANONICAL_PATHS.a2a) ?? '{}')).toEqual({
       identity_key: 'a2a-k',
       trusted_peers: ['primus'],
-      public_url: 'https://vector-sigma.tailb7207e.ts.net:8443',
+      public_url: 'https://vsigma-master.synth-tailnet.ts.net:8443',
     });
     // Set over an existing file: object-merge keeps identity_key, replaces public_url.
     const existing = new Map([

@@ -32,6 +32,8 @@ import {
   MESH_CREATOR_KEY_ENV,
   MESH_GATEWAY_BASE_URL_ENV,
   MESH_MASTER_KEY_ENV,
+  MESH_TAILNET_SUFFIX_ENV,
+  MESH_EDGE_HOST_ENV,
   renderA2aJson,
   readA2aFromBundle,
   bundleIdentityKey,
@@ -79,15 +81,21 @@ afterEach(() => {
 });
 
 const CREATOR_ENV = {
-  [MESH_CREATOR_KEY_ENV]: 'sk-creator-test',
+  [MESH_CREATOR_KEY_ENV]: '***',
   [MESH_GATEWAY_BASE_URL_ENV]: 'http://gateway:4000',
+  // 1py.14: the tailnet topology is runtime env, fail-closed — the
+  // tests carry a SYNTHETIC tailnet (never the live suffix; the
+  // live-value ban extends to tests per the lane contract).
+  [MESH_TAILNET_SUFFIX_ENV]: '.synth-tailnet.ts.net',
+  [MESH_EDGE_HOST_ENV]: 'vsigma-master.synth-tailnet.ts.net',
 };
 
 // lfk: the enrollee's OWN serve-form origin (optimus-prime's
 // tailscale-served :9900 — the proxy-dial address the enroll
 // writes). NEVER the mesh edge: an edge public_url loops
 // proxy->edge->proxy (the live Defect B this lane fixes).
-const SERVE_ORIGIN = 'https://vsigma.lan:9900';
+// 1py.14: synthetic tailnet, same shape.
+const SERVE_ORIGIN = 'https://optimus-prime.synth-tailnet.ts.net:9900';
 
 function bundleWith(files: Array<{ path: string; content: string }>): IdentityBundle {
   return { schema_version: 1, bundle_version: 1, generated_at: '2026-01-01T00:00:00Z', files };
@@ -257,7 +265,7 @@ describe('enrollAgent decision table', () => {
       keyId: null,
       sourceIp: null,
       originUrl: 'http://hermes:9900',
-      publicUrl: SERVE_ORIGIN,
+      publicUrl: 'http://hermes:9900',
       clock: env.clock,
       mintLimiter: new MeshMintRateLimiter(env.clock),
     });
@@ -352,7 +360,7 @@ describe('loop-form refusal (fleet-ops-lfk — Defect B, live-proven 2026-10-08)
         keyId: null,
         sourceIp: null,
         originUrl: `${SERVE_ORIGIN}/a2a/optimus-prime`,
-        publicUrl: 'https://vector-sigma.tailb7207e.ts.net:8443',
+        publicUrl: 'https://vsigma-master.synth-tailnet.ts.net:8443',
         clock: env.clock,
         mintLimiter: new MeshMintRateLimiter(env.clock),
       }),
@@ -373,7 +381,7 @@ describe('loop-form refusal (fleet-ops-lfk — Defect B, live-proven 2026-10-08)
       enrollAgent(env.db, CREATOR_ENV, 'optimus-prime', {
         keyId: null,
         sourceIp: null,
-        originUrl: 'https://vector-sigma.tailb7207e.ts.net:8443/a2a/optimus-prime',
+        originUrl: 'https://vsigma-master.synth-tailnet.ts.net:8443/a2a/optimus-prime',
         publicUrl: SERVE_ORIGIN,
         clock: env.clock,
         mintLimiter: new MeshMintRateLimiter(env.clock),
@@ -390,7 +398,7 @@ describe('loop-form refusal (fleet-ops-lfk — Defect B, live-proven 2026-10-08)
         keyId: null,
         sourceIp: null,
         originUrl: `${SERVE_ORIGIN}/a2a/optimus-prime`,
-        publicUrl: 'https://wheeljack.tailb7207e.ts.net:9900',
+        publicUrl: 'https://wheeljack.synth-tailnet.ts.net:9900',
         clock: env.clock,
         mintLimiter: new MeshMintRateLimiter(env.clock),
       }),
@@ -546,12 +554,16 @@ describe('POST /v1/mesh-enroll route (machine auth)', () => {
     env = await createTestEnv();
     // The route resolves the creator key from process.env; pin it for
     // the route tests (the module-level tests pass env explicitly).
-    for (const k of [MESH_CREATOR_KEY_ENV, MESH_GATEWAY_BASE_URL_ENV, MESH_MASTER_KEY_ENV]) {
+    // 1py.14: the tailnet topology env vars too (fail-closed without
+    // them — the synthetic tailnet, never a live value).
+    for (const k of [MESH_CREATOR_KEY_ENV, MESH_GATEWAY_BASE_URL_ENV, MESH_MASTER_KEY_ENV, MESH_TAILNET_SUFFIX_ENV, MESH_EDGE_HOST_ENV]) {
       savedEnv[k] = process.env[k];
       process.env[k] = undefined;
     }
-    process.env[MESH_CREATOR_KEY_ENV] = 'sk-creator-test';
+    process.env[MESH_CREATOR_KEY_ENV] = '***';
     process.env[MESH_GATEWAY_BASE_URL_ENV] = 'http://gateway:4000';
+    process.env[MESH_TAILNET_SUFFIX_ENV] = '.synth-tailnet.ts.net';
+    process.env[MESH_EDGE_HOST_ENV] = 'vsigma-master.synth-tailnet.ts.net';
   });
 
   afterEach(() => {
@@ -676,8 +688,8 @@ describe('POST /v1/mesh-enroll route (machine auth)', () => {
       body: {
         agent_name: 'optimus-prime',
         // the EXACT live defect shape: public_url = the mesh edge
-        origin_url: 'https://optimus-prime.tailb7207e.ts.net:9900/a2a/optimus-prime',
-        public_url: 'https://vector-sigma.tailb7207e.ts.net:8443',
+        origin_url: 'https://optimus-prime.synth-tailnet.ts.net:9900/a2a/optimus-prime',
+        public_url: 'https://vsigma-master.synth-tailnet.ts.net:8443',
       },
       key: mk,
     });

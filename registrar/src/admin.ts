@@ -38,6 +38,7 @@ import {
   meshKeyAlias,
   deviceServeUrl,
   MASTER_AGENT_ORIGIN_HOST,
+  resolveMeshTopology,
 } from './mesh-enroll.js';
 import { BALENA_UUID_SHORT_RE, BALENA_UUID_CANONICAL_RE, normalizeBalenaUuid, BINARY_MAX_DECODED_BYTES } from '@vector-sigma/shared';
 import type { Clock } from './clock.js';
@@ -689,11 +690,24 @@ export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): v
     // row enrolls with its tailscale serve form; the master agent
     // (primus) enrolls compose-internal. The mint base URL remains the
     // GATEWAY CALL address (registrar -> litellm) and never a default
-    // here — it is not an origin of any agent.
+    // here — it is not an origin of any agent. 1py.14: the device serve
+    // form derives from the RUNTIME topology (VS_MESH_TAILNET_SUFFIX /
+    // VS_MESH_EDGE_HOST on the registrar service env) — resolveMeshTopology
+    // throws fail-closed when unset; the form's pre-fill falls back to
+    // empty (the operator supplies the URL) rather than crashing the
+    // console render, and the enroll itself refuses 'not_configured'.
+    let topology: ReturnType<typeof resolveMeshTopology> | null = null;
+    try {
+      topology = resolveMeshTopology(process.env);
+    } catch {
+      topology = null;
+    }
     const masterAgent = agentName === 'primus';
     const defaultPublicUrl = masterAgent
       ? `http://${MASTER_AGENT_ORIGIN_HOST}:9900`
-      : deviceServeUrl(agentName);
+      : topology !== null
+        ? deviceServeUrl(agentName, topology)
+        : '';
     const defaultOriginUrl = `${defaultPublicUrl}/a2a/${agentName}`;
     const publicUrl = (body.get('public_url') ?? '').trim() || defaultPublicUrl;
     const originUrl = (body.get('origin_url') ?? '').trim() || defaultOriginUrl;

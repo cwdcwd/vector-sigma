@@ -21,8 +21,12 @@ Defaults (fleet-ops-lfk — BOTH URLs name the enrollee's OWN
 proxy-dialable origin, NEVER the mesh edge: the gateway's proxy
 follows the advertised url to deliver, so an edge public_url loops
 proxy->edge->proxy): a device derives
-  public_url = https://<agent-name>.tailb7207e.ts.net:9900  (the device's OWN serve form)
+  public_url = https://<agent-name><VS_MESH_TAILNET_SUFFIX>:9900  (the device's OWN serve form)
   origin_url = <public_url>/a2a/<agent-name>
+The suffix comes from VS_MESH_TAILNET_SUFFIX (env, or the bundle's
+config/agent.env line of the same name) — it is a deployment fact,
+NOT baked into this script (1py.14); the CLI refuses to guess it
+when neither source carries it.
 $A2A_PUBLIC_URL in agent.env is GATEWAY_URL-class (the edge, for the
 agent's own outbound calls) and is NOT a public_url source — deriving
 from it produced the live loop-form defect. Pass --public-url only to
@@ -44,13 +48,19 @@ import urllib.request
 
 ENV_KEY_NAME = "MESH_ENROLL_KEY"
 DEFAULT_REGISTRAR = "http://registrar:3000"
-MESH_TAILNET_SUFFIX = ".tailb7207e.ts.net"
+# fleet-ops-1py.14: the tailnet MagicDNS suffix is a RUNTIME
+# deployment fact, never a baked constant (this CLI ships inside the
+# primus image; plan PR #60 removes deployment-specific values from
+# reusable layers). Resolution order: explicit env
+# VS_MESH_TAILNET_SUFFIX, then the bundle's config/agent.env line of
+# the same name; fail-closed when neither is present.
+TAILNET_SUFFIX_ENV = "VS_MESH_TAILNET_SUFFIX"
 DEVICE_SERVE_PORT = "9900"
 
 
-def device_serve_url(agent: str) -> str:
+def device_serve_url(agent: str, suffix: str) -> str:
     """The device's OWN tailscale serve form (fleet-ops-lfk)."""
-    return f"https://{agent}{MESH_TAILNET_SUFFIX}:{DEVICE_SERVE_PORT}"
+    return f"https://{agent}{suffix}:{DEVICE_SERVE_PORT}"
 
 
 def read_env_file(path: str) -> dict:
@@ -88,6 +98,20 @@ def resolve_registrar() -> str:
     return url if url else DEFAULT_REGISTRAR
 
 
+def resolve_tailnet_suffix() -> str | None:
+    """VS_MESH_TAILNET_SUFFIX from env, else the bundle agent.env (1py.14)."""
+    suffix = os.environ.get(TAILNET_SUFFIX_ENV, "").strip()
+    if suffix:
+        return suffix
+    home = os.environ.get("HERMES_HOME", "").strip()
+    if home:
+        env = read_env_file(os.path.join(home, "config", "agent.env"))
+        suffix = env.get(TAILNET_SUFFIX_ENV, "").strip()
+        if suffix:
+            return suffix
+    return None
+
+
 def call(registrar: str, key: str, method: str, path: str, body: dict | None = None):
     url = f"{registrar}{path}"
     data = json.dumps(body).encode("utf-8") if body is not None else None
@@ -110,7 +134,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(prog="vs-mesh-enroll", description=(__doc__ or "").split("\n")[1])
     parser.add_argument("agent", nargs="?", help="the agent name to enroll (e.g. optimus-prime)")
     parser.add_argument("--origin-url", help="the enrollee's A2A origin the gateway dials (default <public_url>/a2a/<agent>)")
-    parser.add_argument("--public-url", help="the enrollee's OWN proxy-dialable origin written to the bundle public_url (default the device serve form https://<agent>.tailb7207e.ts.net:9900 — NEVER the mesh edge; pass http://hermes:9900 for the master agent)")
+    parser.add_argument("--public-url", help="the enrollee's OWN proxy-dialable origin written to the bundle public_url (default the device serve form https://<agent><VS_MESH_TAILNET_SUFFIX>:9900 — NEVER the mesh edge; pass http://hermes:9900 for the master agent)")
     parser.add_argument("--status", action="store_true", help="liveness probe only (no mint, no merge)")
     args = parser.parse_args()
 
@@ -143,8 +167,23 @@ def main() -> int:
     # baked the live loop-form defect into optimus-prime's bundle).
     # The registrar enforces the same contract server-side
     # (assertNoLoopUrl); this default makes the CLI's happy path the
-    # correct shape without flags.
-    public_url = args.public_url or device_serve_url(args.agent)
+    # correct shape without flags. 1py.14: the suffix resolves from
+    # VS_MESH_TAILNET_SUFFIX (env or bundle agent.env) — fail-closed
+    # when absent: pass --public-url explicitly instead of guessing a
+    # tailnet identity.
+    if args.public_url:
+        public_url = args.public_url
+    else:
+        suffix = resolve_tailnet_suffix()
+        if suffix is None:
+            print(
+                f"vs-mesh-enroll: no {TAILNET_SUFFIX_ENV} (env or the bundle's config/agent.env) "
+                "and no --public-url — refusing to guess the tailnet identity (1py.14: the suffix "
+                "is a deployment fact, never baked in); pass --public-url or deliver the variable",
+                file=sys.stderr,
+            )
+            return 1
+        public_url = device_serve_url(args.agent, suffix)
     public_url = public_url.rstrip("/")
     origin_url = args.origin_url or f"{public_url}/a2a/{args.agent}"
 

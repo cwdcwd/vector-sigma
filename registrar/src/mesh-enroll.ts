@@ -45,7 +45,7 @@
  *   the address the gateway's proxy dials (the card row first, then
  *   the origin card's advertised url to DELIVER peer traffic). For a
  *   device that is its tailscale serve form,
- *   https://<device>.tailb7207e.ts.net:9900; for the master's own
+ *   https://<device><VS_MESH_TAILNET_SUFFIX>:9900; for the master's own
  *   agent (primus) the compose-internal origin, http://hermes:9900.
  *   NEVER the mesh edge: the proxy follows the advertised url to
  *   deliver, so an edge public_url loops proxy->edge->proxy (proven
@@ -115,6 +115,68 @@ export const MESH_GATEWAY_BASE_URL_ENV = 'GATEWAY_KEY_MINT_BASE_URL';
 export const MESH_MASTER_KEY_ENV = 'LITELLM_MASTER_KEY';
 
 /**
+ * Tailnet topology from the ENVIRONMENT, never image bytes
+ * (fleet-ops-1py.14, plan PR #60 — deployment-specific values leave
+ * reusable layers; this module ships inside the published registrar
+ * image). The registrar service declares both as balenaCloud fleet /
+ * deploy-compose variables — structural (non-secret) deployment facts:
+ *   VS_MESH_TAILNET_SUFFIX  the tailnet's MagicDNS suffix (".ts.net"
+ *                           tailnet-qualified; e.g. ".<tailnet>.ts.net")
+ *   VS_MESH_EDGE_HOST       the master's own MagicDNS name (the mesh
+ *                           edge host the loop-form refusal needs)
+ * Fail-closed: unset/empty/malformed values refuse the enroll with
+ * 'not_configured' BEFORE any mint or merge — no silent fallback that
+ * could accept a loop-form URL on a misconfigured registrar.
+ */
+export const MESH_TAILNET_SUFFIX_ENV = 'VS_MESH_TAILNET_SUFFIX';
+export const MESH_EDGE_HOST_ENV = 'VS_MESH_EDGE_HOST';
+
+/** The resolved topology the loop-form refusal and serve-URL derivation use. */
+export interface MeshTopology {
+  /** Tailnet MagicDNS suffix, leading dot, ".ts.net"-terminated. */
+  tailnetSuffix: string;
+  /** The master's own MagicDNS name (the mesh edge host). */
+  edgeHost: string;
+}
+
+/** Missing/malformed topology — surfaced as MeshEnrollError 'not_configured'. */
+export class MeshTopologyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'MeshTopologyError';
+  }
+}
+
+/**
+ * Resolve the tailnet topology from the registrar service environment.
+ * FAIL-CLOSED: every malformed shape throws — the suffix must start
+ * with a dot and end with ".ts.net"; the edge host must be a
+ * tailnet-qualified name under that suffix (never a bare word, never
+ * an address). A registrar without its topology configured must
+ * refuse enrolls, not guess.
+ */
+export function resolveMeshTopology(env: Record<string, string | undefined>): MeshTopology {
+  const suffix = (env[MESH_TAILNET_SUFFIX_ENV] ?? '').trim();
+  const edge = (env[MESH_EDGE_HOST_ENV] ?? '').trim();
+  if (suffix === '' || edge === '') {
+    throw new MeshTopologyError(
+      `mesh topology is not configured: set ${MESH_TAILNET_SUFFIX_ENV} (the tailnet MagicDNS suffix, e.g. ".<tailnet>.ts.net") and ${MESH_EDGE_HOST_ENV} (the master's own MagicDNS name) on the registrar service (structural deployment facts, never secrets)`,
+    );
+  }
+  if (!/^\.[a-z0-9-]+(\.[a-z0-9-]+)*\.ts\.net$/i.test(suffix)) {
+    throw new MeshTopologyError(
+      `${MESH_TAILNET_SUFFIX_ENV} must be a tailnet MagicDNS suffix shaped ".<tailnet>.ts.net" (leading dot, .ts.net-terminated); refusing to enroll against a malformed suffix`,
+    );
+  }
+  if (!/^[a-z0-9-]+[a-z0-9.-]*\.ts\.net$/i.test(edge) || !edge.endsWith(suffix)) {
+    throw new MeshTopologyError(
+      `${MESH_EDGE_HOST_ENV} must be the master's tailnet-qualified MagicDNS name under the configured suffix; refusing to enroll against a malformed edge host`,
+    );
+  }
+  return { tailnetSuffix: suffix, edgeHost: edge };
+}
+
+/**
  * The SENTINEL SHAPE — hardcoded, server-side, non-negotiable.
  * LiteLLM does not constrain minted children, so the shape lives in
  * THIS code: models [] (no model calls), tpm unset (no throughput),
@@ -134,24 +196,21 @@ export function meshKeyAlias(agentName: string): string {
   return `vs-${safe}-a2a`;
 }
 
-/** The tailnet's MagicDNS suffix (structural — same tailnet across both fleets). */
-export const MESH_TAILNET_SUFFIX = '.tailb7207e.ts.net';
-
-/** The master's own MagicDNS name = the mesh edge host (the served :8443). */
-export const MESH_EDGE_HOST = 'vector-sigma.tailb7207e.ts.net';
-
-/** The master agent's compose-internal origin (primus — the only non-device member). */
+/**
+ * The master agent's compose-internal origin (primus — the only non-device member). */
 export const MASTER_AGENT_ORIGIN_HOST = 'hermes';
 
 /**
  * Derive the DEVICE serve form — the enrollee's OWN tailscale-served
- * origin (fleet-ops-lfk): `https://<agent>.tailb7207e.ts.net:9900`.
- * The agent name is the dashed form the enroll schema already
- * enforces; MagicDNS machine names carry the same form (the rename
- * step of the enroll preflight exists exactly for this).
+ * origin (fleet-ops-lfk): `https://<agent><suffix>:9900` where the
+ * suffix comes from the RESOLVED runtime topology (1py.14: never a
+ * baked constant). The agent name is the dashed form the enroll
+ * schema already enforces; MagicDNS machine names carry the same
+ * form (the rename step of the enroll preflight exists exactly for
+ * this).
  */
-export function deviceServeUrl(agentName: string): string {
-  return `https://${agentName}${MESH_TAILNET_SUFFIX}:9900`;
+export function deviceServeUrl(agentName: string, topology: MeshTopology): string {
+  return `https://${agentName}${topology.tailnetSuffix}:9900`;
 }
 
 /**
@@ -164,9 +223,10 @@ export function deviceServeUrl(agentName: string): string {
  * origin as this agent's delivery address. REFUSED before any mint or
  * merge — a loop-form enroll must never poison a bundle.
  *
- * Refusal shape (all relative to the caller-supplied URL's host):
+ * Refusal shape (all relative to the caller-supplied URL's host; the
+ * tailnet names come from the runtime topology — 1py.14):
  *   - host == the master edge host (any port/scheme) — the edge loop;
- *   - a .ts.net host that is NOT `<agent>.tailb7207e.ts.net` — a
+ *   - a .ts.net host that is NOT `<agent><suffix>` — a
  *     foreign tailnet name (another device or the master) used as
  *     THIS enrollee's delivery address;
  *   - host == litellm / the compose gateway service itself.
@@ -178,6 +238,7 @@ export function assertNoLoopUrl(
   agentName: string,
   url: string,
   field: 'origin_url' | 'public_url',
+  topology: MeshTopology,
 ): void {
   let host: string;
   try {
@@ -185,23 +246,23 @@ export function assertNoLoopUrl(
   } catch {
     throw new MeshEnrollError(`${field} is not a valid URL: ${url}`, 'loop_url', 400);
   }
-  if (host === MESH_EDGE_HOST) {
+  if (host === topology.edgeHost) {
     throw new MeshEnrollError(
-      `${field} points at the mesh edge (${MESH_EDGE_HOST}) — the gateway's proxy follows the advertised url to deliver, so an edge ${field} loops proxy->edge->proxy. Use the enrollee's OWN origin: ${deviceServeUrl(agentName)} (device serve form) or http://${MASTER_AGENT_ORIGIN_HOST}:9900 (the master agent).`,
+      `${field} points at the mesh edge (${topology.edgeHost}) — the gateway's proxy follows the advertised url to deliver, so an edge ${field} loops proxy->edge->proxy. Use the enrollee's OWN origin: ${deviceServeUrl(agentName, topology)} (device serve form) or http://${MASTER_AGENT_ORIGIN_HOST}:9900 (the master agent).`,
       'loop_url',
       400,
     );
   }
-  if (host.endsWith(MESH_TAILNET_SUFFIX) && host !== `${agentName}${MESH_TAILNET_SUFFIX}`) {
+  if (host.endsWith(topology.tailnetSuffix) && host !== `${agentName}${topology.tailnetSuffix}`) {
     throw new MeshEnrollError(
-      `${field} carries the tailnet name ${host}, which is not '${agentName}'s own serve name — a foreign tailnet origin as THIS enrollee's delivery address loops or misroutes the proxy. Use the enrollee's own serve form: ${deviceServeUrl(agentName)}.`,
+      `${field} carries the tailnet name ${host}, which is not '${agentName}'s own serve name — a foreign tailnet origin as THIS enrollee's delivery address loops or misroutes the proxy. Use the enrollee's own serve form: ${deviceServeUrl(agentName, topology)}.`,
       'loop_url',
       400,
     );
   }
   if (host === 'litellm') {
     throw new MeshEnrollError(
-      `${field} points at the gateway service itself (litellm) — the proxy would dial itself to deliver. Use the enrollee's OWN origin: ${deviceServeUrl(agentName)} (device serve form) or http://${MASTER_AGENT_ORIGIN_HOST}:9900 (the master agent).`,
+      `${field} points at the gateway service itself (litellm) — the proxy would dial itself to deliver. Use the enrollee's OWN origin: ${deviceServeUrl(agentName, topology)} (device serve form) or http://${MASTER_AGENT_ORIGIN_HOST}:9900 (the master agent).`,
       'loop_url',
       400,
     );
@@ -504,13 +565,28 @@ export async function enrollAgent(
   }
   const currentBundle = blobRows[0].bundle as { files: BundleFile[] };
 
+  // ── Runtime topology (1py.14 — env, not image bytes; fail-closed) ──
+  // Resolved BEFORE the loop-form refusal: the refusal semantics need
+  // the tailnet suffix + edge host, and a registrar without them must
+  // refuse the enroll rather than skip the loop check.
+  let topology: MeshTopology;
+  try {
+    topology = resolveMeshTopology(env);
+  } catch (err) {
+    await fail(deviceId, 'mesh_enroll_not_configured');
+    if (err instanceof MeshTopologyError) {
+      throw new MeshEnrollError(err.message, 'not_configured', 500);
+    }
+    throw err;
+  }
+
   // ── Loop-form refusal (fleet-ops-lfk — BEFORE any mint or merge) ────
   // Both URLs name the enrollee's OWN origin; an edge/foreign-tailnet
   // form poisons the bundle's public_url and breaks the proxy dial.
   // Audited like every failure (the module's own contract).
   try {
-    assertNoLoopUrl(agentName, opts.originUrl, 'origin_url');
-    assertNoLoopUrl(agentName, opts.publicUrl, 'public_url');
+    assertNoLoopUrl(agentName, opts.originUrl, 'origin_url', topology);
+    assertNoLoopUrl(agentName, opts.publicUrl, 'public_url', topology);
   } catch (err) {
     await fail(deviceId, 'mesh_enroll_loop_url');
     throw err;

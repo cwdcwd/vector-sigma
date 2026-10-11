@@ -21,11 +21,11 @@ application role; its endpoints belong to the tailnet, see
 
 | Service | What it is | Where |
 |---|---|---|
-| `registrar` | The identity registrar: device rows, bundles, the admin console | `http://registrar:3000` (compose-internal); devices reach `https://vector-sigma.tailb7207e.ts.net` (the serve edge fronts the loopback publish — lnf, phase 2) |
+| `registrar` | The identity registrar: device rows, bundles, the admin console | `http://registrar:3000` (compose-internal); devices reach the master's MagicDNS name (`<master>.<tailnet>.ts.net`, the serve edge fronts the loopback publish — lnf, phase 2) |
 | `postgres` | The registrar's database (`vsigma`/`vsigma`) | compose-internal only; you never talk to it directly |
-| `litellm` | The VS fleet's own LiteLLM gateway — your model front door, virtual keys, the `/a2a/*` mesh | `http://litellm:4000` (compose-internal); `https://vector-sigma.tailb7207e.ts.net:8443` (the serve edge fronts the loopback publish) |
+| `litellm` | The VS fleet's own LiteLLM gateway — your model front door, virtual keys, the `/a2a/*` mesh | `http://litellm:4000` (compose-internal); `https://<master>.<tailnet>.ts.net:8443` (the serve edge fronts the loopback publish) |
 | `dolt` | The VS queue's Dolt SQL server — database `vs_ops`, user `vs` | `dolt:3306` compose-internal (your join config); devices reach `<master-LAN-IP>:3326` |
-| `scotty` | The queue's read-only dashboard UI | `https://vector-sigma.tailb7207e.ts.net:8444` (the serve edge fronts the loopback publish; the ACL is the lock — lnf) |
+| `scotty` | The queue's read-only dashboard UI | `https://<master>.<tailnet>.ts.net:8444` (the serve edge fronts the loopback publish; the ACL is the lock — lnf) |
 | `hermes` | **You.** The VS coordinator Hermes runtime, `HERMES_HOME=/data/primus` | — |
 | `registrant-own` | Your identity delivery: polls the registrar, applies your bundle to the shared `primus-data` volume, watches for rotations | polls `http://registrar:3000` (compose-internal) |
 | `tailscale` (serve) | The TLS edge (lnf, phase 2): fronts registrar (:443), gateway (:8443) and scotty (:8444) at the MagicDNS names — Let's Encrypt certs, auto-renewed | loopback publishes only; the LAN front door is retired |
@@ -35,10 +35,9 @@ application role; its endpoints belong to the tailnet, see
 
 - **`GATEWAY_URL`** — your model traffic. It arrives in your bundle
   (`config/agent.env`) as `http://litellm:4000` (compose-internal);
-  the fleet variable carries `https://vector-sigma.tailb7207e.ts.net:8443`
+  the fleet variable carries `https://<master>.<tailnet>.ts.net:8443`
   (the serve edge). The bundle is the contract — never hardcode a
   URL the bundle already carries.
-  the contract — never hardcode a URL the bundle already carries.
 - **The queue** — `dolt:3306`, database `vs_ops`, user `vs`. Your bd
   join config (below) points here. VS DEVICES join the same database
   over the LAN at `<master-LAN-IP>:3326`.
@@ -46,7 +45,7 @@ application role; its endpoints belong to the tailnet, see
   (writes go through bd — yours).
 - **`REGISTRAR_URL`** — `http://registrar:3000` compose-internal
   (your own poll path); the devices' fleet variable carries
-  `https://vector-sigma.tailb7207e.ts.net` (the serve edge fronts the
+  `https://<master>.<tailnet>.ts.net` (the serve edge fronts the
   master's loopback publish — lnf, phase 2). The bundle is the
   contract — never hardcode a URL the bundle already carries.
 

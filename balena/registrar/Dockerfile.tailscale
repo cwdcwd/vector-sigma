@@ -15,14 +15,27 @@
 # ipn.ServeConfig JSON file, NOT the tailscaled config-file (hujson)
 # dialect newer clients (1.52+) accept. Shape (ipn/serve.go at the tag):
 #   TCP  — map keyed by PORT number ("443"), value { "HTTPS": true }
-#   Web  — map keyed "SNI:port" ("vector-sigma.tailb7207e.ts.net:443" —
-#          there is NO implicit port 443 in this dialect), each a
-#          Handlers map keyed by mount point, "/" proxying the loopback
-#          publish of the target service.
-# The ${TS_CERT_DOMAIN} placeholder the Kubernetes operator uses is NOT
-# used here: outside k8s containerboot substitutes an empty cert domain,
-# so the MagicDNS FQDN is baked literally (it is structural — the same
-# literal the extra_hosts pins carry in both balena composes).
+#   Web  — map keyed "SNI:port" ("${TS_CERT_DOMAIN}:443" after the
+#          substitution below — there is NO implicit port 443 in this
+#          dialect), each a Handlers map keyed by mount point, "/"
+#          proxying the loopback publish of the target service.
+# The ${TS_CERT_DOMAIN} placeholder IS used here (fleet-ops-1py.14, per
+# the merged image-exposure plan's two-way verification): containerboot
+# substitutes it with the node's own cert domain (its MagicDNS FQDN) on
+# ANY node type — cmd/containerboot/serve.go readServeConfig does
+# bytes.ReplaceAll of ${TS_CERT_DOMAIN} with certDomain, and
+# cmd/containerboot/main.go sets certDomain from the netmap's
+# CertDomains[0] on non-kube nodes (falling back to a no-HTTPS sentinel
+# only when empty). The devices fleet's serve config has used the same
+# placeholder form on this same pinned tag since j7g.1, serving live —
+# the master's cert domain is its own MagicDNS FQDN, so NO deployment
+# value is baked into this image (the earlier literal bake and the
+# k8s-only comment it rested on were wrong; corrected here). CANARY NOTE:
+# the placeholder form on the MASTER is proven by the same live
+# mechanism the devices rely on; the plan requires a canary prove of
+# the form on the master before the corrected image ships — the
+# release/deploy sequence (plan section B/C) carries that gate; this
+# repo change only fixes the bytes.
 #
 # Application semantics (cmd/containerboot/main.go + serve.go, v1.102.5):
 #   - at startup containerboot UNSETS any previous serve config, then
