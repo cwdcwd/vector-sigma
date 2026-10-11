@@ -32,6 +32,22 @@
 # construction.
 
 services:
+  # 1py.14 follow-on: resolveMeshTopology() (registrar/src/mesh-enroll.ts)
+  # made the tailnet suffix/edge host fail-closed runtime env instead of
+  # baked constants — the e2e registrar never carried them, so AC17
+  # (mesh-enroll-route.ac17_mesh_enroll_capability) fails closed with
+  # mesh_enroll_not_configured (CI run 38166497113). These are NON-SECRET
+  # structural values (the resolver's own error message says so) in the
+  # same synthetic-tailnet shape the unit tests already use
+  # (registrar/test/mesh-enroll-route.test.ts). Compose-internal origins
+  # (http://device:9900 etc.) never match these hosts, so AC17's shapes
+  # pass regardless of the exact suffix — only the "configured at all"
+  # gate was missing.
+  registrar:
+    environment:
+      VS_MESH_TAILNET_SUFFIX: .e2e-tailnet.ts.net
+      VS_MESH_EDGE_HOST: vsigma-master.e2e-tailnet.ts.net
+
   seed:
     build:
       context: ..
