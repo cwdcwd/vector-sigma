@@ -9,6 +9,13 @@ name: Build and publish private VS images
 #                       tar, NO push, NO registry auth, NO cache-from/
 #                       cache-to; run the gate's scanPlatformLayout()
 #                       against the tar; fail closed on any finding.
+#                       slice 6 adds a credential-only scan of the
+#                       RAW BUILD CONTEXT (registrar/src/credential-scan)
+#                       BEFORE the docker build step even runs — a
+#                       separate, narrower scope than the slice-4
+#                       layer scanner (credential-shaped patterns only,
+#                       never flags topology/FQDN literals, which stay
+#                       the slice-4 gate's job).
 #   assemble-and-validate(component) — local OCI index built ONLY from
 #                       this run's own scanned-and-passed digests
 #                       (assembleLocalOciIndex); rejects missing/
@@ -171,6 +178,10 @@ jobs:
         run: npm ci
       - name: Build (typecheck) so the oci-gate dist/ exists
         run: npm run build
+      - name: Credential-only scan of this component's build input (fleet-ops-1py.14 slice 6)
+        run: |
+          set -euo pipefail
+          node scripts/credential-scan-run.mjs --context "${{ matrix.context }}"
       - name: Build candidate to a local OCI layout (no push, no cache)
         id: build
         uses: docker/build-push-action@v6
