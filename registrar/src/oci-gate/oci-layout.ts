@@ -56,7 +56,7 @@ function parseJsonEntry(entries: TarEntry[], name: string, what: string): unknow
   }
 }
 
-function validateDescriptorShape(desc: unknown, where: string): OciDescriptor {
+export function validateDescriptorShape(desc: unknown, where: string): OciDescriptor {
   if (
     typeof desc !== 'object' ||
     desc === null ||
@@ -148,13 +148,26 @@ export function loadOciLayout(tarBytes: Buffer): LoadedOciLayout {
     manifests: manifests.map((m, i) => ({
       ...m,
       platform: (rawManifests[i] as Record<string, unknown>).platform as OciDescriptor['platform'],
+      annotations: (rawManifests[i] as Record<string, unknown>).annotations as OciDescriptor['annotations'],
     })),
   };
 
   return { index, blobs };
 }
 
-/** Validates + parses one platform manifest's descriptor against actual bytes. */
+/**
+ * Validates + parses one platform manifest's descriptor against actual
+ * bytes. ATTESTATION-MANIFEST descriptors (classifyIndexDescriptor ==
+ * 'attestation') are structurally validated here too (digest/size
+ * against the real blob — fail-closed on tamper/corruption/missing
+ * blob) but their JSON is never required to carry config/layers:
+ * buildx attestation manifests are shaped
+ * `{ schemaVersion, mediaType, artifactType, config, layers, subject }`
+ * where `config` is the OCI EMPTY descriptor and `layers` holds the
+ * in-toto/SBOM blob(s) — a structurally different, non-runnable shape
+ * this gate does not scan as image content (see classifyIndexDescriptor
+ * in types.ts for the full owner-ruled attestation policy).
+ */
 export function loadManifest(layout: LoadedOciLayout, desc: OciDescriptor): OciManifest {
   const bytes = validateDescriptorAgainstBlob(desc, layout.blobs, `manifest ${desc.digest}`);
   let parsed: unknown;
@@ -175,4 +188,27 @@ export function loadManifest(layout: LoadedOciLayout, desc: OciDescriptor): OciM
     config,
     layers,
   };
+}
+
+/**
+ * Validates the image CONFIG blob referenced by a manifest's `config`
+ * descriptor (fleet-ops-1py.14 fix for PR #61 review finding #3):
+ * recomputes the config blob's real sha256 digest + byte length and
+ * compares against the descriptor exactly (same rigor `loadManifest`
+ * already applies to the manifest blob and `walkAllLayers` applies to
+ * every layer blob — the config descriptor was previously SHAPE-only
+ * checked and never read/verified against its own referenced bytes),
+ * then parses the config JSON. Throws fail-closed (`missing_blob` /
+ * `digest_mismatch` / `size_mismatch` / `malformed_layout`) exactly
+ * like every other blob-integrity check in this module — a missing or
+ * tampered config blob is an invalid image, full stop, and must never
+ * be reported as a passing scan.
+ */
+export function loadConfig(layout: LoadedOciLayout, configDesc: OciDescriptor): Record<string, unknown> {
+  const bytes = validateDescriptorAgainstBlob(configDesc, layout.blobs, `config ${configDesc.digest}`);
+  try {
+    return JSON.parse(bytes.toString('utf8')) as Record<string, unknown>;
+  } catch (err) {
+    throw new ContentGateError('malformed_layout', `config ${configDesc.digest} is not valid JSON`, err);
+  }
 }

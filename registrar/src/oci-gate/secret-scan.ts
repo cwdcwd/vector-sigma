@@ -34,12 +34,26 @@ interface NamedPattern {
 }
 
 const PATTERNS: NamedPattern[] = [
-  { name: 'pem_private_key', kind: 'secret', regex: /-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/ },
+  // pem_private_key / private_key_generic: require a real base64 body
+  // between header and footer (see registrar/src/credential-scan/
+  // patterns.ts for the full rationale) — a UI placeholder shape
+  // (header + ellipsis/short filler + footer, zero real key material)
+  // must not reject an otherwise-clean image layer that merely ships
+  // that placeholder text (e.g. a baked copy of admin-html.ts).
+  {
+    name: 'pem_private_key',
+    kind: 'secret',
+    regex: /-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----[\r\n]+(?:[^-\r\n]*[\r\n]+)*?[A-Za-z0-9+/]{20,}={0,2}[\r\n]+(?:[^-\r\n]*[\r\n]+)*?-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/,
+  },
   { name: 'aws_access_key_id', kind: 'secret', regex: /\bAKIA[0-9A-Z]{16}\b/ },
   { name: 'github_token', kind: 'secret', regex: /\bgh[pousr]_[A-Za-z0-9]{36,}\b/ },
   { name: 'slack_token', kind: 'secret', regex: /\bxox[baprs]-[0-9A-Za-z-]{10,}\b/ },
   { name: 'generic_api_key_assignment', kind: 'secret', regex: /\b(?:api[_-]?key|secret|token|password)\b\s*[:=]\s*['"][A-Za-z0-9_\-/+=]{12,}['"]/i },
-  { name: 'private_key_generic', kind: 'secret', regex: /-----BEGIN (?:ENCRYPTED )?PRIVATE KEY-----/ },
+  {
+    name: 'private_key_generic',
+    kind: 'secret',
+    regex: /-----BEGIN (?:ENCRYPTED )?PRIVATE KEY-----[\r\n]+(?:[^-\r\n]*[\r\n]+)*?[A-Za-z0-9+/]{20,}={0,2}[\r\n]+(?:[^-\r\n]*[\r\n]+)*?-----END (?:ENCRYPTED )?PRIVATE KEY-----/,
+  },
   { name: 'tailnet_magicdns_fqdn', kind: 'topology', regex: /\b[a-z0-9-]+\.[a-z0-9-]+\.ts\.net\b/i },
   {
     name: 'rfc1918_private_ip',

@@ -120,7 +120,7 @@ describe('fail-closed: secret committed in a lower layer, deleted by a later whi
     const tarBytes = buildFakeOciLayoutTar({
       platform: 'linux/amd64',
       layers: [
-        { files: [{ name: 'opt/app/config/id_rsa', content: '-----BEGIN RSA PRIVATE KEY-----\nMIIBOg...\n-----END RSA PRIVATE KEY-----\n' }] },
+        { files: [{ name: 'opt/app/config/id_rsa', content: '-----BEGIN RSA PRIVATE KEY-----\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n-----END RSA PRIVATE KEY-----\n' }] },
         { files: [{ name: 'opt/app/config/.wh.id_rsa', content: '' }] },
       ],
     });

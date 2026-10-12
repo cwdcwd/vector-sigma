@@ -24,7 +24,7 @@ import { CREDENTIAL_PATTERNS } from '../src/credential-scan/patterns.js';
 
 // Synthetic, obviously-fake samples — one per pattern class.
 const SYNTHETIC_SAMPLES: Record<string, string> = {
-  pem_private_key: '-----BEGIN RSA PRIVATE KEY-----\n[SYNTHETIC-FIXTURE-NOT-A-REAL-KEY]\n-----END RSA PRIVATE KEY-----\n',
+  pem_private_key: '-----BEGIN RSA PRIVATE KEY-----\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n-----END RSA PRIVATE KEY-----\n',
   aws_access_key_id: 'AKIAFAKEEXAMPLE00000',
   github_token_classic: `ghp_${'a'.repeat(36)}`,
   github_token_fine_grained: `github_pat_${'b'.repeat(22)}`,
@@ -100,6 +100,37 @@ describe('credential-only scanner: binary content is skipped, not scanned', () =
   it('a plain-text buffer without NUL bytes IS scanned normally', () => {
     const buf = Buffer.from(`AKIAFAKEEXAMPLE00000`, 'utf8');
     expect(scanBytesForCredentials(buf)).toContain('aws_access_key_id');
+  });
+});
+
+describe('pem_private_key: distinguishes a non-secret PEM placeholder from a real-shaped PEM body (PR #61 review finding #2)', () => {
+  // The exact shape registrar/src/admin-html.ts ships (and its vendored
+  // twin in balena/registrar/registrar/src/admin-html.ts): a GitHub App
+  // PEM textarea placeholder — header + ellipsis + footer, zero real
+  // key material. This is UI copy, not a secret, and must PASS.
+  const placeholderShape = '-----BEGIN RSA PRIVATE KEY-----\n\u2026\n-----END RSA PRIVATE KEY-----';
+
+  // A plausible-looking (but entirely synthetic/fake) PEM body — a real
+  // base64 blob of substantial length between the markers. This MUST
+  // still be rejected: the fix narrows the pattern, it does not disable it.
+  const realShapedSynthetic =
+    '-----BEGIN RSA PRIVATE KEY-----\n' +
+    'MIIEpQIBAAKCAQEA1c79z5Pad7Oejecs' +
+    'Q0bu3aumPeYQcOxQZUwQg5wKEPOHGSU\n' +
+    '-----END RSA PRIVATE KEY-----';
+
+  it('does NOT flag the admin-html.ts github_app_pem placeholder shape', () => {
+    expect(scanTextForCredentials(placeholderShape)).not.toContain('pem_private_key');
+  });
+
+  it('STILL flags a real-shaped synthetic PEM body (header + substantial base64 + footer)', () => {
+    expect(scanTextForCredentials(realShapedSynthetic)).toContain('pem_private_key');
+  });
+
+  it('does not flag a short non-base64 filler other than the literal ellipsis either', () => {
+    expect(
+      scanTextForCredentials('-----BEGIN PRIVATE KEY-----\n<paste key here>\n-----END PRIVATE KEY-----'),
+    ).not.toContain('pem_private_key');
   });
 });
 

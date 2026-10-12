@@ -72,4 +72,25 @@ describe('scanSourceTree: finds credential-shaped content in a synthetic build c
     const root = makeTmpDir();
     expect(scanSourceTree(root)).toEqual([]);
   });
+
+  it('does not flag the admin-html.ts GitHub App PEM textarea placeholder shape (PR #61 review finding #2)', () => {
+    const root = makeTmpDir();
+    writeFileSync(
+      path.join(root, 'admin-html.ts'),
+      "{ name: 'github_app_pem', placeholder: '-----BEGIN RSA PRIVATE KEY-----\\n\u2026\\n-----END RSA PRIVATE KEY-----' }\n",
+    );
+    expect(scanSourceTree(root)).toEqual([]);
+  });
+
+  it('STILL flags a real-shaped synthetic PEM body committed in a build-context file', () => {
+    const root = makeTmpDir();
+    writeFileSync(
+      path.join(root, 'leaked-key.pem'),
+      '-----BEGIN RSA PRIVATE KEY-----\n' +
+        'MIIEpQIBAAKCAQEA1c79z5Pad7OejecsQ0bu3aumPeYQcOxQZUwQg5wKEPOHGSU\n' +
+        '-----END RSA PRIVATE KEY-----\n',
+    );
+    const findings = scanSourceTree(root);
+    expect(findings.map((f) => f.pattern)).toContain('pem_private_key');
+  });
 });

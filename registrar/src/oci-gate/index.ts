@@ -5,5 +5,6 @@ export * from './tar.js';
 export * from './oci-layout.js';
 export * from './layer-walk.js';
 export * from './secret-scan.js';
+export * from './config-scan.js';
 export * from './index-assembly.js';
 export * from './gate.js';

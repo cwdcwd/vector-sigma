@@ -49,7 +49,23 @@ export interface CredentialPattern {
  * collect ALL matches rather than stopping at the first.
  */
 export const CREDENTIAL_PATTERNS: readonly CredentialPattern[] = [
-  { name: 'pem_private_key', regex: /-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----/ },
+  // pem_private_key: a real PEM private key has a SUBSTANTIAL base64
+  // body (at least one full base64 line, conventionally wrapped at 64
+  // chars — real keys run to many such lines) between its header and
+  // footer. A UI placeholder (e.g. registrar/src/admin-html.ts's
+  // github_app_pem field) uses the exact same header/footer framing
+  // around an ellipsis or other short non-base64 filler with ZERO real
+  // key material — "header + ellipsis/short-filler + footer" is not a
+  // secret and must not reject shipped source that merely shows an
+  // operator what to paste. Requiring >=20 base64 chars on at least one
+  // line between the markers is the distinguishing signal: a real key's
+  // body trivially clears this bar; a placeholder's ellipsis (…) or any
+  // short human-readable filler never does, because it is neither valid
+  // base64 content nor long enough.
+  {
+    name: 'pem_private_key',
+    regex: /-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----[\r\n]+(?:[^-\r\n]*[\r\n]+)*?[A-Za-z0-9+/]{20,}={0,2}[\r\n]+(?:[^-\r\n]*[\r\n]+)*?-----END (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----/,
+  },
   { name: 'aws_access_key_id', regex: /\bAKIA[0-9A-Z]{16}\b/ },
   { name: 'github_token_classic', regex: /\bgh[pousr]_[A-Za-z0-9]{36,}\b/ },
   { name: 'github_token_fine_grained', regex: /\bgithub_pat_[A-Za-z0-9_]{20,}\b/ },

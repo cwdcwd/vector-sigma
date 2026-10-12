@@ -35,19 +35,36 @@ export interface FakeSingleArchLayoutOptions {
   layers: FakeLayerSpec[];
   /** Corrupt the layout after building, for negative test cases. */
   corrupt?: (ctx: { layoutEntries: Array<{ name: string; data?: Buffer }>; blobDigests: Record<string, string> }) => void;
+  /** Extra OCI image-config JSON fields (Env/Labels/Cmd/Entrypoint/history, etc). */
+  configExtra?: Record<string, unknown>;
+  /**
+   * Include a buildx-shaped attestation manifest alongside the image
+   * manifest in index.json (fleet-ops-1py.14 fix for PR #61 review
+   * finding #1 — the REAL buildx --provenance/--sbom shape: an index
+   * with one image manifest + one attestation manifest per arch).
+   */
+  includeAttestation?: boolean;
+  /**
+   * Post-build hook to corrupt/delete a specific blob by digest (used
+   * by the config-blob-deleted / config-blob-tampered negative tests).
+   * Receives the full blob list (including config/manifest/layers) and
+   * may mutate it in place (e.g. filter out an entry, or replace bytes).
+   */
+  mutateBlobs?: (blobs: Array<{ digest: string; bytes: Buffer }>) => Array<{ digest: string; bytes: Buffer }>;
 }
 
 /**
  * Builds a complete single-platform OCI-layout tar: oci-layout marker,
- * index.json (one manifest), the manifest blob, a config blob, and
- * every layer blob — all content-addressed under blobs/sha256/<hex>,
- * matching `docker buildx build --output type=oci` shape.
+ * index.json (one manifest, optionally plus one attestation manifest),
+ * the manifest blob, a config blob, and every layer blob — all
+ * content-addressed under blobs/sha256/<hex>, matching `docker buildx
+ * build --output type=oci` shape.
  */
 export function buildFakeOciLayoutTar(opts: FakeSingleArchLayoutOptions): Buffer {
   const [os, architecture] = opts.platform.split('/');
-  const blobs: Array<{ digest: string; bytes: Buffer }> = [];
+  let blobs: Array<{ digest: string; bytes: Buffer }> = [];
 
-  const configBytes = Buffer.from(JSON.stringify({ architecture, os }), 'utf8');
+  const configBytes = Buffer.from(JSON.stringify({ architecture, os, ...(opts.configExtra ?? {}) }), 'utf8');
   const configDigest = sha256Digest(configBytes);
   blobs.push({ digest: configDigest, bytes: configBytes });
 
@@ -68,17 +85,60 @@ export function buildFakeOciLayoutTar(opts: FakeSingleArchLayoutOptions): Buffer
   const manifestDigest = sha256Digest(manifestBytes);
   blobs.push({ digest: manifestDigest, bytes: manifestBytes });
 
+  const indexManifests: Array<Record<string, unknown>> = [
+    {
+      mediaType: 'application/vnd.oci.image.manifest.v1+json',
+      digest: manifestDigest,
+      size: manifestBytes.length,
+      platform: { architecture, os },
+    },
+  ];
+
+  if (opts.includeAttestation) {
+    // Real buildx attestation-manifest shape: empty-JSON config + an
+    // in-toto layer blob, platform unknown/unknown, tagged with the
+    // reference annotations buildx actually sets (see
+    // docs.docker.com/build/metadata/attestations/attestation-storage).
+    const emptyConfigBytes = Buffer.from('{}', 'utf8');
+    const emptyConfigDigest = sha256Digest(emptyConfigBytes);
+    blobs.push({ digest: emptyConfigDigest, bytes: emptyConfigBytes });
+
+    const inTotoBytes = Buffer.from(JSON.stringify({ _type: 'https://in-toto.io/Statement/v1', predicateType: 'https://slsa.dev/provenance/v1' }), 'utf8');
+    const inTotoDigest = sha256Digest(inTotoBytes);
+    blobs.push({ digest: inTotoDigest, bytes: inTotoBytes });
+
+    const attestationObj = {
+      schemaVersion: 2,
+      mediaType: 'application/vnd.oci.image.manifest.v1+json',
+      artifactType: 'application/vnd.docker.attestation.manifest.v1+json',
+      config: { mediaType: 'application/vnd.oci.empty.v1+json', digest: emptyConfigDigest, size: emptyConfigBytes.length },
+      layers: [{ mediaType: 'application/vnd.in-toto+json', digest: inTotoDigest, size: inTotoBytes.length }],
+      subject: { mediaType: 'application/vnd.oci.image.manifest.v1+json', digest: manifestDigest, size: manifestBytes.length },
+    };
+    const attestationBytes = Buffer.from(JSON.stringify(attestationObj), 'utf8');
+    const attestationDigest = sha256Digest(attestationBytes);
+    blobs.push({ digest: attestationDigest, bytes: attestationBytes });
+
+    indexManifests.push({
+      mediaType: 'application/vnd.oci.image.manifest.v1+json',
+      digest: attestationDigest,
+      size: attestationBytes.length,
+      platform: { architecture: 'unknown', os: 'unknown' },
+      annotations: {
+        'vnd.docker.reference.digest': manifestDigest,
+        'vnd.docker.reference.type': 'attestation-manifest',
+      },
+    });
+  }
+
+  if (opts.mutateBlobs) {
+    blobs = opts.mutateBlobs(blobs);
+  }
+
   const indexObj = {
     schemaVersion: 2,
     mediaType: 'application/vnd.oci.image.index.v1+json',
-    manifests: [
-      {
-        mediaType: 'application/vnd.oci.image.manifest.v1+json',
-        digest: manifestDigest,
-        size: manifestBytes.length,
-        platform: { architecture, os },
-      },
-    ],
+    manifests: indexManifests,
   };
   const indexBytes = Buffer.from(JSON.stringify(indexObj), 'utf8');
 
