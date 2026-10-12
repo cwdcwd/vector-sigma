@@ -17,7 +17,7 @@
 import { createHash } from 'node:crypto';
 import { parseTar, type TarEntry } from './tar.js';
 import { ContentGateError } from './errors.js';
-import type { OciDescriptor, OciIndex, OciManifest } from './types.js';
+import { classifyIndexDescriptor, type OciDescriptor, type OciIndex, type OciManifest } from './types.js';
 
 export interface LoadedOciLayout {
   index: OciIndex;
@@ -153,6 +153,113 @@ export function loadOciLayout(tarBytes: Buffer): LoadedOciLayout {
   };
 
   return { index, blobs };
+}
+
+/**
+ * OCI/Docker media types that mean "this descriptor is itself an
+ * index/manifest-list, not a manifest" — both the OCI spec's own
+ * index media type and the legacy Docker manifest-list type that some
+ * tooling still emits.
+ */
+const INDEX_MEDIA_TYPES = new Set([
+  'application/vnd.oci.image.index.v1+json',
+  'application/vnd.docker.distribution.manifest.list.v2+json',
+]);
+
+function isIndexMediaType(mediaType: string | undefined): boolean {
+  return mediaType !== undefined && INDEX_MEDIA_TYPES.has(mediaType);
+}
+
+/** Parses a nested index blob's raw bytes into shape-validated descriptors (annotations/platform preserved, same as the outer-index parse in loadOciLayout). */
+function parseNestedIndexManifests(bytes: Buffer, where: string): OciDescriptor[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(bytes.toString('utf8'));
+  } catch (err) {
+    throw new ContentGateError('malformed_layout', `nested index ${where} is not valid JSON`, err);
+  }
+  const obj = parsed as Record<string, unknown>;
+  if (!Array.isArray(obj.manifests)) {
+    throw new ContentGateError('malformed_layout', `nested index ${where} has no manifests array`);
+  }
+  const rawManifests = obj.manifests as unknown[];
+  return rawManifests.map((m, i) => {
+    const shape = validateDescriptorShape(m, `nested index ${where} manifests[${i}]`);
+    const raw = rawManifests[i] as Record<string, unknown>;
+    return {
+      ...shape,
+      platform: raw.platform as OciDescriptor['platform'],
+      annotations: raw.annotations as OciDescriptor['annotations'],
+    };
+  });
+}
+
+export interface ResolvedIndexDescriptors {
+  imageManifestDescs: OciDescriptor[];
+  attestationDescs: OciDescriptor[];
+}
+
+/** Hard ceiling on nested-index depth — guards against a pathological or cyclic layout rather than an unbounded/infinite recursion. Real buildx output nests at most one level deep (outer index -> per-platform nested index -> image + attestation manifests); this ceiling is generous headroom, not a hardcoded "exactly one level" assumption. */
+const MAX_INDEX_NESTING_DEPTH = 8;
+
+/**
+ * Recursively resolves a list of index-level descriptors (the outer
+ * index.json `manifests` array, or — through recursion — a nested
+ * index's own `manifests` array) into the two kinds of LEAF manifest
+ * descriptor this gate ultimately cares about: runnable IMAGE
+ * manifests (have config+layers) and ATTESTATION manifests (do not,
+ * and are never scanned as image content — see classifyIndexDescriptor
+ * for the owner-ruled policy).
+ *
+ * `docker buildx build --output type=oci --provenance=...` can emit an
+ * ADDITIONAL index level: the outer index.json references a
+ * descriptor whose mediaType is itself an OCI/Docker index type (a
+ * nested index blob), and THAT nested index in turn contains the real
+ * image manifest + attestation manifest descriptors (PR #61 review
+ * round 2 finding #1 — live CI proof: run 38309617753, manifest-list
+ * digest sha256:2339d41c6f5423f381ea5380cca03b35865341fa219e0f0496999ded78c25f95
+ * rejected "missing config/layers" because the outer descriptor was an
+ * index, not an image manifest, and was handed straight to
+ * loadManifest). Dispatch is by descriptor mediaType — any descriptor
+ * whose mediaType means "this is an index" is resolved (digest/size
+ * validated against its actual blob, same rigor as every other blob in
+ * this module) and recursed into; everything else is classified
+ * image-vs-attestation at that depth and treated as a leaf. No fixed
+ * nesting depth is assumed — recursion continues until every
+ * descriptor resolves to a non-index media type, bounded only by
+ * MAX_INDEX_NESTING_DEPTH as a fail-closed guard against a pathological
+ * or cyclic layout.
+ */
+export function resolveIndexDescriptors(
+  layout: LoadedOciLayout,
+  descriptors: OciDescriptor[],
+  depth = 0,
+): ResolvedIndexDescriptors {
+  if (depth > MAX_INDEX_NESTING_DEPTH) {
+    throw new ContentGateError(
+      'malformed_layout',
+      `OCI index nesting exceeds the maximum supported depth (${MAX_INDEX_NESTING_DEPTH}) — refusing to recurse further`,
+    );
+  }
+
+  const imageManifestDescs: OciDescriptor[] = [];
+  const attestationDescs: OciDescriptor[] = [];
+
+  for (const desc of descriptors) {
+    if (isIndexMediaType(desc.mediaType)) {
+      const bytes = validateDescriptorAgainstBlob(desc, layout.blobs, `nested index ${desc.digest}`);
+      const nestedDescs = parseNestedIndexManifests(bytes, desc.digest);
+      const nested = resolveIndexDescriptors(layout, nestedDescs, depth + 1);
+      imageManifestDescs.push(...nested.imageManifestDescs);
+      attestationDescs.push(...nested.attestationDescs);
+    } else if (classifyIndexDescriptor(desc) === 'attestation') {
+      attestationDescs.push(desc);
+    } else {
+      imageManifestDescs.push(desc);
+    }
+  }
+
+  return { imageManifestDescs, attestationDescs };
 }
 
 /**

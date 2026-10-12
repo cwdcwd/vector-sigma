@@ -156,3 +156,134 @@ export function buildFakeOciLayoutTar(opts: FakeSingleArchLayoutOptions): Buffer
 export function corruptTarTruncate(tarBytes: Buffer, cutRatio = 0.6): Buffer {
   return tarBytes.subarray(0, Math.floor(tarBytes.length * cutRatio));
 }
+
+export interface FakeNestedIndexLayoutOptions {
+  platform: 'linux/amd64' | 'linux/arm64';
+  layers: FakeLayerSpec[];
+  configExtra?: Record<string, unknown>;
+  /** Omit the image manifest from the NESTED index (leaves only the attestation manifest), for a negative test. */
+  omitImageManifest?: boolean;
+  /** Corrupt the nested index blob's bytes after it is built (digest/size still point at the pre-corruption blob unless the caller also recomputes the outer descriptor). */
+  tamperNestedIndexBytes?: (bytes: Buffer) => Buffer;
+}
+
+/**
+ * Builds the REAL `docker buildx build --output type=oci
+ * --provenance=...` shape: outer index.json references exactly ONE
+ * descriptor whose mediaType is itself `application/vnd.oci.image.
+ * index.v1+json` (a NESTED index blob, content-addressed like any
+ * other blob) — and THAT nested index contains the real image
+ * manifest (config+layers) plus one attestation manifest sibling.
+ *
+ * This reproduces PR #61 review round 2 finding #1 (the owner's live
+ * CI repro, run 38309617753): the previous classifier only looked at
+ * siblings in the OUTER index and mislabeled this nested-index
+ * descriptor as an image manifest, handing it straight to loadManifest
+ * which then threw "missing config/layers".
+ */
+export function buildFakeNestedIndexOciLayoutTar(opts: FakeNestedIndexLayoutOptions): Buffer {
+  const [os, architecture] = opts.platform.split('/');
+  let blobs: Array<{ digest: string; bytes: Buffer }> = [];
+
+  const configBytes = Buffer.from(JSON.stringify({ architecture, os, ...(opts.configExtra ?? {}) }), 'utf8');
+  const configDigest = sha256Digest(configBytes);
+  blobs.push({ digest: configDigest, bytes: configBytes });
+
+  const layerDescs = opts.layers.map((layerSpec) => {
+    const { bytes, mediaType } = buildLayerBlob(layerSpec);
+    const digest = sha256Digest(bytes);
+    blobs.push({ digest, bytes });
+    return { mediaType, digest, size: bytes.length };
+  });
+
+  const manifestObj = {
+    schemaVersion: 2,
+    mediaType: 'application/vnd.oci.image.manifest.v1+json',
+    config: { mediaType: 'application/vnd.oci.image.config.v1+json', digest: configDigest, size: configBytes.length },
+    layers: layerDescs,
+  };
+  const manifestBytes = Buffer.from(JSON.stringify(manifestObj), 'utf8');
+  const manifestDigest = sha256Digest(manifestBytes);
+  blobs.push({ digest: manifestDigest, bytes: manifestBytes });
+
+  // Attestation manifest (real buildx shape), same as the flat case.
+  const emptyConfigBytes = Buffer.from('{}', 'utf8');
+  const emptyConfigDigest = sha256Digest(emptyConfigBytes);
+  blobs.push({ digest: emptyConfigDigest, bytes: emptyConfigBytes });
+
+  const inTotoBytes = Buffer.from(JSON.stringify({ _type: 'https://in-toto.io/Statement/v1', predicateType: 'https://slsa.dev/provenance/v1' }), 'utf8');
+  const inTotoDigest = sha256Digest(inTotoBytes);
+  blobs.push({ digest: inTotoDigest, bytes: inTotoBytes });
+
+  const attestationObj = {
+    schemaVersion: 2,
+    mediaType: 'application/vnd.oci.image.manifest.v1+json',
+    artifactType: 'application/vnd.docker.attestation.manifest.v1+json',
+    config: { mediaType: 'application/vnd.oci.empty.v1+json', digest: emptyConfigDigest, size: emptyConfigBytes.length },
+    layers: [{ mediaType: 'application/vnd.in-toto+json', digest: inTotoDigest, size: inTotoBytes.length }],
+    subject: { mediaType: 'application/vnd.oci.image.manifest.v1+json', digest: manifestDigest, size: manifestBytes.length },
+  };
+  const attestationBytes = Buffer.from(JSON.stringify(attestationObj), 'utf8');
+  const attestationDigest = sha256Digest(attestationBytes);
+  blobs.push({ digest: attestationDigest, bytes: attestationBytes });
+
+  const nestedIndexManifests: Array<Record<string, unknown>> = [];
+  if (!opts.omitImageManifest) {
+    nestedIndexManifests.push({
+      mediaType: 'application/vnd.oci.image.manifest.v1+json',
+      digest: manifestDigest,
+      size: manifestBytes.length,
+      platform: { architecture, os },
+    });
+  }
+  nestedIndexManifests.push({
+    mediaType: 'application/vnd.oci.image.manifest.v1+json',
+    digest: attestationDigest,
+    size: attestationBytes.length,
+    platform: { architecture: 'unknown', os: 'unknown' },
+    annotations: {
+      'vnd.docker.reference.digest': manifestDigest,
+      'vnd.docker.reference.type': 'attestation-manifest',
+    },
+  });
+
+  const nestedIndexObj = {
+    schemaVersion: 2,
+    mediaType: 'application/vnd.oci.image.index.v1+json',
+    manifests: nestedIndexManifests,
+  };
+  let nestedIndexBytes = Buffer.from(JSON.stringify(nestedIndexObj), 'utf8');
+  if (opts.tamperNestedIndexBytes) {
+    nestedIndexBytes = opts.tamperNestedIndexBytes(nestedIndexBytes);
+  }
+  const nestedIndexDigest = sha256Digest(nestedIndexBytes);
+  blobs.push({ digest: nestedIndexDigest, bytes: nestedIndexBytes });
+
+  // Outer index.json references ONLY the nested index descriptor per
+  // platform — no image/attestation manifest descriptor sits directly
+  // at the outer level, which is the real buildx --provenance shape
+  // this fixture reproduces.
+  const outerIndexObj = {
+    schemaVersion: 2,
+    mediaType: 'application/vnd.oci.image.index.v1+json',
+    manifests: [
+      {
+        mediaType: 'application/vnd.oci.image.index.v1+json',
+        digest: nestedIndexDigest,
+        size: nestedIndexBytes.length,
+        platform: { architecture, os },
+      },
+    ],
+  };
+  const outerIndexBytes = Buffer.from(JSON.stringify(outerIndexObj), 'utf8');
+
+  const ociLayoutBytes = Buffer.from(JSON.stringify({ imageLayoutVersion: '1.0.0' }), 'utf8');
+
+  const entries: Array<{ name: string; data: Buffer }> = [
+    { name: 'oci-layout', data: ociLayoutBytes },
+    { name: 'index.json', data: outerIndexBytes },
+    ...blobs.map((b) => ({ name: `blobs/sha256/${b.digest.replace('sha256:', '')}`, data: b.bytes })),
+  ];
+
+  return buildTar(entries);
+}

@@ -62,9 +62,29 @@ export const CREDENTIAL_PATTERNS: readonly CredentialPattern[] = [
   // body trivially clears this bar; a placeholder's ellipsis (…) or any
   // short human-readable filler never does, because it is neither valid
   // base64 content nor long enough.
+  //
+  // PR #61 review round 2 finding #2: a PEM also needs to be detected
+  // when it is stored inside a JSON string value, where
+  // JSON.stringify() serializes every real newline as the TWO-character
+  // escape sequence `\n` (a literal backslash followed by the letter
+  // n), not an actual line break — e.g.
+  // `JSON.stringify({ private_key: pem })` yields a single-line string
+  // like `-----BEGIN PRIVATE KEY-----\nMIIEvQ...\n-----END PRIVATE
+  // KEY-----\n` with zero real CR/LF bytes. The round-1 fix's line
+  // separator only matched real `[\r\n]+`, so it silently missed this
+  // shape entirely (both in credential-scan/patterns.ts and the
+  // mirrored oci-gate/secret-scan.ts). The line-break alternation below
+  // accepts EITHER a real newline/CRLF run OR a literal backslash-n
+  // escape run (`(?:\\n)+` — note this matches the two source
+  // characters `\` and `n`, not an actual newline) as the separator
+  // between header/body/footer, so both the raw multi-line file case
+  // and the JSON-serialized single-line case are detected, while the
+  // placeholder (no real base64 body in EITHER representation) still
+  // correctly fails to match.
   {
     name: 'pem_private_key',
-    regex: /-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----[\r\n]+(?:[^-\r\n]*[\r\n]+)*?[A-Za-z0-9+/]{20,}={0,2}[\r\n]+(?:[^-\r\n]*[\r\n]+)*?-----END (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----/,
+    regex:
+      /-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----(?:[\r\n]+|(?:\\n)+)(?:(?:[^-\\\r\n]|\\(?!n))*(?:[\r\n]+|(?:\\n)+))*?[A-Za-z0-9+/]{20,}={0,2}(?:[\r\n]+|(?:\\n)+)(?:(?:[^-\\\r\n]|\\(?!n))*(?:[\r\n]+|(?:\\n)+))*?-----END (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----/,
   },
   { name: 'aws_access_key_id', regex: /\bAKIA[0-9A-Z]{16}\b/ },
   { name: 'github_token_classic', regex: /\bgh[pousr]_[A-Za-z0-9]{36,}\b/ },

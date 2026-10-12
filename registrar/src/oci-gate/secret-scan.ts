@@ -40,10 +40,20 @@ const PATTERNS: NamedPattern[] = [
   // (header + ellipsis/short filler + footer, zero real key material)
   // must not reject an otherwise-clean image layer that merely ships
   // that placeholder text (e.g. a baked copy of admin-html.ts).
+  //
+  // PR #61 review round 2 finding #2 (mirrored fix — identical
+  // regression to credential-scan/patterns.ts): the line separator
+  // between header/body/footer must accept EITHER a real newline/CRLF
+  // run OR a literal backslash-n escape run (as JSON.stringify()
+  // produces for a PEM stored in a config.json string value / a JSON
+  // file baked into an image layer), or a real private key serialized
+  // to JSON inside an image layer/config blob silently evades this
+  // scanner while the identical raw multi-line PEM is caught.
   {
     name: 'pem_private_key',
     kind: 'secret',
-    regex: /-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----[\r\n]+(?:[^-\r\n]*[\r\n]+)*?[A-Za-z0-9+/]{20,}={0,2}[\r\n]+(?:[^-\r\n]*[\r\n]+)*?-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/,
+    regex:
+      /-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----(?:[\r\n]+|(?:\\n)+)(?:(?:[^-\\\r\n]|\\(?!n))*(?:[\r\n]+|(?:\\n)+))*?[A-Za-z0-9+/]{20,}={0,2}(?:[\r\n]+|(?:\\n)+)(?:(?:[^-\\\r\n]|\\(?!n))*(?:[\r\n]+|(?:\\n)+))*?-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/,
   },
   { name: 'aws_access_key_id', kind: 'secret', regex: /\bAKIA[0-9A-Z]{16}\b/ },
   { name: 'github_token', kind: 'secret', regex: /\bgh[pousr]_[A-Za-z0-9]{36,}\b/ },
@@ -52,7 +62,8 @@ const PATTERNS: NamedPattern[] = [
   {
     name: 'private_key_generic',
     kind: 'secret',
-    regex: /-----BEGIN (?:ENCRYPTED )?PRIVATE KEY-----[\r\n]+(?:[^-\r\n]*[\r\n]+)*?[A-Za-z0-9+/]{20,}={0,2}[\r\n]+(?:[^-\r\n]*[\r\n]+)*?-----END (?:ENCRYPTED )?PRIVATE KEY-----/,
+    regex:
+      /-----BEGIN (?:ENCRYPTED )?PRIVATE KEY-----(?:[\r\n]+|(?:\\n)+)(?:(?:[^-\\\r\n]|\\(?!n))*(?:[\r\n]+|(?:\\n)+))*?[A-Za-z0-9+/]{20,}={0,2}(?:[\r\n]+|(?:\\n)+)(?:(?:[^-\\\r\n]|\\(?!n))*(?:[\r\n]+|(?:\\n)+))*?-----END (?:ENCRYPTED )?PRIVATE KEY-----/,
   },
   { name: 'tailnet_magicdns_fqdn', kind: 'topology', regex: /\b[a-z0-9-]+\.[a-z0-9-]+\.ts\.net\b/i },
   {

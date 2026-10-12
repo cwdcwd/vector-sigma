@@ -18,7 +18,7 @@
  * fetch/https sentinel that must stay uncalled through every gate
  * run, pass or reject).
  */
-import { loadOciLayout, loadManifest, loadConfig, validateDescriptorAgainstBlob, type LoadedOciLayout } from './oci-layout.js';
+import { loadOciLayout, loadManifest, loadConfig, validateDescriptorAgainstBlob, resolveIndexDescriptors, type LoadedOciLayout } from './oci-layout.js';
 import { walkAllLayers } from './layer-walk.js';
 import { assertNoSecretsOrTopologyLiterals } from './secret-scan.js';
 import { assertConfigHasNoSecretsOrTopologyLiterals } from './config-scan.js';
@@ -27,7 +27,6 @@ import { ContentGateError } from './errors.js';
 import {
   REQUIRED_PLATFORMS,
   platformKey,
-  classifyIndexDescriptor,
   type OciDescriptor,
   type OciIndex,
   type RequiredPlatform,
@@ -103,8 +102,7 @@ export function scanPlatformLayout(input: PlatformLayoutInput): ScannedPlatformR
     );
   }
 
-  const imageManifestDescs = layout.index.manifests.filter((m) => classifyIndexDescriptor(m) === 'image');
-  const attestationDescs = layout.index.manifests.filter((m) => classifyIndexDescriptor(m) === 'attestation');
+  const { imageManifestDescs, attestationDescs } = resolveIndexDescriptors(layout, layout.index.manifests);
 
   if (imageManifestDescs.length === 0) {
     throw new ContentGateError(
