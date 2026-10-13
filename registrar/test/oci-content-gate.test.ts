@@ -315,6 +315,395 @@ describe('RFC1918 upstream allowlist: narrow, content-aware, not a path bypass',
 });
 
 // ---------------------------------------------------------------------------
+// PR #61 review round 4 finding #1 (P1, SECURITY HOLE): the round-3
+// allowlist's per-occurrence SHAPE check (comment-prefixed line /
+// IPv4Network(...) constructor argument) can be bypassed by an attacker
+// who appends a NEW line that (a) keeps the file's whole-file provenance
+// markers intact, AND (b) is itself shaped exactly like an accepted
+// occurrence, while carrying a REAL deployed private IP that was never
+// reviewed. Fixed by pinning the exact closed set of reviewed literal
+// occurrence values per file (see UPSTREAM_ALLOWLIST's
+// `approvedOccurrences` in secret-scan.ts) — these tests reproduce the
+// owner's EXACT repro steps and prove they now reject.
+// ---------------------------------------------------------------------------
+describe('RFC1918 upstream allowlist round 4: exact-value pinning closes the shape-mimicry bypass', () => {
+  const STOCK_PAM_ACCESS_CONF = [
+    '# Login access control table.',
+    '#',
+    '# permission:users:origins',
+    '#',
+    '# This is useful for configurations where you are trying to use',
+    '# pam_access with X applications that provide PAM_TTY values.',
+    '#',
+    '# comment: It might be better to use network/netmask instead.',
+    '#          The same is 192.168.201.0/24 or 192.168.201.0/255.255.255.0',
+    '#+:root:192.168.201.',
+    '#',
+    '# User "john" should get access from ipv4 net/mask',
+    '#+:john:127.0.0.0/24',
+    '#',
+    '# All other users should be denied to get access from all sources.',
+    '-:ALL:ALL',
+    '',
+  ].join('\n');
+
+  const STOCK_CPYTHON_IPADDRESS_PY = [
+    'class IPv4Address(_BaseV4, _BaseAddress):',
+    '    __slots__ = ("_ip", "__weakref__")',
+    '',
+    'class IPv6Address(_BaseV6, _BaseAddress):',
+    '    __slots__ = ("_ip", "__weakref__", "_scope_id")',
+    '',
+    'class _IPv4Constants:',
+    '    _private_networks = [',
+    "        IPv4Network('0.0.0.0/8'),",
+    "        IPv4Network('10.0.0.0/8'),",
+    "        IPv4Network('127.0.0.0/8'),",
+    "        IPv4Network('172.16.0.0/12'),",
+    "        IPv4Network('192.168.0.0/16'),",
+    '    ]',
+    '',
+  ].join('\n');
+
+  it('OWNER REPRO 1: an access.conf with provenance markers intact, plus an APPENDED comment-shaped line carrying a real deployed IP, still rejects', () => {
+    // Exactly the owner's repro: `# production database endpoint:
+    // 10.23.45.67` appended to a file that still carries every
+    // provenance marker. The line is comment-shaped (passes the old
+    // per-occurrence shape check) but its IP value (10.23.45.67) was
+    // never in the reviewed approvedOccurrences set for this file.
+    const bypassAttempt = `${STOCK_PAM_ACCESS_CONF}# production database endpoint: 10.23.45.67\n`;
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [{ files: [{ name: 'etc/security/access.conf', content: bypassAttempt }, ...CLEAN_FILES] }],
+    });
+    let err: unknown;
+    try {
+      scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ContentGateError);
+    expect((err as ContentGateError).code).toBe('topology_literal_found');
+    assertNoNetworkCalls();
+  });
+
+  it('OWNER REPRO 2: an ipaddress.py with class markers intact, plus an APPENDED IPv4Network(...) call carrying a real deployed IP, still rejects', () => {
+    // Exactly the owner's repro: `PRODUCTION_NETWORK =
+    // IPv4Network('10.23.45.0/24')` appended to a file that still
+    // carries every class/constant provenance marker. The occurrence is
+    // a genuine IPv4Network(...) constructor call (passes the old
+    // per-occurrence shape check) but its literal argument
+    // (10.23.45.0) was never in the reviewed approvedOccurrences set.
+    const bypassAttempt = `${STOCK_CPYTHON_IPADDRESS_PY}\nPRODUCTION_NETWORK = IPv4Network('10.23.45.0/24')\n`;
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [{ files: [{ name: 'usr/lib/python3.13/ipaddress.py', content: bypassAttempt }, ...CLEAN_FILES] }],
+    });
+    let err: unknown;
+    try {
+      scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ContentGateError);
+    expect((err as ContentGateError).code).toBe('topology_literal_found');
+    assertNoNetworkCalls();
+  });
+
+  it('the untampered real stock access.conf (exactly the reviewed approved occurrences) still passes', () => {
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [{ files: [{ name: 'etc/security/access.conf', content: STOCK_PAM_ACCESS_CONF }, ...CLEAN_FILES] }],
+    });
+    const result = scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    expect(result.platform).toBe('linux/amd64');
+    assertNoNetworkCalls();
+  });
+
+  it('the untampered real stock ipaddress.py (exactly the reviewed approved occurrences) still passes', () => {
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [{ files: [{ name: 'usr/lib/python3.13/ipaddress.py', content: STOCK_CPYTHON_IPADDRESS_PY }, ...CLEAN_FILES] }],
+    });
+    const result = scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    expect(result.platform).toBe('linux/amd64');
+    assertNoNetworkCalls();
+  });
+
+  it('NEGATIVE: an unapproved RFC1918 value, even wearing the EXACT accepted shape, rejects even without a value collision with the real reviewed constants', () => {
+    // A completely different private IP, same IPv4Network(...) shape,
+    // same provenance markers — proves the gate checks VALUE
+    // membership, not merely "is it an IPv4Network(...) call".
+    const tampered = `${STOCK_CPYTHON_IPADDRESS_PY}\n        IPv4Network('192.168.55.0/24'),\n`;
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [{ files: [{ name: 'usr/lib/python3.13/ipaddress.py', content: tampered }, ...CLEAN_FILES] }],
+    });
+    let err: unknown;
+    try {
+      scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ContentGateError);
+    expect((err as ContentGateError).code).toBe('topology_literal_found');
+    assertNoNetworkCalls();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR #61 review round 4 finding #2: extend allowlist coverage to real
+// upstream files newly discovered failing in the live CI image matrix —
+// npm CLI's own npm-token.md doc page and OpenSSL's own example
+// openssl.cnf. Fixture content below is copied VERBATIM from the real
+// fetched upstream bytes (npm@10.8.2 / npm@11.6.2 docs content;
+// openssl/openssl master branch apps/openssl.cnf) — not approximated.
+// ---------------------------------------------------------------------------
+describe('RFC1918 upstream allowlist: npm-token.md and openssl.cnf (round 4 finding #2)', () => {
+  // Verified verbatim against the real unpkg-served npm@10.8.2 and
+  // npm@11.6.2 docs/content/commands/npm-token.md (identical doc content
+  // across both; fetched this review round). Trimmed to the sections
+  // the provenance + occurrence checks need.
+  const STOCK_NPM_TOKEN_MD = [
+    '---',
+    'title: npm-token',
+    'section: 1',
+    'description: Manage your authentication tokens',
+    '---',
+    '',
+    '### Description',
+    '',
+    'This lets you list, create and revoke authentication tokens.',
+    '',
+    '* `npm token list`:',
+    '  Shows a table of all active authentication tokens.',
+    '',
+    '* `npm token create [--read-only] [--cidr=<cidr-ranges>]`:',
+    '  Create a new authentication token.',
+    '',
+    '```',
+    'Read only token npm_1f… with id 7f3134 created 2017-10-21',
+    '',
+    'Publish token npm_af…  with id c03241 created 2017-10-02',
+    'with IP Whitelist: 192.168.0.1/24',
+    '',
+    'Publish token npm_… with id e0cf92 created 2017-10-02',
+    '',
+    '```',
+    '',
+    '* `npm token revoke <token|id>`:',
+    '  Immediately removes an authentication token from the registry.',
+    '',
+  ].join('\n');
+
+  // Verified verbatim against the real openssl/openssl master branch
+  // apps/openssl.cnf (fetched this review round) — trimmed to the
+  // sections the provenance + occurrence checks need, preserving the
+  // exact proxy-example comment line and its exact IP literal.
+  const STOCK_OPENSSL_CNF = [
+    '#',
+    '# OpenSSL example configuration file.',
+    '# See doc/man5/config.pod for more info.',
+    '#',
+    '',
+    'HOME\t\t\t= .',
+    'openssl_conf = openssl_init',
+    '',
+    '####################################################################',
+    '[ ca ]',
+    'default_ca\t= CA_default',
+    '',
+    '####################################################################',
+    '[ CA_default ]',
+    '',
+    'dir\t\t= ./demoCA',
+    '',
+    '####################################################################',
+    '[ req ]',
+    'default_bits\t\t= 2048',
+    'distinguished_name\t= req_distinguished_name',
+    '',
+    '[ req_distinguished_name ]',
+    'countryName\t\t\t= Country Name (2 letter code)',
+    '',
+    '[insta] # CMP using Insta Demo CA',
+    '# Message transfer',
+    'server = pki.certificate.fi:8700',
+    '# proxy = # set this as far as needed, e.g., http://192.168.1.1:8080',
+    '# tls_use = 0',
+    'path = pkix/',
+    '',
+  ].join('\n');
+
+  it('passes a clean build when npm CLI\'s real stock npm-token.md doc is present at its real path', () => {
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [
+        {
+          files: [
+            { name: 'usr/local/lib/node_modules/npm/docs/content/commands/npm-token.md', content: STOCK_NPM_TOKEN_MD },
+            ...CLEAN_FILES,
+          ],
+        },
+      ],
+    });
+    const result = scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    expect(result.platform).toBe('linux/amd64');
+    assertNoNetworkCalls();
+  });
+
+  it('NEGATIVE: npm-token.md at the same path with an appended real deployed IP in the exact accepted table/doc shape still rejects', () => {
+    const bypassAttempt = `${STOCK_NPM_TOKEN_MD}\nwith IP Whitelist: 10.23.45.67/32\n`;
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [
+        {
+          files: [
+            { name: 'usr/local/lib/node_modules/npm/docs/content/commands/npm-token.md', content: bypassAttempt },
+            ...CLEAN_FILES,
+          ],
+        },
+      ],
+    });
+    let err: unknown;
+    try {
+      scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ContentGateError);
+    expect((err as ContentGateError).code).toBe('topology_literal_found');
+    assertNoNetworkCalls();
+  });
+
+  it('passes a clean build when the real stock openssl.cnf example config is present at its real path (postgres/tailscale image shape)', () => {
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [{ files: [{ name: 'etc/ssl/openssl.cnf', content: STOCK_OPENSSL_CNF }, ...CLEAN_FILES] }],
+    });
+    const result = scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    expect(result.platform).toBe('linux/amd64');
+    assertNoNetworkCalls();
+  });
+
+  it('NEGATIVE: openssl.cnf at the same path with an UNCOMMENTED real deployed proxy value still rejects (shape check still applies on top of the value pin)', () => {
+    const tampered = STOCK_OPENSSL_CNF.replace(
+      '# proxy = # set this as far as needed, e.g., http://192.168.1.1:8080',
+      'proxy = http://192.168.1.1:8080',
+    );
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [{ files: [{ name: 'etc/ssl/openssl.cnf', content: tampered }, ...CLEAN_FILES] }],
+    });
+    let err: unknown;
+    try {
+      scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ContentGateError);
+    expect((err as ContentGateError).code).toBe('topology_literal_found');
+    assertNoNetworkCalls();
+  });
+
+  it('NEGATIVE: openssl.cnf at the same path with an appended real deployed IP (unreviewed value) still rejects even in comment shape', () => {
+    const bypassAttempt = `${STOCK_OPENSSL_CNF}# backend: 10.50.60.70\n`;
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [{ files: [{ name: 'etc/ssl/openssl.cnf', content: bypassAttempt }, ...CLEAN_FILES] }],
+    });
+    let err: unknown;
+    try {
+      scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ContentGateError);
+    expect((err as ContentGateError).code).toBe('topology_literal_found');
+    assertNoNetworkCalls();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR #61 review round 4 finding #3 (P2, lexical bug, fixed in the regex
+// itself — not via another file exception): the RFC1918 regex's trailing
+// boundary matched a dotted-quad PREFIX of a longer dotted identifier.
+// CPython 3.13's Lib/random.py carries a real DOI research citation
+// (`https://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.47.8407&...`)
+// that false-positived as the private IP "10.1.1.47". Fixed by requiring
+// a COMPLETE dotted-quad token (negative lookaround excludes a leading or
+// trailing `.digit` continuation) in the regex itself.
+// ---------------------------------------------------------------------------
+describe('RFC1918 regex lexical fix (round 4 finding #3): complete dotted-quad tokens only', () => {
+  it('a file containing ONLY the real CPython random.py DOI citation (not a private IP) passes clean — no allowlist entry needed', () => {
+    const randomPyExcerpt = [
+      '"""Random variable generators."""',
+      '',
+      'class Random:',
+      '    def binomialvariate(self, n=1, p=0.5):',
+      '        if n * p < 10.0:',
+      '            pass',
+      '        # BTRS: Transformed rejection with squeeze method by Wolfgang Hoermann',
+      '        # https://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.47.8407&rep=rep1&type=pdf',
+      '        assert n*p >= 10.0 and p <= 0.5',
+      '',
+    ].join('\n');
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [{ files: [{ name: 'usr/lib/python3.13/random.py', content: randomPyExcerpt }, ...CLEAN_FILES] }],
+    });
+    const result = scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    expect(result.platform).toBe('linux/amd64');
+    assertNoNetworkCalls();
+  });
+
+  it('a REAL RFC1918 endpoint in isolation (not part of a longer dotted identifier) still rejects — the boundary fix must not swing too far', () => {
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [{ files: [{ name: 'etc/app/peers.conf', content: 'edge_ip=10.1.1.47\n' }] }],
+    });
+    let err: unknown;
+    try {
+      scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ContentGateError);
+    expect((err as ContentGateError).code).toBe('topology_literal_found');
+    assertNoNetworkCalls();
+  });
+
+  it('a REAL RFC1918 endpoint immediately followed by a port number (no dot separator) still rejects — adjacent non-dot digits must not be excluded', () => {
+    // Real-world log/config shape: "host:port" with no dot between the
+    // IP and the port — the boundary fix excludes a FOLLOWING `.digit`
+    // continuation specifically, not any adjacent digit.
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [{ files: [{ name: 'etc/app/peers.conf', content: 'connected from 10.1.1.47:5432 (postgres)\n' }] }],
+    });
+    let err: unknown;
+    try {
+      scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ContentGateError);
+    expect((err as ContentGateError).code).toBe('topology_literal_found');
+    assertNoNetworkCalls();
+  });
+
+  it('a private IP glued directly to a 5th dotted-digit group (same shape as the DOI bug) still correctly excludes the private-IP-looking prefix', () => {
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [{ files: [{ name: 'etc/app/some-other-id.txt', content: 'reference-id=192.168.1.1.99999\n' }, ...CLEAN_FILES] }],
+    });
+    const result = scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    expect(result.platform).toBe('linux/amd64');
+    assertNoNetworkCalls();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // PR #61 review round 3 finding #2: path-traversal check must not conflate
 // an absolute-rooted tar entry name (real upstream shape — proven against
 // live tailscale/tailscale:v1.102.5 layer bytes pulled directly from
