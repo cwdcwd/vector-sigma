@@ -1,0 +1,58 @@
+{
+  "lane": "fleet-ops-1py.14 image-content-gate round 6 (registry content sweep)",
+  "date": "2026-10-13",
+  "sweep": {
+    "baseImageTags": [
+      "node:22-bookworm-slim",
+      "node:26.4.0-slim",
+      "node:26.4.0-alpine",
+      "postgres:16-alpine",
+      "tailscale/tailscale:v1.102.5",
+      "nousresearch/hermes-agent:v2026.9.21",
+      "ghcr.io/berriai/litellm:1.100.1"
+    ],
+    "platforms": [
+      "amd64",
+      "arm64"
+    ],
+    "realLayerBlobsCached": 179,
+    "realFindingsBefore": 264,
+    "distinctFiles": 250,
+    "distinctMatchedValues": 573,
+    "configBlobFindings": 0,
+    "perImageFindings": {
+      "hermes": 177,
+      "litellm": 71,
+      "node-22-bookworm-slim": 6,
+      "node-26.4.0-slim": 5,
+      "node-26.4.0-alpine": 5,
+      "postgres": 0,
+      "tailscale": 0
+    }
+  },
+  "provenanceVerification": {
+    "pypiWheelByteIdenticalFiles": 81,
+    "hermesTagBytePresentFiles": 57,
+    "npmTarballByteIdenticalFiles": 7,
+    "awsExampleKeysVerifiedUpstream": 4,
+    "kernelHeadersVerifiedVsUpstream": "values-identical, distro variant",
+    "arm64MatchesAmd64": true
+  },
+  "allowlist": {
+    "entries": 160,
+    "byProvenance": {
+      "fileSha256Pinned": 121,
+      "perFileShaPinned": 26,
+      "markersPinned": 2,
+      "markerFnPinned": 12
+    },
+    "digestPinnedSecretShaped": 25,
+    "postFixRemainingUnexcusedRealFindings": 0
+  },
+  "gateDefectsFixedFromRounds3to5": [
+    "bpf.h provenance verified against the WRONG upstream variant (torvalds _UAPI__LINUX_BPF_H__ vs the Debian-shipped __LINUX_BPF_H__ carried by the real images) — entry never fired on real bytes",
+    "arborist README pinned password value mistyped (…cGFzc3dvcmQ9 vs the real file’s …cGFzc3dvcmQ=) — entry never matched the real occurrence",
+    "npm-token ROFF man page (man/man1/npm-token.1, shipped by the npm 10.x inside node:22/26-slim bases) — a FOURTH derived doc copy with no allowlist entry",
+    "cpython-ipaddress entry's original per-file provenance held, but its round-3 shape check was the only plane; generated data now pins the real _private_networks literals"
+  ]
+}

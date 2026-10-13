@@ -17,6 +17,7 @@
  */
 import type { LayerEntry } from './layer-walk.js';
 import { ContentGateError } from './errors.js';
+import { isPatternExcusedByImageAllowlist } from './allowlist.js';
 
 export interface ScanFinding {
   kind: 'secret' | 'topology';
@@ -660,6 +661,20 @@ const SECRET_PATTERN_ALLOWLIST: UpstreamAllowlistEntry[] = [
  * check, ALL required) is identical regardless of which pattern class is
  * being excused.
  */
+/**
+ * LEGACY synthetic-excerpt allowlist (PR #61 review rounds 3-5) — REPLACED
+ * wholesale by the real-image allowlist engine (allowlist.ts +
+ * upstream-allowlist-data.gen.ts, generated from the 2026-10-13 registry sweep
+ * of every component base image x amd64+arm64). The legacy entries below were
+ * validated ONLY against synthetic excerpt fixtures and proved to fire on ZERO
+ * of the 250 real upstream files that legitimately trip the patterns (three
+ * silent defects: a provenance marker verified against the wrong upstream
+ * variant — torvalds `_UAPI__LINUX_BPF_H__` vs the Debian-shipped
+ * `__LINUX_BPF_H__`; a mistyped pinned value; and the npm-token ROFF man page —
+ * a fourth derived copy no entry covered). The legacy DATA stays ONLY where
+ * still real (access.conf, openssl.cnf(.dist), npm-token .md/.html provenance
+ * planes and their closed sets) — now data-driven in the generated module.
+ */
 const ALL_ALLOWLIST_ENTRIES: UpstreamAllowlistEntry[] = [...UPSTREAM_ALLOWLIST, ...SECRET_PATTERN_ALLOWLIST];
 
 function isPatternFullyExcusedByAllowlist(patternName: string, path: string, text: string): boolean {
@@ -733,6 +748,10 @@ export function scanLayersForSecretsAndTopology(entries: LayerEntry[]): ScanFind
         // exact-value-pinned, provenance-verified entry for THIS
         // specific pattern name can excuse an occurrence.
         if (isPatternFullyExcusedByAllowlist(pattern.name, entry.name, text)) {
+          continue;
+        }
+        const imageExcuser = isPatternExcusedByImageAllowlist(pattern.name, entry.name, text);
+        if (imageExcuser) {
           continue;
         }
         findings.push({
