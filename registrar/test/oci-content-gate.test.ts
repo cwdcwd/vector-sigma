@@ -171,6 +171,223 @@ describe('fail-closed: tailnet topology literal in a deleted layer', () => {
 });
 
 // ---------------------------------------------------------------------------
+// PR #61 review round 3 finding #1: narrow, content-aware allowlist for
+// stable upstream files that trip the RFC1918 scanner with their own
+// illustrative/constant private-IP-shaped content — stock linux-pam
+// access.conf and CPython's own ipaddress.py stdlib source.
+// ---------------------------------------------------------------------------
+describe('RFC1918 upstream allowlist: narrow, content-aware, not a path bypass', () => {
+  // Trimmed excerpt reproducing the REAL upstream linux-pam
+  // modules/pam_access/access.conf shape: the distinctive header text
+  // the provenance check requires, plus genuine COMMENTED-OUT example
+  // private-IP lines (never active rules) — see
+  // https://github.com/linux-pam/linux-pam/blob/master/modules/pam_access/access.conf
+  const STOCK_PAM_ACCESS_CONF = [
+    '# Login access control table.',
+    '#',
+    '# permission:users:origins',
+    '#',
+    '# This is useful for configurations where you are trying to use',
+    '# pam_access with X applications that provide PAM_TTY values.',
+    '#',
+    '# comment: It might be better to use network/netmask instead.',
+    '#          The same is 192.168.201.0/24 or 192.168.201.0/255.255.255.0',
+    '#+:root:192.168.201.',
+    '#',
+    '# User "john" should get access from ipv4 net/mask',
+    '#+:john:127.0.0.0/24',
+    '#',
+    '# All other users should be denied to get access from all sources.',
+    '-:ALL:ALL',
+    '',
+  ].join('\n');
+
+  // Trimmed excerpt reproducing the shape of CPython's real
+  // Lib/ipaddress.py stdlib source: the class declarations and
+  // `_private_networks` list the provenance check requires, with the
+  // private-IP ranges embedded exactly as CPython embeds them — as
+  // literal arguments to IPv4Network(...)/IPv6Network(...) constructor
+  // calls defining the module's own range constants.
+  const STOCK_CPYTHON_IPADDRESS_PY = [
+    'class IPv4Address(_BaseV4, _BaseAddress):',
+    '    __slots__ = ("_ip", "__weakref__")',
+    '',
+    'class IPv6Address(_BaseV6, _BaseAddress):',
+    '    __slots__ = ("_ip", "__weakref__", "_scope_id")',
+    '',
+    'class _IPv4Constants:',
+    '    _private_networks = [',
+    "        IPv4Network('0.0.0.0/8'),",
+    "        IPv4Network('10.0.0.0/8'),",
+    "        IPv4Network('127.0.0.0/8'),",
+    "        IPv4Network('172.16.0.0/12'),",
+    "        IPv4Network('192.168.0.0/16'),",
+    '    ]',
+    '',
+  ].join('\n');
+
+  it('passes a clean build when the stock linux-pam access.conf is present at its real path', () => {
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [{ files: [{ name: 'etc/security/access.conf', content: STOCK_PAM_ACCESS_CONF }, ...CLEAN_FILES] }],
+    });
+    const result = scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    expect(result.platform).toBe('linux/amd64');
+    assertNoNetworkCalls();
+  });
+
+  it('passes a clean build when CPython stdlib ipaddress.py is present at its real path', () => {
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [{ files: [{ name: 'usr/lib/python3.13/ipaddress.py', content: STOCK_CPYTHON_IPADDRESS_PY }, ...CLEAN_FILES] }],
+    });
+    const result = scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    expect(result.platform).toBe('linux/amd64');
+    assertNoNetworkCalls();
+  });
+
+  it('NEGATIVE: an access.conf at the SAME path with a modified/deployment-specific private IP still rejects (allowlist is content-aware, not a path bypass)', () => {
+    // Same path, same provenance header (passes the whole-file
+    // provenance check), but one rule line is UNCOMMENTED (active) and
+    // carries a deployment-looking private IP — the exact shape a real
+    // baked fleet access rule would take. The per-occurrence shape
+    // check must still catch this and reject. (Uses a COMPLETE address,
+    // not the stock file's bare network-prefix form, so it actually
+    // matches the rfc1918_private_ip pattern at all.)
+    const tamperedContent = STOCK_PAM_ACCESS_CONF.replace('#+:john:127.0.0.0/24', '+:john:172.16.5.9');
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [{ files: [{ name: 'etc/security/access.conf', content: tamperedContent }, ...CLEAN_FILES] }],
+    });
+    let err: unknown;
+    try {
+      scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ContentGateError);
+    expect((err as ContentGateError).code).toBe('topology_literal_found');
+    assertNoNetworkCalls();
+  });
+
+  it('NEGATIVE: an ipaddress.py at the SAME path with a deployment-specific private IP OUTSIDE the IPv4Network(...) constructor shape still rejects', () => {
+    // Same path, same provenance markers, but an EXTRA line appends a
+    // private IP as a bare assignment (not an IPv4Network(...) literal
+    // argument) — the shape a build step baking in a real deployed
+    // address would actually take. The per-occurrence shape check must
+    // still catch this and reject.
+    const tamperedContent = `${STOCK_CPYTHON_IPADDRESS_PY}\n_deployed_edge_host = "192.168.77.42"\n`;
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [{ files: [{ name: 'usr/lib/python3.13/ipaddress.py', content: tamperedContent }, ...CLEAN_FILES] }],
+    });
+    let err: unknown;
+    try {
+      scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ContentGateError);
+    expect((err as ContentGateError).code).toBe('topology_literal_found');
+    assertNoNetworkCalls();
+  });
+
+  it('NEGATIVE: a DIFFERENT file at a path that merely LOOKS like the allowed path, without the provenance markers, still rejects', () => {
+    // Proves this is not a blanket path-name bypass: a file at the
+    // exact allowed path, carrying a private IP, but LACKING the stock
+    // file's distinctive provenance markers (i.e. not actually the
+    // upstream file — someone could name any file this way) must still
+    // reject.
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [{ files: [{ name: 'etc/security/access.conf', content: '+:root:192.168.201.5\n' }, ...CLEAN_FILES] }],
+    });
+    let err: unknown;
+    try {
+      scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ContentGateError);
+    expect((err as ContentGateError).code).toBe('topology_literal_found');
+    assertNoNetworkCalls();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR #61 review round 3 finding #2: path-traversal check must not conflate
+// an absolute-rooted tar entry name (real upstream shape — proven against
+// live tailscale/tailscale:v1.102.5 layer bytes pulled directly from
+// registry-1.docker.io, digest
+// sha256:d5b385151df469cba7b856e89b722639dbc56b258c28b4ab571cb216e52f5429 —
+// a genuine directory entry literally named "/usr/local/bin") with an
+// actual ".." parent-escape attempt.
+// ---------------------------------------------------------------------------
+describe('fail-closed: absolute-rooted tar entry names are NOT path traversal', () => {
+  it('accepts a layer with an absolute-path directory entry (real tailscale upstream shape) and still scans its contents', () => {
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [
+        {
+          files: [
+            { name: '/usr/local/bin', content: '', type: '5' },
+            { name: '/usr/local/bin/tailscaled', content: 'binary-stand-in\n' },
+          ],
+        },
+      ],
+    });
+    const result = scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    expect(result.platform).toBe('linux/amd64');
+    assertNoNetworkCalls();
+  });
+
+  it('still rejects an actual ".." parent-traversal segment even when absolute-rooted', () => {
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [{ files: [{ name: '/usr/local/bin/../../../etc/passwd', content: 'root:x:0:0::/root:/bin/sh\n' }] }],
+    });
+    let err: unknown;
+    try {
+      scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ContentGateError);
+    expect((err as ContentGateError).code).toBe('path_traversal');
+    assertNoNetworkCalls();
+  });
+
+  it('a secret inside an absolute-rooted-path file is still caught (absolute-path acceptance does not weaken secret scanning)', () => {
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [
+        {
+          files: [
+            {
+              name: '/usr/local/bin/leaked-key.pem',
+              content:
+                '-----BEGIN RSA PRIVATE KEY-----\n' +
+                `${'A'.repeat(64)}\n` +
+                `${'B'.repeat(20)}==\n` +
+                '-----END RSA PRIVATE KEY-----\n',
+            },
+          ],
+        },
+      ],
+    });
+    let err: unknown;
+    try {
+      scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ContentGateError);
+    expect((err as ContentGateError).code).toBe('secret_found');
+    assertNoNetworkCalls();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Matrix case 3/4/5: index assembly — missing / duplicate / extra platform.
 // ---------------------------------------------------------------------------
 describe('fail-closed: OCI index assembly platform-set violations', () => {
@@ -376,12 +593,13 @@ describe('fail-closed: tar path-traversal attempt', () => {
     assertNoNetworkCalls();
   });
 
-  it('rejects an absolute-path layer entry', () => {
+  it('a bare absolute-path layer entry (no ".." segment) is accepted and scanned normally — PR #61 review round 3 finding #2: an absolute-rooted tar name alone is a legitimate upstream shape (see live tailscale v1.102.5 proof below), never path traversal by itself', () => {
     const tarBytes = buildFakeOciLayoutTar({
       platform: 'linux/amd64',
       layers: [{ files: [{ name: '/etc/shadow', content: 'x\n' }] }],
     });
-    expect(() => scanPlatformLayout({ platform: 'linux/amd64', tarBytes })).toThrow(ContentGateError);
+    const result = scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    expect(result.platform).toBe('linux/amd64');
     assertNoNetworkCalls();
   });
 

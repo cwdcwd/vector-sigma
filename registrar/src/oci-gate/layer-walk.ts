@@ -82,8 +82,30 @@ export function walkAllLayers(layout: LoadedOciLayout, layerDescs: OciDescriptor
       throw new ContentGateError('corrupt_layer', `layer[${i}] ${desc.digest} tar is corrupt/truncated: ${(err as Error).message}`, err);
     }
     for (const entry of entries) {
-      const normalized = entry.name.replace(/^\.\//, '');
-      if (normalized.startsWith('/') || normalized.split('/').includes('..')) {
+      // PR #61 review round 3 finding #2 (live CI proof: tailscale
+      // v1.102.5 layer[4], digest
+      // sha256:d5b385151df469cba7b856e89b722639dbc56b258c28b4ab571cb216e52f5429,
+      // pulled and inspected directly from the real upstream registry —
+      // contains a genuine tar entry literally named "/usr/local/bin",
+      // an absolute-path DIRECTORY entry with no ".." segment and no
+      // symlink typeflag). An absolute-rooted tar entry name is a
+      // STYLE choice some image builders emit (tar -P / "preserve
+      // absolute paths") — it is NOT, by itself, a parent-directory
+      // escape attempt, and the gate never extracts to a filesystem
+      // (it only scans entry bytes in memory via LayerEntry), so there
+      // is no extraction-root escape to protect against here in the
+      // first place. The actual traversal attack this check must
+      // still catch is a ".." path SEGMENT (archive entry whose
+      // resolved path walks above the archive root) — that is
+      // orthogonal to whether the name happens to start with "/".
+      // Strip any number of leading slashes (and a leading "./") for
+      // the purpose of this check and the stored/returned `name` so
+      // whiteout/opaque-marker matching and scan `path` reporting are
+      // consistent for both absolute- and relative-style tar entries,
+      // then reject ONLY a literal ".." path segment — the actual
+      // escape vector.
+      const normalized = entry.name.replace(/^(?:\.\/|\/)+/, '');
+      if (normalized.split('/').includes('..')) {
         throw new ContentGateError('path_traversal', `layer[${i}] ${desc.digest} tar entry attempts path traversal: "${entry.name}"`);
       }
     }
@@ -104,7 +126,15 @@ export function walkAllLayers(layout: LoadedOciLayout, layerDescs: OciDescriptor
     const wh = new Set<string>();
     const opq = new Set<string>();
     for (const entry of perLayerEntries[i]!) {
-      const normalized = entry.name.replace(/^\.\//, '').replace(/\/$/, '');
+      // Same leading-slash/`./` normalization as the path-traversal
+      // check above (PR #61 review round 3 finding #2) — an
+      // absolute-rooted entry name (e.g. real upstream tailscale
+      // layer bytes: "/usr/local/bin") must normalize to the SAME
+      // key an equivalent relative-style entry/whiteout from another
+      // layer would use, or whiteout/opaque-dir matching silently
+      // fails to connect an absolute-named file to a relative-named
+      // whiteout for the same logical path.
+      const normalized = entry.name.replace(/^(?:\.\/|\/)+/, '').replace(/\/$/, '');
       const base = basename(normalized);
       if (base === OPAQUE_MARKER) {
         opq.add(dirname(normalized));
@@ -136,7 +166,7 @@ export function walkAllLayers(layout: LoadedOciLayout, layerDescs: OciDescriptor
   for (let i = 0; i < perLayerEntries.length; i++) {
     const desc = layerDescs[i]!;
     for (const entry of perLayerEntries[i]!) {
-      const normalized = entry.name.replace(/^\.\//, '').replace(/\/$/, '');
+      const normalized = entry.name.replace(/^(?:\.\/|\/)+/, '').replace(/\/$/, '');
       const base = basename(normalized);
       const isWhiteoutMarker = base === OPAQUE_MARKER || base.startsWith('.wh.');
       const deleted = isWhiteoutMarker ? false : isDeletedAtOrAbove(normalized, i);
