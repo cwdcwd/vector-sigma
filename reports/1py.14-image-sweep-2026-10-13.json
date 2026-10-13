@@ -50,9 +50,32 @@
     "postFixRemainingUnexcusedRealFindings": 0
   },
   "gateDefectsFixedFromRounds3to5": [
-    "bpf.h provenance verified against the WRONG upstream variant (torvalds _UAPI__LINUX_BPF_H__ vs the Debian-shipped __LINUX_BPF_H__ carried by the real images) — entry never fired on real bytes",
-    "arborist README pinned password value mistyped (…cGFzc3dvcmQ9 vs the real file’s …cGFzc3dvcmQ=) — entry never matched the real occurrence",
-    "npm-token ROFF man page (man/man1/npm-token.1, shipped by the npm 10.x inside node:22/26-slim bases) — a FOURTH derived doc copy with no allowlist entry",
+    "bpf.h provenance verified against the WRONG upstream variant (torvalds _UAPI__LINUX_BPF_H__ vs the Debian-shipped __LINUX_BPF_H__ carried by the real images) \u2014 entry never fired on real bytes",
+    "arborist README pinned password value mistyped (\u2026cGFzc3dvcmQ9 vs the real file\u2019s \u2026cGFzc3dvcmQ=) \u2014 entry never matched the real occurrence",
+    "npm-token ROFF man page (man/man1/npm-token.1, shipped by the npm 10.x inside node:22/26-slim bases) \u2014 a FOURTH derived doc copy with no allowlist entry",
     "cpython-ipaddress entry's original per-file provenance held, but its round-3 shape check was the only plane; generated data now pins the real _private_networks literals"
-  ]
+  ],
+  "round6b": {
+    "note": "CI stage-and-scan on head 1244baa surfaced 3 files in the BUILT component layers (added by the Dockerfiles own npm install / pinned-SHA tree COPY \u2014 outside the base-image sweep). All three fetched from their upstream sources, verified, added as entries 161-163.",
+    "files": [
+      {
+        "file": "app/node_modules/@fastify/proxy-addr/README.md",
+        "component": "registrar",
+        "pattern": "rfc1918_private_ip",
+        "provenance": "npm tarball @5.1.2 byte-identity (sha 42b9776e\u2026) \u2014 stock API doc examples (proxyaddr(req, [...]))"
+      },
+      {
+        "file": "app/node_modules/zod/src/v3/tests/string.test.ts",
+        "component": "registrant (vendored tree)",
+        "pattern": "rfc1918_private_ip",
+        "provenance": "same zod@3.25.76 copy proven byte-identical in the base sweep; markers re-derived from the real zod test bytes; 7 stock literals pinned"
+      },
+      {
+        "file": "app/scripts/test-telemetry.mjs",
+        "component": "scotty",
+        "pattern": "generic_api_key_assignment",
+        "provenance": "bead-me-up-scotty @ pinned SHA cc55734 byte-identity (sha 8a4101a8\u2026) \u2014 its own test fixture assert (dummy test-project-token)"
+      }
+    ]
+  }
 }
