@@ -704,6 +704,164 @@ describe('RFC1918 regex lexical fix (round 4 finding #3): complete dotted-quad t
 });
 
 // ---------------------------------------------------------------------------
+// PR #61 review round 5 finding #1: the round-4 RFC1918 boundary fix was
+// still incomplete — two sub-bugs. (a) the left-boundary lookbehind
+// `(?<!\.\d)` was backwards (it never catches the real "digit-then-dot"
+// continuation shape that precedes a match when a longer dotted
+// identifier's suffix looks like an RFC1918 address); fixed to
+// `(?<!\d\.)`. (b) every octet position used an unconstrained `\d{1,3}`
+// with no 0-255 range check, so an out-of-range value like `10.999.888.777`
+// matched as if syntactically valid; fixed with a proper IPv4 octet
+// pattern across ALL THREE range alternatives.
+// ---------------------------------------------------------------------------
+describe('RFC1918 regex fix (round 5 finding #1): left-boundary direction + octet range validation', () => {
+  it('sub-bug (a) OWNER REPRO: a DOI-shaped identifier with a LONGER dotted-decimal prefix no longer matches on its suffix', () => {
+    // The owner's exact repro: `doi=42.10.1.1.47` — the round-4 fix
+    // only excluded a TRAILING continuation; it did nothing for a
+    // LEADING continuation shaped as "digit.digit...digit" immediately
+    // before the would-be match. `42.10.1.1.47`'s `10.1.1.47` suffix
+    // still matched under the old (backwards) lookbehind.
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [{ files: [{ name: 'etc/app/some-other-id.txt', content: 'doi=42.10.1.1.47\n' }, ...CLEAN_FILES] }],
+    });
+    const result = scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    expect(result.platform).toBe('linux/amd64');
+    assertNoNetworkCalls();
+  });
+
+  it('sub-bug (a) POSITIVE CONTROL: a genuine standalone private IP preceded by non-digit, non-dot content still rejects (the fix must not over-exclude)', () => {
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [{ files: [{ name: 'etc/app/peers.conf', content: 'host=10.23.45.67\n' }] }],
+    });
+    let err: unknown;
+    try {
+      scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ContentGateError);
+    expect((err as ContentGateError).code).toBe('topology_literal_found');
+    assertNoNetworkCalls();
+  });
+
+  it('sub-bug (b): an out-of-range octet string (10.999.888.777) does NOT match — octets outside 0-255 are not a valid IPv4 address', () => {
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [{ files: [{ name: 'etc/app/some-other-id.txt', content: 'reference=10.999.888.777\n' }, ...CLEAN_FILES] }],
+    });
+    const result = scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    expect(result.platform).toBe('linux/amd64');
+    assertNoNetworkCalls();
+  });
+
+  it('sub-bug (b) octet boundary: 10.256.1.1 (256 is out of range) does NOT match', () => {
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [{ files: [{ name: 'etc/app/some-other-id.txt', content: 'reference=10.256.1.1\n' }, ...CLEAN_FILES] }],
+    });
+    const result = scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    expect(result.platform).toBe('linux/amd64');
+    assertNoNetworkCalls();
+  });
+
+  it('sub-bug (b) octet boundary: 10.255.1.1 (255 is the valid max) still matches and rejects', () => {
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [{ files: [{ name: 'etc/app/peers.conf', content: 'edge_ip=10.255.1.1\n' }] }],
+    });
+    let err: unknown;
+    try {
+      scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ContentGateError);
+    expect((err as ContentGateError).code).toBe('topology_literal_found');
+    assertNoNetworkCalls();
+  });
+
+  it('192.168.0.0 (valid RFC1918 network address) still matches and rejects', () => {
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [{ files: [{ name: 'etc/app/peers.conf', content: 'edge_ip=192.168.0.0\n' }] }],
+    });
+    let err: unknown;
+    try {
+      scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ContentGateError);
+    expect((err as ContentGateError).code).toBe('topology_literal_found');
+    assertNoNetworkCalls();
+  });
+
+  it('172.15.0.0 does NOT match — 172.15 is OUTSIDE the real RFC1918 172.16-31 range', () => {
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [{ files: [{ name: 'etc/app/some-other-id.txt', content: 'reference=172.15.0.0\n' }, ...CLEAN_FILES] }],
+    });
+    const result = scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    expect(result.platform).toBe('linux/amd64');
+    assertNoNetworkCalls();
+  });
+
+  it('172.16.0.0 and 172.31.255.255 (both ends of the real 172.16-31 RFC1918 range) still match and reject', () => {
+    for (const ip of ['172.16.0.0', '172.31.255.255']) {
+      const tarBytes = buildFakeOciLayoutTar({
+        platform: 'linux/amd64',
+        layers: [{ files: [{ name: 'etc/app/peers.conf', content: `edge_ip=${ip}\n` }] }],
+      });
+      let err: unknown;
+      try {
+        scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+      } catch (e) {
+        err = e;
+      }
+      expect(err, `expected ${ip} to reject`).toBeInstanceOf(ContentGateError);
+      expect((err as ContentGateError).code).toBe('topology_literal_found');
+    }
+    assertNoNetworkCalls();
+  });
+
+  it('172.32.0.0 does NOT match — one past the real range upper bound', () => {
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [{ files: [{ name: 'etc/app/some-other-id.txt', content: 'reference=172.32.0.0\n' }, ...CLEAN_FILES] }],
+    });
+    const result = scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    expect(result.platform).toBe('linux/amd64');
+    assertNoNetworkCalls();
+  });
+
+  it('the round-4 DOI/port/suffix regression tests still pass under the round-5 fix (no re-regression)', () => {
+    // CPython random.py's real DOI citation still passes clean.
+    const randomPyExcerpt = [
+      '"""Random variable generators."""',
+      '',
+      '        # https://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.47.8407&rep=rep1&type=pdf',
+      '',
+    ].join('\n');
+    const tarBytes1 = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [{ files: [{ name: 'usr/lib/python3.13/random.py', content: randomPyExcerpt }, ...CLEAN_FILES] }],
+    });
+    expect(scanPlatformLayout({ platform: 'linux/amd64', tarBytes: tarBytes1 }).platform).toBe('linux/amd64');
+
+    // A real IP immediately followed by a port number still rejects.
+    const tarBytes2 = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [{ files: [{ name: 'etc/app/peers.conf', content: 'connected from 10.1.1.47:5432 (postgres)\n' }] }],
+    });
+    expect(() => scanPlatformLayout({ platform: 'linux/amd64', tarBytes: tarBytes2 })).toThrow(ContentGateError);
+    assertNoNetworkCalls();
+  });
+});
+
+
+// ---------------------------------------------------------------------------
 // PR #61 review round 3 finding #2: path-traversal check must not conflate
 // an absolute-rooted tar entry name (real upstream shape — proven against
 // live tailscale/tailscale:v1.102.5 layer bytes pulled directly from
@@ -997,6 +1155,418 @@ describe('fail-closed: tar path-traversal attempt', () => {
     const entries = parseTar(inner);
     const rebuilt = buildTar([...entries.map((e) => ({ name: e.name, data: e.data })), { name: '../escape.txt', data: Buffer.from('x') }]);
     expect(() => scanPlatformLayout({ platform: 'linux/amd64', tarBytes: rebuilt })).toThrow(ContentGateError);
+    assertNoNetworkCalls();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR #61 review round 5 finding #2: extend allowlist coverage to 4 real
+// upstream DERIVED-COPY files discovered newly failing in the live CI
+// image matrix. Fixture content copied verbatim from real fetched upstream
+// bytes where fetch was possible this round — see notes per-case for
+// which content was independently verified vs. reasoned about.
+// ---------------------------------------------------------------------------
+describe('RFC1918 upstream allowlist round 5: derived-copy coverage (openssl.cnf.dist, npm-token.html, bpf.h, urllib/request.py)', () => {
+  const STOCK_OPENSSL_CNF = [
+    '#',
+    '# OpenSSL example configuration file.',
+    '# See doc/man5/config.pod for more info.',
+    '#',
+    '',
+    'HOME\t\t\t= .',
+    'openssl_conf = openssl_init',
+    '',
+    '####################################################################',
+    '[ ca ]',
+    'default_ca\t= CA_default',
+    '',
+    '####################################################################',
+    '[ CA_default ]',
+    '',
+    'dir\t\t= ./demoCA',
+    '',
+    '####################################################################',
+    '[ req ]',
+    'default_bits\t\t= 2048',
+    'distinguished_name\t= req_distinguished_name',
+    '',
+    '[ req_distinguished_name ]',
+    'countryName\t\t\t= Country Name (2 letter code)',
+    '',
+    '[insta] # CMP using Insta Demo CA',
+    '# Message transfer',
+    'server = pki.certificate.fi:8700',
+    '# proxy = # set this as far as needed, e.g., http://192.168.1.1:8080',
+    '# tls_use = 0',
+    'path = pkix/',
+    '',
+  ].join('\n');
+
+  // Real fetched (unpkg-served npm@10.8.2) rendered HTML for
+  // docs/output/commands/npm-token.html — verified byte-level against
+  // the real file this round (grep'd for the distinctive strings and
+  // the exact IP Whitelist text shape in its <pre><code> block).
+  const STOCK_NPM_TOKEN_HTML = [
+    '<!DOCTYPE html><html><head>',
+    '<meta charset="utf-8">',
+    '<title>npm-token</title>',
+    '</head><body>',
+    '<h1 id="----npm-token----1082">',
+    '<span class="description">Manage your authentication tokens</span>',
+    '</h1>',
+    '<h3 id="description">Description</h3>',
+    '<p>This lets you list, create and revoke authentication tokens.</p>',
+    '<ul>',
+    '<li><code>npm token list</code>:',
+    'Shows a table of all active authentication tokens.</li>',
+    '</ul>',
+    '<pre><code>Read only token npm_1f… with id 7f3134 created 2017-10-21',
+    '',
+    'Publish token npm_af…  with id c03241 created 2017-10-02',
+    'with IP Whitelist: 192.168.0.1/24',
+    '',
+    'Publish token npm_… with id e0cf92 created 2017-10-02',
+    '',
+    '</code></pre>',
+    '<ul>',
+    '<li>',
+    '<p><code>npm token create [--read-only] [--cidr=&lt;cidr-ranges&gt;]</code>:',
+    'Create a new authentication token.</p>',
+    '</li>',
+    '<li><code>npm token revoke &lt;token|id&gt;</code>:',
+    'Immediately removes an authentication token from the registry.</li>',
+    '</ul>',
+    '</body></html>',
+    '',
+  ].join('\n');
+
+  // Real fetched (torvalds/linux master) excerpt from
+  // include/uapi/linux/bpf.h — the include-guard header and the exact
+  // kernel-doc comment block containing the one RFC1918-shaped string
+  // in the entire 7800+ line file.
+  const STOCK_BPF_H = [
+    '/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */',
+    '#ifndef _UAPI__LINUX_BPF_H__',
+    '#define _UAPI__LINUX_BPF_H__',
+    '',
+    '/*',
+    ' * 		Let\'s imagine that the following code is part of a program',
+    ' * 		attached to the TC ingress interface, on one end of a GRE',
+    ' * 		tunnel, and is supposed to filter out all messages coming from',
+    ' * 		remote ends with IPv4 address other than 10.0.0.1:',
+    ' *',
+    ' * 		::',
+    ' *',
+    ' * 			if (key.remote_ipv4 != 0x0a000001)',
+    ' * 				return TC_ACT_SHOT;	// drop packet',
+    ' */',
+    'int bpf_skb_get_tunnel_key(struct __sk_buff *skb, struct bpf_tunnel_key *key, u32 size, u64 flags);',
+    '',
+    'enum bpf_prog_type {',
+    '	BPF_PROG_TYPE_UNSPEC,',
+    '};',
+    '#endif /* _UAPI__LINUX_BPF_H__ */',
+    '',
+  ].join('\n');
+
+  // Real fetched (cpython 3.13 branch) excerpt from Lib/urllib/request.py
+  // — the one RFC1918-shaped string in the entire 2800+ line file, inside
+  // _proxy_bypass_winreg_override's docstring.
+  const STOCK_URLLIB_REQUEST_PY = [
+    '"""An extensible library for opening URLs using a variety of protocols',
+    '',
+    'The OpenerDirector manages a collection of Handler objects...',
+    '"""',
+    '',
+    'def urlopen(url, data=None, timeout=60):',
+    '    pass',
+    '',
+    'class OpenerDirector:',
+    '    pass',
+    '',
+    'def _proxy_bypass_winreg_override(host, override):',
+    '    """Return True if the host should bypass the proxy server.',
+    '',
+    '    The proxy override list is obtained from the Windows',
+    '    Internet settings proxy override registry value.',
+    '',
+    '    An example of a proxy override value is:',
+    '    "www.example.com;*.example.net; 192.168.0.1"',
+    '    """',
+    '    pass',
+    '',
+  ].join('\n');
+
+  it('passes a clean build when the real openssl.cnf.dist template copy is present at its real path', () => {
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [{ files: [{ name: 'etc/ssl/openssl.cnf.dist', content: STOCK_OPENSSL_CNF }, ...CLEAN_FILES] }],
+    });
+    const result = scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    expect(result.platform).toBe('linux/amd64');
+    assertNoNetworkCalls();
+  });
+
+  it('NEGATIVE: openssl.cnf.dist with an uncommented real deployed proxy value still rejects', () => {
+    const tampered = STOCK_OPENSSL_CNF.replace(
+      '# proxy = # set this as far as needed, e.g., http://192.168.1.1:8080',
+      'proxy = http://192.168.1.1:8080',
+    );
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [{ files: [{ name: 'etc/ssl/openssl.cnf.dist', content: tampered }, ...CLEAN_FILES] }],
+    });
+    expect(() => scanPlatformLayout({ platform: 'linux/amd64', tarBytes })).toThrow(ContentGateError);
+    assertNoNetworkCalls();
+  });
+
+  it('passes a clean build when the real rendered npm-token.html doc output is present at its real path', () => {
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [
+        {
+          files: [
+            { name: 'usr/local/lib/node_modules/npm/docs/output/commands/npm-token.html', content: STOCK_NPM_TOKEN_HTML },
+            ...CLEAN_FILES,
+          ],
+        },
+      ],
+    });
+    const result = scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    expect(result.platform).toBe('linux/amd64');
+    assertNoNetworkCalls();
+  });
+
+  it('NEGATIVE: npm-token.html with an appended real deployed IP in the accepted shape still rejects', () => {
+    const bypassAttempt = `${STOCK_NPM_TOKEN_HTML}\n<p>with IP Whitelist: 10.23.45.67/32</p>\n`;
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [
+        {
+          files: [
+            { name: 'usr/local/lib/node_modules/npm/docs/output/commands/npm-token.html', content: bypassAttempt },
+            ...CLEAN_FILES,
+          ],
+        },
+      ],
+    });
+    expect(() => scanPlatformLayout({ platform: 'linux/amd64', tarBytes })).toThrow(ContentGateError);
+    assertNoNetworkCalls();
+  });
+
+  it('passes a clean build when the real Linux kernel uapi bpf.h header is present at its real path', () => {
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [{ files: [{ name: 'usr/include/linux/bpf.h', content: STOCK_BPF_H }, ...CLEAN_FILES] }],
+    });
+    const result = scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    expect(result.platform).toBe('linux/amd64');
+    assertNoNetworkCalls();
+  });
+
+  it('NEGATIVE: bpf.h with an appended real deployed IP in the accepted kernel-doc comment shape still rejects', () => {
+    const bypassAttempt = `${STOCK_BPF_H}\n/* IPv4 address other than 10.23.45.67 */\n`;
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [{ files: [{ name: 'usr/include/linux/bpf.h', content: bypassAttempt }, ...CLEAN_FILES] }],
+    });
+    expect(() => scanPlatformLayout({ platform: 'linux/amd64', tarBytes })).toThrow(ContentGateError);
+    assertNoNetworkCalls();
+  });
+
+  it('passes a clean build when the real CPython urllib/request.py stdlib module is present at its real path', () => {
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [{ files: [{ name: 'usr/lib/python3.13/urllib/request.py', content: STOCK_URLLIB_REQUEST_PY }, ...CLEAN_FILES] }],
+    });
+    const result = scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    expect(result.platform).toBe('linux/amd64');
+    assertNoNetworkCalls();
+  });
+
+  it('NEGATIVE: urllib/request.py with an appended real deployed IP in the accepted docstring shape still rejects', () => {
+    const bypassAttempt = `${STOCK_URLLIB_REQUEST_PY}\n# real proxy: *.example.net; 10.23.45.67\n`;
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [{ files: [{ name: 'usr/lib/python3.13/urllib/request.py', content: bypassAttempt }, ...CLEAN_FILES] }],
+    });
+    expect(() => scanPlatformLayout({ platform: 'linux/amd64', tarBytes })).toThrow(ContentGateError);
+    assertNoNetworkCalls();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR #61 review round 5 finding #3: generalized exact-value-pinning
+// mechanism now also covers GENERIC SECRET pattern matches (previously
+// RFC1918-only). npm's own @npmcli/arborist README.md documents its auth
+// mechanism with a real, verified dummy credential
+// (`token: 'deadbeefcafebad'`) that trips the generic_api_key_assignment
+// pattern. Proves (a) the real stock README passes clean, and (b) a
+// bypass attempt that REPLACES or APPENDS a different credential-shaped
+// value in the same file/pattern context still rejects — the same
+// owner-mandated bypass-proof pattern as the RFC1918 fix in round 4.
+// ---------------------------------------------------------------------------
+describe('generic secret allowlist (round 5 finding #3): npmcli/arborist README.md dummy token', () => {
+  // Real fetched (npm/cli latest branch) excerpt from
+  // workspaces/arborist/README.md's USAGE options-object example —
+  // verified byte-level against the real file this round.
+  const STOCK_ARBORIST_README = [
+    '# @npmcli/arborist',
+    '',
+    'Inspect and manage `node_modules` trees.',
+    '',
+    '## USAGE',
+    '',
+    '```js',
+    "const Arborist = require('@npmcli/arborist')",
+    '',
+    'const arb = new Arborist({',
+    '  // options object',
+    '',
+    "  // where we're doing stuff.  defaults to cwd.",
+    "  path: '/path/to/package/root',",
+    '',
+    '  // url to the default registry.  defaults to npm\'s default registry',
+    "  registry: 'https://registry.npmjs.org',",
+    '',
+    '  // Safest: a bearer token provided by a registry:',
+    '  // 1. an npm auth token, used with the default registry',
+    "  token: 'deadbeefcafebad',",
+    '  // 2. an alias for the same thing:',
+    "  _authToken: 'deadbeefcafebad',",
+    '',
+    '  // insecure options:',
+    '  // 3. basic auth, username:password, base64 encoded',
+    "  auth: 'aXNhYWNzOm5vdCBteSByZWFsIHBhc3N3b3Jk',",
+    '  // 4. username and base64 encoded password',
+    "  username: 'isaacs',",
+    "  password: 'bm90IG15IHJlYWwgcGFzc3dvcmQ9',",
+    '})',
+    '',
+    '// READING',
+    '',
+    'arb.loadActual().then(tree => {',
+    '  // tree is also stored at arb.virtualTree',
+    '})',
+    '```',
+    '',
+  ].join('\n');
+
+  it('passes a clean build when the real stock arborist README.md is present at its real path', () => {
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [
+        {
+          files: [
+            { name: 'usr/local/lib/node_modules/npm/node_modules/@npmcli/arborist/README.md', content: STOCK_ARBORIST_README },
+            ...CLEAN_FILES,
+          ],
+        },
+      ],
+    });
+    const result = scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    expect(result.platform).toBe('linux/amd64');
+    assertNoNetworkCalls();
+  });
+
+  it('BYPASS-PROOF: an arborist README.md with the dummy token REPLACED by a different, unreviewed credential-shaped value still rejects', () => {
+    const tampered = STOCK_ARBORIST_README.replace(
+      "  token: 'deadbeefcafebad',",
+      "  token: 'sk-live-REAL9f8a7b6c5d4e3f2a1b0c',",
+    );
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [
+        {
+          files: [
+            { name: 'usr/local/lib/node_modules/npm/node_modules/@npmcli/arborist/README.md', content: tampered },
+            ...CLEAN_FILES,
+          ],
+        },
+      ],
+    });
+    let err: unknown;
+    try {
+      scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ContentGateError);
+    expect((err as ContentGateError).code).toBe('secret_found');
+    assertNoNetworkCalls();
+  });
+
+  it('BYPASS-PROOF: an arborist README.md with a NEW credential-shaped line APPENDED (provenance markers intact) still rejects', () => {
+    const bypassAttempt = `${STOCK_ARBORIST_README}\n<!-- real deployed secret: token: 'ghp_1234567890abcdef1234567890abcdef1234' -->\n`;
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [
+        {
+          files: [
+            { name: 'usr/local/lib/node_modules/npm/node_modules/@npmcli/arborist/README.md', content: bypassAttempt },
+            ...CLEAN_FILES,
+          ],
+        },
+      ],
+    });
+    let err: unknown;
+    try {
+      scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ContentGateError);
+    expect((err as ContentGateError).code).toBe('secret_found');
+    assertNoNetworkCalls();
+  });
+
+  it('NEGATIVE: a DIFFERENT file at a path merely looking like the allowed path, without provenance markers, still rejects', () => {
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [
+        {
+          files: [
+            {
+              name: 'usr/local/lib/node_modules/npm/node_modules/@npmcli/arborist/README.md',
+              content: "token: 'deadbeefcafebad'\n",
+            },
+            ...CLEAN_FILES,
+          ],
+        },
+      ],
+    });
+    let err: unknown;
+    try {
+      scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ContentGateError);
+    expect((err as ContentGateError).code).toBe('secret_found');
+    assertNoNetworkCalls();
+  });
+
+  it('a DIFFERENT secret pattern (AWS access key) in an otherwise-allowlisted arborist README.md is NOT excused — the exception is pattern-scoped, not file-scoped', () => {
+    const bypassAttempt = `${STOCK_ARBORIST_README}\nAKIAABCDEFGHIJKLMNOP\n`;
+    const tarBytes = buildFakeOciLayoutTar({
+      platform: 'linux/amd64',
+      layers: [
+        {
+          files: [
+            { name: 'usr/local/lib/node_modules/npm/node_modules/@npmcli/arborist/README.md', content: bypassAttempt },
+            ...CLEAN_FILES,
+          ],
+        },
+      ],
+    });
+    let err: unknown;
+    try {
+      scanPlatformLayout({ platform: 'linux/amd64', tarBytes });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ContentGateError);
+    expect((err as ContentGateError).code).toBe('secret_found');
     assertNoNetworkCalls();
   });
 });
