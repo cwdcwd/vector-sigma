@@ -41,9 +41,14 @@ RUN npx tsc -p tsconfig.json
 FROM node:22-bookworm-slim
 WORKDIR /app
 
+# fleet-ops-1py.14 round 7b: same image-hygiene fix as the registrar
+# image — npm's download cache (default /root/.npm) must never reach a
+# published layer; its content-addressed blobs embed fetched registry
+# artifact text. Cache in /tmp, rm both in the SAME RUN.
 COPY package.json ./
 COPY shared/package.json ./shared/
-RUN npm install --omit=dev --no-audit --no-fund
+RUN npm install --omit=dev --no-audit --no-fund --cache /tmp/.npm-build-cache \
+    && rm -rf /tmp/.npm-build-cache /root/.npm
 
 COPY --from=build /app/shared/dist ./shared/dist
 COPY --from=build /app/dist ./dist

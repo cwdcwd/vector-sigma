@@ -34,9 +34,15 @@ RUN npx tsc -p tsconfig.json
 FROM node:22-bookworm-slim
 WORKDIR /app
 
+# fleet-ops-1py.14 round 7b: npm's download cache (default ~/.npm with
+# HOME=/root during build) must NOT ship in the published image — its
+# content-addressed blobs embed the full text of every fetched registry
+# artifact. Direct the cache to /tmp and rm it in the SAME RUN so the
+# runtime layer carries zero npm-cache residue.
 COPY package.json ./
 COPY shared/package.json ./shared/
-RUN npm install --omit=dev --no-audit --no-fund
+RUN npm install --omit=dev --no-audit --no-fund --cache /tmp/.npm-build-cache \
+    && rm -rf /tmp/.npm-build-cache /root/.npm
 
 COPY --from=build /app/shared/dist ./shared/dist
 COPY --from=build /app/dist ./dist
