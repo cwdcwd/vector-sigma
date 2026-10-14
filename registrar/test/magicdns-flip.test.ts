@@ -144,11 +144,17 @@ describe.each([
   });
 });
 
-describe('the serve edge keys on the SAME FQDN the pins carry (lnf)', () => {
-  it('serve-config.json keys every fronted surface on the pinned name', () => {
+describe('the serve edge keys on the ${TS_CERT_DOMAIN} placeholder (1py.14 flip)', () => {
+  it('serve-config.json keys every fronted surface on the placeholder, not the pinned name', () => {
+    // 1py.14 (plan PR #60): no live FQDN in any image layer. The serve
+    // config keys Web on the SAME placeholder the devices config uses;
+    // containerboot substitutes the node's own cert domain at apply
+    // time, which IS the pinned name on the master — the pins stay
+    // load-bearing for in-container DNS (the compose runtime contract,
+    // unchanged by this flip).
     const sc = JSON.parse(read('balena/registrar/serve-config.json'));
     for (const key of Object.keys(sc.Web)) {
-      expect(key.startsWith(`${PIN_NAME}:`)).toBe(true);
+      expect(key.startsWith('${TS_CERT_DOMAIN}:')).toBe(true);
     }
   });
 });

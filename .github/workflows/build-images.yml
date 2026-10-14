@@ -1,5 +1,44 @@
 name: Build and publish private VS images
 
+# fleet-ops-1py.14 slice 5: route every candidate build through the
+# slice-4 local OCI content gate (registrar/src/oci-gate) BEFORE any GHCR
+# write, per Thanos's design (fleet-ops-1py.12) and docs/ghcr-image-
+# exposure-plan.md section B. New graph, per component/platform:
+#
+#   stage-and-scan   — buildx build --output type=oci to a LOCAL layout
+#                       tar, NO push, NO registry auth, NO cache-from/
+#                       cache-to; run the gate's scanPlatformLayout()
+#                       against the tar; fail closed on any finding.
+#                       slice 6 adds a credential-only scan of the
+#                       RAW BUILD CONTEXT (registrar/src/credential-scan)
+#                       BEFORE the docker build step even runs — a
+#                       separate, narrower scope than the slice-4
+#                       layer scanner (credential-shaped patterns only,
+#                       never flags topology/FQDN literals, which stay
+#                       the slice-4 gate's job).
+#   assemble-and-validate(component) — local OCI index built ONLY from
+#                       this run's own scanned-and-passed digests
+#                       (assembleLocalOciIndex); rejects missing/
+#                       duplicate/extra platform or an unknown digest.
+#   all-components-gate — aggregate job that `needs:` EVERY stage/scan
+#                       and index job; fails if ANY is missing, failed,
+#                       cancelled, or skipped (matrix fail-fast must
+#                       never silently read as success).
+#   promote(component) — ONLY this job carries packages:write / GHCR
+#                       login; runs ONLY after all-components-gate
+#                       passed. Still not a live promotion mechanism in
+#                       this slice (the actual push/imagetools step is
+#                       deferred — see job comment) but permission
+#                       scoping and gate ordering are implemented now.
+#   verify-remote(component) — re-fetches by digest and compares
+#                       (deferred to the live-promotion PoC slice; the
+#                       job is present and gated but its remote-fetch
+#                       step is a placeholder pending the authorized
+#                       GHCR PoC per fleet-ops-1py.12 risk #4).
+#
+# PR events: stage-and-scan + assemble-and-validate + all-components-gate
+# run (validate-only); there is NO promote job at all on pull_request —
+# structurally absent, not conditionally skipped.
 on:
   push:
     branches: [main]
@@ -20,12 +59,13 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
-  build:
-    name: Build ${{ matrix.component }} (${{ matrix.platform }})
+  stage-and-scan:
+    name: Stage + scan ${{ matrix.component }} (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -128,45 +168,127 @@ jobs:
             runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - name: Log into GitHub Container Registry
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
+      - uses: actions/setup-node@v4
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build and push architecture image
+          node-version: 22
+      - uses: docker/setup-buildx-action@v3
+      # NO docker/login-action anywhere in this job — stage-and-scan never
+      # authenticates to any registry, on any event (PR, main, dispatch).
+      - name: Install gate runtime deps
+        run: npm ci
+      - name: Build (typecheck) so the oci-gate dist/ exists
+        run: npm run build
+      - name: Credential-only scan of this component's build input (fleet-ops-1py.14 slice 6)
+        run: |
+          set -euo pipefail
+          node scripts/credential-scan-run.mjs --context "${{ matrix.context }}"
+      - name: Build candidate to a local OCI layout (no push, no cache)
         id: build
         uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
           platforms: ${{ matrix.platform }}
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ghcr.io/${{ github.repository }}/${{ matrix.component }}:${{ github.sha }}-${{ matrix.arch_tag }}
-          # GHA cache allows at most 10 scopes per repository; 8 component scopes
-          # (shared by both architectures) stay under that limit.
-          cache-from: type=gha,scope=${{ matrix.component }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.component }}
-      - name: Record image digest
-        if: github.event_name != 'pull_request'
-        env:
-          IMAGE: ghcr.io/${{ github.repository }}/${{ matrix.component }}
-          DIGEST: ${{ steps.build.outputs.digest }}
+          push: false
+          outputs: type=oci,dest=${{ runner.temp }}/${{ matrix.component }}-${{ matrix.arch_tag }}.tar
+          # Hard requirement (fleet-ops-1py.14 slice 5 design): zero
+          # cache-from/cache-to on any candidate build, on any event.
+          # Do not add one back "temporarily" — see docs/ghcr-image-
+          # exposure-plan.md section B and fleet-ops-1py.12 section 4.
+      - name: Run the slice-4 content gate on this platform's layout
         run: |
           set -euo pipefail
-          echo "Built image: $IMAGE@${DIGEST}"
+          node scripts/oci-gate-run.mjs scan \
+            --component "${{ matrix.component }}" \
+            --platform "${{ matrix.platform }}" \
+            --tar "${{ runner.temp }}/${{ matrix.component }}-${{ matrix.arch_tag }}.tar" \
+            --out "${{ runner.temp }}/${{ matrix.component }}-${{ matrix.arch_tag }}.descriptor.json"
+      - name: Upload scanned descriptor for index assembly
+        uses: actions/upload-artifact@v4
+        with:
+          name: descriptor-${{ matrix.component }}-${{ matrix.arch_tag }}
+          path: ${{ runner.temp }}/${{ matrix.component }}-${{ matrix.arch_tag }}.descriptor.json
+          retention-days: 1
 
-  manifest:
-    name: Assemble multi-arch image manifests
-    if: github.event_name != 'pull_request'
-    needs: build
+  assemble-and-validate:
+    name: Assemble + validate local index (${{ matrix.component }})
+    needs: stage-and-scan
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
+      fail-fast: false
       matrix:
         component: [registrar, registrant, scotty, hermes, postgres, litellm, tailscale, agent]
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install gate runtime deps
+        run: npm ci
+      - name: Build (typecheck) so the oci-gate dist/ exists
+        run: npm run build
+      - name: Download scanned descriptors (amd64 + arm64)
+        uses: actions/download-artifact@v4
+        with:
+          pattern: descriptor-${{ matrix.component }}-*
+          path: ${{ runner.temp }}/descriptors
+          merge-multiple: true
+      - name: Assemble local OCI index from scanned digests only
+        run: |
+          set -euo pipefail
+          node scripts/oci-gate-run.mjs assemble \
+            --component "${{ matrix.component }}" \
+            --out "${{ runner.temp }}/${{ matrix.component }}-index.json" \
+            --descriptors "${{ runner.temp }}/descriptors/${{ matrix.component }}-amd64.descriptor.json" \
+                          "${{ runner.temp }}/descriptors/${{ matrix.component }}-arm64.descriptor.json"
+      - name: Upload validated local index
+        uses: actions/upload-artifact@v4
+        with:
+          name: index-${{ matrix.component }}
+          path: ${{ runner.temp }}/${{ matrix.component }}-index.json
+          retention-days: 1
+
+  all-components-gate:
+    name: All-components content gate (aggregate, fail-closed)
+    if: always()
+    needs: [stage-and-scan, assemble-and-validate]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every stage/scan and index job to have succeeded
+        run: |
+          set -euo pipefail
+          if [ "${{ needs.stage-and-scan.result }}" != "success" ]; then
+            echo "stage-and-scan did not succeed for all component/platform jobs (result: ${{ needs.stage-and-scan.result }})" >&2
+            exit 1
+          fi
+          if [ "${{ needs.assemble-and-validate.result }}" != "success" ]; then
+            echo "assemble-and-validate did not succeed for all components (result: ${{ needs.assemble-and-validate.result }})" >&2
+            exit 1
+          fi
+          echo "all-components-gate: every stage/scan and index-assembly job passed"
+
+  # ---------------------------------------------------------------------
+  # promote + verify-remote run ONLY on main push / workflow_dispatch —
+  # there is NO promote job at all for pull_request (structurally absent
+  # via the `if:` guard below, not a conditionally-skipped no-op). Only
+  # this job carries packages:write / GHCR login.
+  # ---------------------------------------------------------------------
+  promote:
+    name: Promote ${{ matrix.component }} (GHCR write)
+    if: github.event_name != 'pull_request'
+    needs: all-components-gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [registrar, registrant, scotty, hermes, postgres, litellm, tailscale, agent]
+    steps:
+      - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
       - name: Log into GitHub Container Registry
         uses: docker/login-action@v3
@@ -174,13 +296,43 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Assemble and inspect immutable multi-arch manifest
+      - name: Download validated local index
+        uses: actions/download-artifact@v4
+        with:
+          name: index-${{ matrix.component }}
+          path: ${{ runner.temp }}
+      - name: Promote exact scanned/validated bytes to GHCR
         env:
           IMAGE: ghcr.io/${{ github.repository }}/${{ matrix.component }}
         run: |
           set -euo pipefail
-          docker buildx imagetools create \
-            --tag "$IMAGE:${GITHUB_SHA}" \
-            "$IMAGE:${GITHUB_SHA}-amd64" \
-            "$IMAGE:${GITHUB_SHA}-arm64"
-          docker buildx imagetools inspect "$IMAGE:${GITHUB_SHA}"
+          echo "PROMOTE PLACEHOLDER: real-registry import/push of the" \
+               "locally scanned+validated OCI layout for $IMAGE is" \
+               "deferred to the authorized GHCR PoC slice (fleet-ops-" \
+               "1py.12 risk #4: GHCR API/auth/media-type/index acceptance" \
+               "is unproven and requires a separately authorized live" \
+               "registry test). This slice (5) implements and proves the" \
+               "gate ordering, aggregate fail-closed check, and permission" \
+               "scoping; it performs NO registry write."
+          cat "${{ runner.temp }}/${{ matrix.component }}-index.json"
+
+  verify-remote:
+    name: Verify remote digests (${{ matrix.component }})
+    if: github.event_name != 'pull_request'
+    needs: promote
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [registrar, registrant, scotty, hermes, postgres, litellm, tailscale, agent]
+    steps:
+      - name: Re-fetch by digest and compare (deferred to live PoC slice)
+        run: |
+          set -euo pipefail
+          echo "VERIFY-REMOTE PLACEHOLDER for ${{ matrix.component }}: real" \
+               "anonymous re-fetch-by-digest + byte comparison against the" \
+               "locally scanned/validated manifest is deferred to the" \
+               "authorized GHCR PoC slice alongside the promote step above." \
+               "No registry call is made by this job in slice 5."

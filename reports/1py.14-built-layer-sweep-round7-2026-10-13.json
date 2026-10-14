@@ -1,0 +1,32 @@
+{
+ "lane": "fleet-ops-1py.14 image-content-gate round 7 (built-layer comprehensive allowlist)",
+ "date": "2026-10-13",
+ "method": "reproduced BOTH built dep trees locally (registrar vendored package.json lockless-install tree; scotty upstream package-lock@cc55734 npm-ci tree), scanned every file with the gate's OWN compiled scanner (dep-tree-findings-rerun.json = the authoritative trip set), pinned every (pattern,file,value) with exact tarball byte-identity provenance, verified residual = ZERO.",
+ "treesReproduced": {
+  "registrar-pkg": "36 pkgs installed from balena/registrar/registrar/package.json (npm install, no lock)",
+  "scotty-pkg": "944 locked pkgs (npm ci against upstream lock @ cc55734)"
+ },
+ "preFixTrippedFiles": {
+  "registrar": 37,
+  "scotty": 46
+ },
+ "postFixResidual": {
+  "registrar": 0,
+  "scotty": 0
+ },
+ "entriesAdded": 90,
+ "totalCanon": 252,
+ "provenance": "every one of the 84 entries carries fileSha256 byte-identity against the EXACT upstream npm tarball (28 tarballs fetched at the lockfile-resolved versions: fastify@5.12.5, pino@10.4.0, @pinojs/redact@0.4.0, light-my-request@6.8.0, fast-uri@4.2.2/3.1.8/3.1.7, pg-types@2.2.0, ipaddr.js@2.5.0/1.9.1, zod@3.25.76/4.4.3, @fastify/proxy-addr@5.1.2, linkify-it@5.0.2/5.0.0, @types/node@24.13.5/20.19.43, proxy-addr@2.0.7, ip-address@10.7.0, hono@4.13.7, @dotenvx/dotenvx@1.75.1, cookie@0.7.2, highlight.js@11.11.1, markdown-it@14.3.0, next@16.3.4, node-releases@2.0.54, playwright@1.61.1, playwright-core@1.61.1, shadcn@4.13.0); identical file bytes verified at every (pkg,rel) pin \u2014 27/27 spot identity checks + 60 single-sha files",
+ "closedSetValueSets": "occurrences are exact literals ONLY (RFC1918 addresses from stock test/doc fixtures + full assignment lines like 'secret: app-secret-key') \u2014 append an unreviewed IP/token to any pinned file and the file rejects again (sha changes or open-value match)",
+ "versionNote": "13 files exist in TWO byte-distinct upstream versions across the two trees (zod 3.25.76 vs 4.4.3, @types/node 24.13.5 vs 20.19.43, fast-uri 4.2.2/3.1.8 nested vs 3.1.7, ipaddr.js 2.5.0 vs 1.9.1) \u2014 pinned as separate per-version entries (distinct fileSha256 each); the 6b zod regex entry (registrant-vendored-zod-tests) is replaced by these per-file pins for classic/mini coverage",
+ "scopeGuard": "no merge, no registry writes, no publish, tags or deployment \u2014 allowlist data + sweep report only",
+ "removedEntries": [
+  "registrant-vendored-zod-tests (6b broad marker entry) replaced by per-file exact-sha zod pins (v3/v4-classic/v4-mini, both zod versions) \u2014 strictly tighter"
+ ],
+ "round7b": {
+  "newSurfacesFromRun38482659454": [
+   "scotty /node_modules (the lockless ELEVENTY stage tree, copied into the runner root): markdown-it resolves ^14.2.0 lockless \u2014 14.3.1/14.3.2 map files pinned as additional per-version entries",
+   "registrar/registrant images SHIPPED npm's download cache (/root/.npm/_cacache content-v2 blobs, content-addressed sha512 paths embedding fetched registry artifact text) \u2014 real image-hygiene defect; fixed in BOTH runtime stages with --cache /tmp/.npm-build-cache + rm in the same RUN (no pin: residue must not ship)"
+  ]
+ }
+}

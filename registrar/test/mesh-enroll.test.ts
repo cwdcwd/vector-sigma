@@ -83,19 +83,25 @@ describe('mesh-enroll sentinel shape is hardcoded server-side (j7g.1)', () => {
 
   it('lfk: loop-form URLs are refused server-side, before any mint or merge', () => {
     // The live AC3 Defect B fix: an edge/foreign-tailnet public_url
-    // loops the gateway's proxy — refused with 'loop_url'.
+    // loops the gateway's proxy — refused with 'loop_url'. 1py.14:
+    // the refusal derives its names from the runtime topology (the
+    // 4th parameter), resolved fail-closed BEFORE it runs.
     expect(moduleSrc).toMatch(/export function assertNoLoopUrl/);
-    expect(moduleSrc).toMatch(/assertNoLoopUrl\(agentName, opts\.originUrl, 'origin_url'\)/);
-    expect(moduleSrc).toMatch(/assertNoLoopUrl\(agentName, opts\.publicUrl, 'public_url'\)/);
+    expect(moduleSrc).toMatch(/assertNoLoopUrl\(agentName, opts\.originUrl, 'origin_url', topology\)/);
+    expect(moduleSrc).toMatch(/assertNoLoopUrl\(agentName, opts\.publicUrl, 'public_url', topology\)/);
+    expect(moduleSrc).toMatch(/resolveMeshTopology\(env\)/);
     expect(moduleSrc).toMatch(/'loop_url'/);
     // the refusal fires BEFORE the gateway config resolve (no mint, no merge):
     const refuseIdx = moduleSrc.indexOf('assertNoLoopUrl(agentName, opts.originUrl');
     const cfgIdx = moduleSrc.indexOf('let cfg: GatewayConfig');
     expect(refuseIdx).toBeGreaterThan(-1);
     expect(refuseIdx).toBeLessThan(cfgIdx);
-    // the device serve form derivation (the CLI/console default shape):
+    // the device serve form derivation (the CLI/console default shape;
+    // 1py.14: the suffix arrives via the runtime topology param, never
+    // a baked constant):
     expect(moduleSrc).toMatch(/export function deviceServeUrl/);
-    expect(moduleSrc).toMatch(/https:\/\/\$\{agentName\}\$\{MESH_TAILNET_SUFFIX\}:9900/);
+    expect(moduleSrc).toMatch(/https:\/\/\$\{agentName\}\$\{topology\.tailnetSuffix\}:9900/);
+    expect(moduleSrc).not.toMatch(/tailb7207e/);
   });
 
   it('audit rows on failures, not just successes', () => {
@@ -190,11 +196,15 @@ describe('vs-mesh-enroll CLI: thin, bundle-auth, drift-pinned (j7g.1)', () => {
     // from the AGENT NAME (its serve form), and A2A_PUBLIC_URL is
     // never a public_url source.
     expect(cliSrc).toMatch(/def device_serve_url/);
-    expect(cliSrc).toMatch(/MESH_TAILNET_SUFFIX = "\.tailb7207e\.ts\.net"/);
-    expect(cliSrc).toMatch(/public_url = args\.public_url or device_serve_url\(args\.agent\)/);
-    expect(cliSrc).not.toMatch(/resolve_public_url/);
+    // 1py.14: the suffix resolves from VS_MESH_TAILNET_SUFFIX (env,
+    // then the bundle agent.env) — fail-closed, never a baked constant.
+    expect(cliSrc).toMatch(/VS_MESH_TAILNET_SUFFIX/);
+    expect(cliSrc).toMatch(/resolve_tailnet_suffix/);
+    expect(cliSrc).not.toMatch(/tailb7207e/);
+    expect(cliSrc).not.toMatch(/public_url = args\.public_url or device_serve_url/);
+    expect(cliSrc).toMatch(/refusing to guess the tailnet identity/);
     // the derivation order: public first, then origin = <public>/a2a/<agent>
-    const pubIdx = cliSrc.indexOf('public_url = args.public_url or device_serve_url(args.agent)');
+    const pubIdx = cliSrc.indexOf('public_url = device_serve_url(args.agent, suffix)');
     const orgIdx = cliSrc.indexOf('origin_url = args.origin_url or');
     expect(pubIdx).toBeGreaterThan(-1);
     expect(pubIdx).toBeLessThan(orgIdx);

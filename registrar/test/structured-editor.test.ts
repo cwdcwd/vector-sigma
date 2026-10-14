@@ -117,7 +117,7 @@ describe('Admin console — structured bundle editor (f57.11)', () => {
       structured_soul_contents: '# SOUL\n\nYou are Doom.\n',
       structured_a2a_identity_key: 'a2a-key-new',
       structured_a2a_trusted_peers: 'peer-a\npeer-b',
-      structured_a2a_public_url: 'https://vector-sigma.tailb7207e.ts.net:8443',
+      structured_a2a_public_url: 'https://vsigma-master.synth-tailnet.ts.net:8443',
       structured_a2a_peer_tokens: 'primus:sk-e2e-primus\nwheeljack:sk-e2e-wheeljack',
       structured_slack_bot_token: 'xoxb-new-slack',
       structured_github_app_pem: '-----BEGIN RSA PRIVATE KEY-----\nxyz\n-----END RSA PRIVATE KEY-----\n',
@@ -150,7 +150,7 @@ describe('Admin console — structured bundle editor (f57.11)', () => {
         {
           identity_key: 'a2a-key-new',
           trusted_peers: ['peer-a', 'peer-b'],
-          public_url: 'https://vector-sigma.tailb7207e.ts.net:8443',
+          public_url: 'https://vsigma-master.synth-tailnet.ts.net:8443',
           peer_tokens: { primus: 'sk-e2e-primus', wheeljack: 'sk-e2e-wheeljack' },
         },
         null,
@@ -185,7 +185,7 @@ describe('Admin console — structured bundle editor (f57.11)', () => {
             {
               identity_key: 'live-identity-key',
               trusted_peers: ['peer-a', 'peer-b'],
-              public_url: 'https://vector-sigma.tailb7207e.ts.net:8443',
+              public_url: 'https://vsigma-master.synth-tailnet.ts.net:8443',
               peer_tokens: { primus: 'live-peer-token' },
             },
             null,
@@ -211,7 +211,7 @@ describe('Admin console — structured bundle editor (f57.11)', () => {
     expect(page.html).toContain('# Current soul');
     expect(page.html).toContain('peer-a\npeer-b');
     // j7g.1: the non-secret public_url pre-fills from the current a2a.json
-    expect(page.html).toContain('value="https://vector-sigma.tailb7207e.ts.net:8443"');
+    expect(page.html).toContain('value="https://vsigma-master.synth-tailnet.ts.net:8443"');
     // extra_env pre-fill carries the non-managed lines
     expect(page.html).toContain('LOG_LEVEL=info');
     // Secrets NEVER render — not as value=, not anywhere. (The PEM input's

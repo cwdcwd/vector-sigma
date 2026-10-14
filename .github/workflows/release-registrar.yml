@@ -1,29 +1,50 @@
 name: Release registrar fleet
 
-# fleet-ops-1py.7 rung 2: tags-only releases (owner ruling 2026-09-18) with
-# PREBUILT images — the source-push action (balena-io/deploy-to-balena-action,
-# balena push --source under the hood) is RETIRED. One workflow run:
-#   build    — registrar-app components x amd64/arm64 native matrix (no QEMU)
-#              push <sha>-<arch> tags to GHCR (private repo images)
-#   manifest — assemble the multi-arch index per component
-#   scan     — trivy CRITICAL,HIGH gate on the built images (fail = no release)
-#   smoke    — scripts/release-smoke.sh boot-path gate on the multi-arch tags
-#   render   — scripts/render-release-compose.mjs writes the digest-pinned
-#              compose (arm64 CHILD digests — devices are aarch64; the runner
-#              is x86, so pinning the INDEX digest would resolve wrong-arch)
-#   deploy   — pinned balena CLI `balena deploy` pulls the prebuilts and
-#              uploads them to the balenaCloud registry; devices pull from
-#              balena, never GHCR. registry-secrets ride the run's
-#              GITHUB_TOKEN (per-run GHCR auth — the same run that built).
-# No source leaves the repo for builds; no drafts; the fleet pin advance
-# stays the canary's job (docs/balena-architecture.md).
+# fleet-ops-1py.7 rung 2 ORIGINAL NOTES (component set / balena deploy shape
+# retained): tags-only releases (owner ruling 2026-09-18) with PREBUILT
+# images — the source-push action (balena-io/deploy-to-balena-action,
+# balena push --source under the hood) is RETIRED. No source leaves the
+# repo for builds; no drafts; the fleet pin advance stays the canary's job
+# (docs/balena-architecture.md).
+#
+# fleet-ops-1py.14 slice 5: rebuilt the publish graph per Thanos's design
+# (fleet-ops-1py.12) and docs/ghcr-image-exposure-plan.md section B so the
+# slice-4 local content gate (registrar/src/oci-gate) runs on every
+# component/platform BEFORE any GHCR write:
+#   stage-and-scan      — buildx --output type=oci to a LOCAL layout tar,
+#                          no push, no registry auth, no cache-from/
+#                          cache-to; gate scan (secrets/topology/path-
+#                          traversal/digest integrity) on the raw tar.
+#   assemble-and-validate — local OCI index assembled from ONLY this run's
+#                          scanned-and-passed digests; rejects missing/
+#                          duplicate/extra platform or unknown digest.
+#   all-components-gate — aggregate `needs:` every stage/scan + index job
+#                          across the full 7-component registrar set;
+#                          fails on any missing/failed/cancelled job.
+#   promote              — ONLY this job (plus promote-manifest below) has
+#                          packages:write / GHCR login. Rebuilds (still no
+#                          cache) and pushes <sha>-<arch> tags, gated
+#                          strictly behind all-components-gate passing.
+#                          Real exact-byte import of the already-scanned
+#                          local OCI tar (regctl or an in-repo OCI-
+#                          Distribution client) is the subject of the
+#                          still-unresolved GHCR PoC flagged blocking in
+#                          fleet-ops-1py.12 ("a real GHCR PoC remain[s]
+#                          blocking before implementation approval") —
+#                          deferred to that separately authorized slice.
+#   promote-manifest    — assembles the pushed multi-arch index
+#                          (buildx imagetools create); also packages:write.
+#   verify-remote        — re-fetches the pushed per-arch tags by digest
+#                          and compares against promote's own recorded
+#                          push digest (packages:read only — no write).
+#   scan / smoke / render / deploy — unchanged in shape, now gated behind
+#                          verify-remote instead of the old `manifest` job.
 on:
   push:
     tags: ["registrar-v*"]
 
 permissions:
   contents: read
-  packages: write
 
 env:
   REGISTRY_NS: cwdcwd/vector-sigma
@@ -34,9 +55,11 @@ env:
   BALENA_CLI_SHA256: "687ba0d0fd35fad6bb672763c739535b546fbf9aa5ab2909e670c5534a36e3d6"
 
 jobs:
-  build:
-    name: Build ${{ matrix.component }} (${{ matrix.arch_tag }})
+  stage-and-scan:
+    name: Stage + scan ${{ matrix.component }} (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -127,38 +150,172 @@ jobs:
             runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - name: Log into GitHub Container Registry
-        uses: docker/login-action@v3
+      - uses: actions/setup-node@v4
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build and push architecture image
-        id: build
+          node-version: 22
+      - uses: docker/setup-buildx-action@v3
+      # NO docker/login-action in this job — stage-and-scan never
+      # authenticates to any registry.
+      - name: Install gate runtime deps
+        run: npm ci
+      - name: Build (typecheck) so the oci-gate dist/ exists
+        run: npm run build
+      - name: Build candidate to a local OCI layout (no push, no cache)
         uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
-          platforms: linux/${{ matrix.arch_tag }}
-          push: true
-          tags: ghcr.io/${{ env.REGISTRY_NS }}/${{ matrix.component }}:${{ github.sha }}-${{ matrix.arch_tag }}
-          # GHA cache: one scope per component, shared by both arches — the
-          # 10-scope/repo cap is why the matrix does not get 14 scopes.
-          cache-from: type=gha,scope=${{ matrix.component }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.component }}
-      - name: Record image digest
-        env:
-          IMAGE: ghcr.io/${{ env.REGISTRY_NS }}/${{ matrix.component }}
-          DIGEST: ${{ steps.build.outputs.digest }}
+          platforms: ${{ matrix.platform }}
+          push: false
+          outputs: type=oci,dest=${{ runner.temp }}/${{ matrix.component }}-${{ matrix.arch_tag }}.tar
+          # Hard requirement (fleet-ops-1py.14 slice 5): zero cache-from/
+          # cache-to on any candidate build. Do not add one back.
+      - name: Run the slice-4 content gate on this platform's layout
         run: |
           set -euo pipefail
-          echo "Built image: $IMAGE@${DIGEST}"
+          node scripts/oci-gate-run.mjs scan \
+            --component "${{ matrix.component }}" \
+            --platform "${{ matrix.platform }}" \
+            --tar "${{ runner.temp }}/${{ matrix.component }}-${{ matrix.arch_tag }}.tar" \
+            --out "${{ runner.temp }}/${{ matrix.component }}-${{ matrix.arch_tag }}.descriptor.json"
+      - name: Upload scanned descriptor for index assembly
+        uses: actions/upload-artifact@v4
+        with:
+          name: descriptor-${{ matrix.component }}-${{ matrix.arch_tag }}
+          path: ${{ runner.temp }}/${{ matrix.component }}-${{ matrix.arch_tag }}.descriptor.json
+          retention-days: 1
 
-  manifest:
-    name: Assemble multi-arch manifest
-    needs: build
+  assemble-and-validate:
+    name: Assemble + validate local index (${{ matrix.component }})
+    needs: stage-and-scan
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [registrar, registrant, scotty, hermes, postgres, litellm, tailscale]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install gate runtime deps
+        run: npm ci
+      - name: Build (typecheck) so the oci-gate dist/ exists
+        run: npm run build
+      - name: Download scanned descriptors (amd64 + arm64)
+        uses: actions/download-artifact@v4
+        with:
+          pattern: descriptor-${{ matrix.component }}-*
+          path: ${{ runner.temp }}/descriptors
+          merge-multiple: true
+      - name: Assemble local OCI index from scanned digests only
+        run: |
+          set -euo pipefail
+          node scripts/oci-gate-run.mjs assemble \
+            --component "${{ matrix.component }}" \
+            --out "${{ runner.temp }}/${{ matrix.component }}-index.json" \
+            --descriptors "${{ runner.temp }}/descriptors/${{ matrix.component }}-amd64.descriptor.json" \
+                          "${{ runner.temp }}/descriptors/${{ matrix.component }}-arm64.descriptor.json"
+      - name: Upload validated local index
+        uses: actions/upload-artifact@v4
+        with:
+          name: index-${{ matrix.component }}
+          path: ${{ runner.temp }}/${{ matrix.component }}-index.json
+          retention-days: 1
+
+  all-components-gate:
+    name: All-components content gate (aggregate, fail-closed)
+    if: always()
+    needs: [stage-and-scan, assemble-and-validate]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every stage/scan and index job to have succeeded
+        run: |
+          set -euo pipefail
+          if [ "${{ needs.stage-and-scan.result }}" != "success" ]; then
+            echo "stage-and-scan did not succeed for all component/platform jobs (result: ${{ needs.stage-and-scan.result }})" >&2
+            exit 1
+          fi
+          if [ "${{ needs.assemble-and-validate.result }}" != "success" ]; then
+            echo "assemble-and-validate did not succeed for all components (result: ${{ needs.assemble-and-validate.result }})" >&2
+            exit 1
+          fi
+          echo "all-components-gate: every stage/scan and index-assembly job passed"
+
+  # -----------------------------------------------------------------------
+  # Promotion stage (PR #61 review round 1, finding #4 — THE MOST SERIOUS
+  # finding): the promote job previously ran a SECOND `docker buildx build
+  # --push` on a fresh runner and never consumed the OCI tar / local index
+  # the stage-and-scan job already built and scanned — a changing base
+  # image tag, dependency resolution drift, or any other build
+  # nondeterminism could put DIFFERENT, COMPLETELY UNSCANNED bytes into
+  # GHCR, structurally bypassing the scan-then-promote gate this whole PR
+  # exists to build. The "recorded" digest came from that second build,
+  # not the scanned one — zero cryptographic link between what was
+  # scanned and what got published.
+  #
+  # FIX APPLIED: the rebuild-and-push behavior is REMOVED. The real fix
+  # (consume the stage-and-scan job's exact scanned OCI-layout bytes via
+  # an OCI-layout-aware registry client — regctl/skopeo — rather than a
+  # fresh build) requires proving an exact-byte import/push round-trips
+  # correctly against LIVE GHCR, which this task's hard constraints
+  # explicitly forbid testing in this session (no docker build/push to
+  # GHCR, no GHCR login/auth, no actual registry write). Per the review's
+  # own explicit instruction for this exact situation ("if an exact-byte
+  # promoter client isn't ready yet ... the promote job must NOT be wired
+  # to actually publish at all yet — leave it structurally incapable of
+  # running"), promote below no longer rebuilds OR pushes anything — it
+  # is a no-op placeholder (same shape as build-images.yml's promote
+  # job), and every job downstream that depends on real published GHCR
+  # bytes (promote-manifest, verify-remote, scan, smoke, render, deploy)
+  # is structurally gated off (`if: false`) rather than left silently
+  # broken against nonexistent registry content. This is a deliberate,
+  # documented regression in release-publish capability — re-enable the
+  # chain only once a real exact-byte GHCR promoter has been built AND
+  # proven against live GHCR in an explicitly authorized slice (fleet-
+  # ops-1py.12 risk #4's still-unresolved "real GHCR PoC" blocker).
+  # -----------------------------------------------------------------------
+  promote:
+    name: Promote ${{ matrix.component }} (exact-byte import — DEFERRED, no push yet)
+    needs: all-components-gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [registrar, registrant, scotty, hermes, postgres, litellm, tailscale]
+    steps:
+      - name: Download validated local index (the exact scanned-and-passed bytes)
+        uses: actions/download-artifact@v4
+        with:
+          name: index-${{ matrix.component }}
+          path: ${{ runner.temp }}
+      - name: Promote placeholder — NO rebuild, NO push (finding #4 safe fallback)
+        run: |
+          set -euo pipefail
+          echo "PROMOTE PLACEHOLDER: real exact-byte import/push of the" \
+               "locally scanned+validated OCI layout for ${{ matrix.component }} is" \
+               "deferred to the authorized GHCR PoC slice (fleet-ops-1py.12 risk" \
+               "#4: GHCR API/auth/media-type/index acceptance for an exact-byte" \
+               "regctl/skopeo import is unproven and requires a separately" \
+               "authorized live-registry test). This slice removes the SECOND" \
+               "buildx build+push that defeated the scan-then-promote gate" \
+               "(PR #61 review finding #4) — it performs NO registry write of" \
+               "any kind, rebuilt or otherwise."
+          cat "${{ runner.temp }}/${{ matrix.component }}-index.json"
+
+  promote-manifest:
+    name: Assemble multi-arch manifest (${{ matrix.component }}) — DEFERRED, no real images to assemble
+    if: false  # see the promote job's comment block above: gated off until the exact-byte GHCR PoC lands
+    needs: promote
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
@@ -172,6 +329,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Assemble and inspect immutable multi-arch manifest
+        id: assemble
         env:
           IMAGE: ghcr.io/${{ env.REGISTRY_NS }}/${{ matrix.component }}
         run: |
@@ -181,11 +339,92 @@ jobs:
             "$IMAGE:${GITHUB_SHA}-amd64" \
             "$IMAGE:${GITHUB_SHA}-arm64"
           docker buildx imagetools inspect "$IMAGE:${GITHUB_SHA}"
+          # Record the index digest THIS job itself just assembled — the
+          # locally-validated reference verify-remote compares the
+          # later re-fetched remote index against (PR #61 review finding
+          # #5: "also verify the published index, not just one child
+          # manifest").
+          index_digest=$(docker buildx imagetools inspect "$IMAGE:${GITHUB_SHA}" --raw | sha256sum | awk '{print "sha256:"$1}')
+          echo "recorded index digest: $index_digest"
+          mkdir -p "${{ runner.temp }}/promoted-index"
+          printf '{"component":"%s","index_digest":"%s"}' "${{ matrix.component }}" "$index_digest" \
+            > "${{ runner.temp }}/promoted-index/${{ matrix.component }}-index.json"
+      - name: Upload recorded index-digest record
+        uses: actions/upload-artifact@v4
+        with:
+          name: promoted-index-${{ matrix.component }}
+          path: ${{ runner.temp }}/promoted-index/${{ matrix.component }}-index.json
+          retention-days: 1
+
+  verify-remote:
+    name: Verify remote digests (${{ matrix.component }}) — DEFERRED, nothing published yet
+    if: false  # see the promote job's comment block above: gated off until the exact-byte GHCR PoC lands
+    needs: promote-manifest
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [registrar, registrant, scotty, hermes, postgres, litellm, tailscale]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Log into GitHub Container Registry (read-only)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Download pushed-digest records
+        uses: actions/download-artifact@v4
+        with:
+          pattern: promoted-${{ matrix.component }}-*
+          path: ${{ runner.temp }}/promoted
+          merge-multiple: true
+      - name: Download recorded index-digest record
+        uses: actions/download-artifact@v4
+        with:
+          name: promoted-index-${{ matrix.component }}
+          path: ${{ runner.temp }}/promoted-index
+      - name: Re-fetch each arch tag + the published index by digest and FAIL on any mismatch
+        env:
+          IMAGE: ghcr.io/${{ env.REGISTRY_NS }}/${{ matrix.component }}
+        run: |
+          set -euo pipefail
+          for arch in amd64 arm64; do
+            recorded=$(node -e "console.log(require('${{ runner.temp }}/promoted/${{ matrix.component }}-${arch}.json').digest)")
+            remote=$(docker buildx imagetools inspect "$IMAGE:${GITHUB_SHA}-${arch}" --raw | sha256sum | awk '{print "sha256:"$1}')
+            # The pushed per-arch TAG resolves to a manifest whose
+            # Docker-Content-Digest the registry assigns at push time
+            # (steps.build.outputs.digest); re-pulling by that same tag
+            # and recomputing the digest of the raw manifest bytes must
+            # match, or promotion silently mutated/retargeted the ref.
+            # PR #61 review finding #5: this comparison is now EXPLICIT
+            # and fail-closed via the dedicated script — the previous
+            # step only PRINTED both values and never compared them.
+            node scripts/verify-remote-digest.mjs \
+              --label "${{ matrix.component }}/${arch}" \
+              --recorded "$recorded" --remote "$remote"
+          done
+          # Also verify the PUBLISHED INDEX digest against the one
+          # promote-manifest locally assembled+recorded in this same
+          # run — not just the per-arch child manifests.
+          recorded_index=$(node -e "console.log(require('${{ runner.temp }}/promoted-index/${{ matrix.component }}-index.json').index_digest)")
+          remote_index=$(docker buildx imagetools inspect "$IMAGE:${GITHUB_SHA}" --raw | sha256sum | awk '{print "sha256:"$1}')
+          node scripts/verify-remote-digest.mjs \
+            --label "${{ matrix.component }}/index" \
+            --recorded "$recorded_index" --remote "$remote_index" \
+            --recorded-index "$recorded_index" --remote-index "$remote_index"
 
   scan:
-    name: Vulnerability gate (trivy CRITICAL,HIGH)
-    needs: manifest
+    name: Vulnerability gate (trivy CRITICAL,HIGH) — DEFERRED, nothing published yet
+    if: false  # see the promote job's comment block above: gated off until the exact-byte GHCR PoC lands
+    needs: verify-remote
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     strategy:
       fail-fast: true
       matrix:
@@ -209,9 +448,13 @@ jobs:
           skip-setup-trivy: false
 
   smoke:
-    name: Release image smoke gate
-    needs: manifest
+    name: Release image smoke gate — DEFERRED, nothing published yet
+    if: false  # see the promote job's comment block above: gated off until the exact-byte GHCR PoC lands
+    needs: verify-remote
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v4
       - name: Log into GitHub Container Registry
@@ -224,9 +467,13 @@ jobs:
         run: scripts/release-smoke.sh cwdcwd/vector-sigma ${{ github.sha }} registrar
 
   render:
-    name: Render digest-pinned compose
+    name: Render digest-pinned compose — DEFERRED, nothing published yet
+    if: false  # see the promote job's comment block above: gated off until the exact-byte GHCR PoC lands
     needs: [smoke, scan]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -261,9 +508,13 @@ jobs:
           retention-days: 30
 
   deploy:
-    name: balena deploy (prebuilts -> balenaCloud registry)
+    name: balena deploy (prebuilts -> balenaCloud registry) — DEFERRED, nothing published yet
+    if: false  # see the promote job's comment block above: gated off until the exact-byte GHCR PoC lands
     needs: render
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     steps:
       - name: Download rendered compose
         uses: actions/download-artifact@v4
@@ -301,4 +552,4 @@ jobs:
             --source . \
             --registry-secrets /tmp/registry-secrets.yml \
             --release-tag "git-tag" "${GITHUB_REF_NAME}" \
-            --note "vector-sigma ${GITHUB_REF_NAME} — prebuilt images at ${GITHUB_SHA} (1py.7 rung 2)"
+            --note "vector-sigma ${GITHUB_REF_NAME} — prebuilt images at ${GITHUB_SHA} (1py.14 slice 5)"

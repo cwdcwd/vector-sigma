@@ -161,7 +161,7 @@ The runtime wiring is a CODE contract, not yours to maintain:
 - Your served origin (the j7g.1 serve form): your `:9900` inbound
   publishes loopback-only on your host; your device's tailscale
   serve edge fronts it at
-  `https://<this-device>.tailb7207e.ts.net:9900` — that URL is the
+  `https://<this-device>.<tailnet>.ts.net:9900` — that URL is the
   `public_url` your bundle carries, and the master gateway's proxy
   dials it to deliver peer traffic. If it is unreachable, probe in
   this order: on-host `127.0.0.1:9900` (the publish), the served
