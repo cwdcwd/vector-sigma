@@ -24,17 +24,22 @@ name: Build and publish private VS images
 #                       and index job; fails if ANY is missing, failed,
 #                       cancelled, or skipped (matrix fail-fast must
 #                       never silently read as success).
-#   promote(component) — ONLY this job carries packages:write / GHCR
-#                       login; runs ONLY after all-components-gate
-#                       passed. Still not a live promotion mechanism in
-#                       this slice (the actual push/imagetools step is
-#                       deferred — see job comment) but permission
-#                       scoping and gate ordering are implemented now.
-#   verify-remote(component) — re-fetches by digest and compares
-#                       (deferred to the live-promotion PoC slice; the
-#                       job is present and gated but its remote-fetch
-#                       step is a placeholder pending the authorized
-#                       GHCR PoC per fleet-ops-1py.12 risk #4).
+#   promote(component) — ONLY this job carries packages:write; runs ONLY
+#                       after all-components-gate passed. Publishes the
+#                       EXACT scanned OCI-layout bytes via the in-repo OCI
+#                       Distribution client (scripts/ghcr-promote-run.mjs
+#                       → registrar/src/registry/promote.ts): no rebuild,
+#                       no buildx, no second build context. Every blob and
+#                       manifest is re-read before any release tag is
+#                       applied, and the multi-arch index is assembled by
+#                       the promoter from ONLY the scanned-and-passed child
+#                       descriptors (fleet-ops-r3v).
+#   verify-remote(component) — re-fetches the published index and every
+#                       child BY DIGEST through the in-repo verifier
+#                       (scripts/ghcr-promote-run.mjs verify →
+#                       verifyRemote), recomputes SHA-256 over the served
+#                       bytes, and fails closed on any difference. Carries
+#                       no packages:write and no credential.
 #
 # PR events: stage-and-scan + assemble-and-validate + all-components-gate
 # run (validate-only); there is NO promote job at all on pull_request —
@@ -209,6 +214,16 @@ jobs:
           name: descriptor-${{ matrix.component }}-${{ matrix.arch_tag }}
           path: ${{ runner.temp }}/${{ matrix.component }}-${{ matrix.arch_tag }}.descriptor.json
           retention-days: 1
+      # The layout tar itself, not just its descriptor: the promote job
+      # publishes THESE bytes (fleet-ops-r3v). Without this upload the
+      # promoter would have nothing to push and would be forced back into
+      # a rebuild — exactly the defect class this whole lane removes.
+      - name: Upload the scanned OCI layout (the exact bytes to be promoted)
+        uses: actions/upload-artifact@v4
+        with:
+          name: layout-${{ matrix.component }}-${{ matrix.arch_tag }}
+          path: ${{ runner.temp }}/${{ matrix.component }}-${{ matrix.arch_tag }}.tar
+          retention-days: 1
 
   assemble-and-validate:
     name: Assemble + validate local index (${{ matrix.component }})
@@ -274,9 +289,17 @@ jobs:
   # there is NO promote job at all for pull_request (structurally absent
   # via the `if:` guard below, not a conditionally-skipped no-op). Only
   # this job carries packages:write / GHCR login.
+  #
+  # fleet-ops-r3v: this job NO LONGER rebuilds. It downloads the exact
+  # OCI-layout tars the stage-and-scan job built and scanned, and pushes
+  # those bytes through scripts/ghcr-promote-run.mjs (an in-repo OCI
+  # Distribution v2 client). Every blob/manifest is read back before any
+  # release tag is applied, so a partial write can never produce an
+  # advertised release. The promotion record it writes is the ONLY input
+  # verify-remote trusts.
   # ---------------------------------------------------------------------
   promote:
-    name: Promote ${{ matrix.component }} (GHCR write)
+    name: Promote ${{ matrix.component }} (GHCR write, exact scanned bytes)
     if: github.event_name != 'pull_request'
     needs: all-components-gate
     runs-on: ubuntu-latest
@@ -289,32 +312,45 @@ jobs:
         component: [registrar, registrant, scotty, hermes, postgres, litellm, tailscale, agent]
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - name: Log into GitHub Container Registry
-        uses: docker/login-action@v3
+      - uses: actions/setup-node@v4
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          node-version: 22
+      - name: Install gate runtime deps
+        run: npm ci
+      - name: Build (typecheck) so the registry promoter dist/ exists
+        run: npm run build
       - name: Download validated local index
         uses: actions/download-artifact@v4
         with:
           name: index-${{ matrix.component }}
           path: ${{ runner.temp }}
-      - name: Promote exact scanned/validated bytes to GHCR
+      - name: Download the exact scanned OCI layouts (amd64 + arm64)
+        uses: actions/download-artifact@v4
+        with:
+          pattern: layout-${{ matrix.component }}-*
+          path: ${{ runner.temp }}/layouts
+          merge-multiple: true
+      - name: Promote the exact scanned bytes to GHCR (no rebuild, no buildx)
         env:
-          IMAGE: ghcr.io/${{ github.repository }}/${{ matrix.component }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_ACTOR: ${{ github.actor }}
         run: |
           set -euo pipefail
-          echo "PROMOTE PLACEHOLDER: real-registry import/push of the" \
-               "locally scanned+validated OCI layout for $IMAGE is" \
-               "deferred to the authorized GHCR PoC slice (fleet-ops-" \
-               "1py.12 risk #4: GHCR API/auth/media-type/index acceptance" \
-               "is unproven and requires a separately authorized live" \
-               "registry test). This slice (5) implements and proves the" \
-               "gate ordering, aggregate fail-closed check, and permission" \
-               "scoping; it performs NO registry write."
-          cat "${{ runner.temp }}/${{ matrix.component }}-index.json"
+          node scripts/ghcr-promote-run.mjs promote \
+            --registry ghcr.io \
+            --repository "${{ github.repository }}/${{ matrix.component }}" \
+            --tag "${GITHUB_SHA}" \
+            --layout "linux/amd64=${{ runner.temp }}/layouts/${{ matrix.component }}-amd64.tar" \
+            --layout "linux/arm64=${{ runner.temp }}/layouts/${{ matrix.component }}-arm64.tar" \
+            --token-env GHCR_TOKEN \
+            --actor "${GHCR_ACTOR}" \
+            --record "${{ runner.temp }}/promoted-${{ matrix.component }}.json"
+      - name: Upload the promotion record (index + per-arch digests)
+        uses: actions/upload-artifact@v4
+        with:
+          name: promoted-${{ matrix.component }}
+          path: ${{ runner.temp }}/promoted-${{ matrix.component }}.json
+          retention-days: 1
 
   verify-remote:
     name: Verify remote digests (${{ matrix.component }})
@@ -328,11 +364,25 @@ jobs:
       matrix:
         component: [registrar, registrant, scotty, hermes, postgres, litellm, tailscale, agent]
     steps:
-      - name: Re-fetch by digest and compare (deferred to live PoC slice)
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install gate runtime deps
+        run: npm ci
+      - name: Build (typecheck) so the registry verifier dist/ exists
+        run: npm run build
+      - name: Download the promotion record
+        uses: actions/download-artifact@v4
+        with:
+          name: promoted-${{ matrix.component }}
+          path: ${{ runner.temp }}
+      # Anonymous re-read: this job carries NO packages:write and no
+      # credential for a public package, so the proof that the published
+      # bytes are intact does not depend on the writer's token.
+      - name: Re-fetch by digest and compare (fails closed on any mismatch)
         run: |
           set -euo pipefail
-          echo "VERIFY-REMOTE PLACEHOLDER for ${{ matrix.component }}: real" \
-               "anonymous re-fetch-by-digest + byte comparison against the" \
-               "locally scanned/validated manifest is deferred to the" \
-               "authorized GHCR PoC slice alongside the promote step above." \
-               "No registry call is made by this job in slice 5."
+          node scripts/ghcr-promote-run.mjs verify \
+            --registry ghcr.io \
+            --record "${{ runner.temp }}/promoted-${{ matrix.component }}.json"
