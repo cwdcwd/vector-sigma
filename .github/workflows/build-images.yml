@@ -44,6 +44,14 @@ name: Build and publish private VS images
 # PR events: stage-and-scan + assemble-and-validate + all-components-gate
 # run (validate-only); there is NO promote job at all on pull_request —
 # structurally absent, not conditionally skipped.
+#
+# owner go-ahead: publishing to GHCR is gated on the repo variable
+# VS_GHCR_PUBLISH_ENABLED. It is NOT set for this repo today, so merging
+# this file cannot by itself cause a live GHCR write even on push to main:
+# promote/verify-remote skip, and every downstream job that needs them
+# skips with them. Flip the variable to enable publishing — a separate,
+# explicit owner action, not part of the implementation PR. See
+# docs/ghcr-promotion-runbook.md.
 on:
   push:
     branches: [main]
@@ -300,7 +308,7 @@ jobs:
   # ---------------------------------------------------------------------
   promote:
     name: Promote ${{ matrix.component }} (GHCR write, exact scanned bytes)
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && vars.VS_GHCR_PUBLISH_ENABLED == 'true'
     needs: all-components-gate
     runs-on: ubuntu-latest
     permissions:
@@ -354,7 +362,7 @@ jobs:
 
   verify-remote:
     name: Verify remote digests (${{ matrix.component }})
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && vars.VS_GHCR_PUBLISH_ENABLED == 'true'
     needs: promote
     runs-on: ubuntu-latest
     permissions:

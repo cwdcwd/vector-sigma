@@ -278,6 +278,7 @@ jobs:
   # -----------------------------------------------------------------------
   promote:
     name: Promote ${{ matrix.component }} (GHCR write, exact scanned bytes)
+    if: vars.VS_GHCR_PUBLISH_ENABLED == 'true'
     needs: all-components-gate
     runs-on: ubuntu-latest
     permissions:

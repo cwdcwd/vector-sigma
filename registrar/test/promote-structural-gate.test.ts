@@ -129,6 +129,25 @@ describe('exact-byte promotion: verify-remote is credential-free and fail-closed
   }
 });
 
+describe('exact-byte promotion: live publishing is behind an explicit owner switch', () => {
+  // Merging a green PR pipeline must never, by itself, become a live GHCR
+  // write. The promote job is therefore gated on a repo Actions variable
+  // that is unset in this repo: promote (and everything needing it) skips,
+  // so push-to-main with a green gate publishes nothing until the owner
+  // deliberately flips the switch. See docs/ghcr-promotion-runbook.md.
+  const ALL_WORKFLOWS = ['.github/workflows/build-images.yml', ...RELEASE_WORKFLOWS] as const;
+
+  for (const wf of ALL_WORKFLOWS) {
+    it(`${wf}: promote requires vars.VS_GHCR_PUBLISH_ENABLED`, () => {
+      const jobIf = loadWf(wf).jobs.promote.if;
+      expect(typeof jobIf, `${wf} promote must carry an if: guard`).toBe('string');
+      expect(jobIf, `${wf} promote must be gated on the owner switch`).toContain(
+        "vars.VS_GHCR_PUBLISH_ENABLED == 'true'",
+      );
+    });
+  }
+});
+
 describe('exact-byte promotion: downstream jobs are switched back ON', () => {
   const DOWNSTREAM_JOBS = ['verify-remote', 'scan', 'smoke', 'render', 'deploy'] as const;
 

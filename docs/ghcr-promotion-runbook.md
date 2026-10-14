@@ -75,6 +75,28 @@ variable (`--token-env`), is exchanged for a scoped bearer token, and is sent
 only in an `Authorization` header — never in a URL, a log line, or an error
 message. Tests pin all three of those properties.
 
+## The owner switch
+
+Live GHCR writing is gated on the repo Actions variable
+**`VS_GHCR_PUBLISH_ENABLED`**. It is **not set** in this repo, so the
+`promote` job's `if:` is false and `promote`/`verify-remote` — and every job
+that `needs:` them — skip. A green PR pipeline therefore cannot by itself
+become a live GHCR write on push to main; enabling publishing is a separate,
+explicit owner action:
+
+```
+gh variable set VS_GHCR_PUBLISH_ENABLED --body true \
+  --repo cwdcwd/vector-sigma
+```
+
+The release workflows (`release-registrar.yml`, `release-devices.yml`) only
+trigger on a `registrar-v*` / `devices-v*` tag push, which is already an
+explicit human act, but they carry the same variable gate.
+
+Turn it on for the first real run only as a manual `workflow_dispatch` on a
+scratch component, compare the promotion record's digests by hand, and then
+decide whether tag-cut releases may run unattended.
+
 ## Operating it
 
 Promote (as CI does; omit `--scheme` in production — it is `https`):
