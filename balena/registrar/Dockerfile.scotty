@@ -79,9 +79,26 @@ RUN arch="$(uname -m)" \
 # by scanning the filesystem (lib/showcase/generate.ts) — never imported, so
 # Next's standalone tracing does NOT include it. Install complete here and
 # copy into the runner below (version kept in sync with upstream package.json).
+# markdown-it PIN (doombot, 2026-10-17, gatefix for the 1py.15-way scan red):
+# eleventy 3.1.6 declares markdown-it ^14.2.0 and this stage has NO lockfile,
+# so the version resolves FRESH each build. Upstream shipped 14.3.3
+# (js.map sha256 5c4a28e72308..., min.js.map a48ca6d0c454...) after the
+# allowlist data was generated, and the slice-4 gate correctly failed closed:
+# REJECTED scotty [topology_literal_found] at
+# node_modules/markdown-it/dist/markdown-it.js.map layer[10] on every head
+# (scotty jobs 117342357855 amd64 / 117342357611 arm64, 2026-10-17T07:34).
+# Pin 14.3.2: the newest release whose two dist sourcemaps are sha256-pinned
+# in registrar/src/oci-gate/upstream-allowlist-data.gen.ts
+# (npm-markdown-it-markdown-it.js.map-91d59a3193 / .min.js.map-a77cc4205c);
+# stage bytes return to the allowlisted set and upstream's next release
+# cannot change them until this line is bumped. GATE CONTRACT: bumping this
+# pin requires the NEW version's byte-identity pins in the allowlist data
+# FIRST, verified against the exact upstream npm tarball (1py.14 round 7b
+# precedent). The 14.3.3 entries in the gen data are defense in depth for an
+# unpinned/drifted tree.
 FROM node:26.4.0-alpine AS eleventy
 WORKDIR /eleventy
-RUN npm install --no-save @11ty/eleventy@3.1.6
+RUN npm install --no-save @11ty/eleventy@3.1.6 markdown-it@14.3.2
 
 # ── Builder: scotty npm ci + build (upstream shape, 8ea-patched tree) ─────────
 FROM node:26.4.0-alpine AS builder
