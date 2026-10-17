@@ -671,3 +671,60 @@ configured; standard pricing is used.
 Deploy e2e AC9's models-list assertion covers `glm-5.3`, `glm-5.2`, and all
 three new groups (`glm-5.3-flash`, `nemotron-3-super`,
 `deepseek-v4.1-flash`).
+
+## Optional auto-router (commented template)
+
+The config contains an inert `auto_router/complexity_router` example for operators
+who want LiteLLM to classify requests into SIMPLE, MEDIUM, COMPLEX, and REASONING
+tiers. Its example aliases map SIMPLE to `ollama-cloud/glm-5.3-flash` (the default
+lane) and MEDIUM/COMPLEX/REASONING to `ollama-cloud/glm-5.3`; replace these with
+model groups that exist in your own deployment. `session_affinity: true` keeps a
+session on one model so it can retain that model's prompt cache.
+
+The template presumes the 1.105.1 gateway upgrade (the version carried by the
+1py.17 / PR #73 stack); this behavior is 1.105.x code, not present in the pinned
+1.100.1. Before trusting it, opt in and smoke-test it on the upgraded gateway.
+
+Two pitfalls are important:
+
+1. **Keep `context_compaction: false` whenever any tier uses `ollama_chat/*`.**
+   Compaction sizes the selected deployment via a model-map lookup. For models
+   absent from LiteLLM's map, that lookup raises `ModelNotMappedError`, which is
+   not caught; every request on that tier silently falls back to the next fallback
+   model, visible only in Prometheus fallback counters. Declaring deployment
+   `model_info` limits did not help in the source fleet's 1.105.1 test because the
+   global map lookup raised first. Smoke-test on the upgraded gateway rather than
+   treating that result as absolute. Related upstream issue: #23054. Client-side
+   compression (§3.1) makes router compaction redundant.
+2. **`classification_rubric` is for the LLM-judge classifier.** The heuristic
+   classifier silently ignores it.
+
+To opt in, deliberately uncomment the template, map every tier to an operator-
+configured model group, and validate the resulting config and request/fallback
+behavior against the upgraded gateway. Keep it commented in shared defaults.
+
+## Per-key budget caps (weekly example)
+
+A weekly cap can be set on an agent key with LiteLLM's `max_budget` and
+`budget_duration: 7d`. For example, include these fields in the per-key
+`/key/generate` request (the values below are illustrative):
+
+```yaml
+# max_budget: 25
+# budget_duration: 7d
+```
+
+The cap is checked against the key's running spend, which only resets at
+`budget_reset_at`. When adding a cap to an existing key, reset its spend or the
+key may be blocked immediately based on lifetime spend:
+
+```http
+POST /key/{token}/reset_spend
+Content-Type: application/json
+
+{"reset_to": 0}
+```
+
+Use the real token only in the authorized request; never put it in docs or
+operational evidence. Budgets also gate MCP calls made with that key. Treat
+LiteLLM budgets as approximate: `/api/usage` is the authoritative bill.
