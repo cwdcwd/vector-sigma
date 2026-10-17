@@ -55,7 +55,7 @@
  *   gateway's own address, or at a tailnet name that is not the
  *   enrollee's own serve name, fails with 'loop_url'.
  *
- * Wire facts (gateway 1.100.1, same class as gateway-mint.ts):
+ * Wire facts (historically verified against the prior release (same class as gateway-mint.ts); confirm at staged boot on 1.105.1):
  *   - POST /key/generate {key_alias, user_id, allowed_routes, metadata}
  *     -> 200 {key: "sk-…"}; alias unique gateway-wide.
  *   - GET /key/list?key_alias=<exact>&return_full_object=true -> the

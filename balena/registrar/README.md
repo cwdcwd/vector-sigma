@@ -206,7 +206,7 @@ key itself is the crown jewel (see "Key minting & the re-mint runbook").
 ## The VS gateway (LiteLLM) — f57.12
 
 The `litellm` service is the VS fleet's own AI gateway, baked from
-`Dockerfile.litellm` (pinned `ghcr.io/berriai/litellm:1.100.1` + the
+`Dockerfile.litellm` (pinned `ghcr.io/berriai/litellm:1.105.1` + the
 in-repo `litellm-config.yaml` — the balena supervisor cannot bind-mount,
 so the config ships in the image; deploy/ self-host builds the same image,
 so there is exactly one config artifact, no twin drift). Model routes per

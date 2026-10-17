@@ -586,7 +586,7 @@ ac9_litellm_smoke() {
 # migrations ran AND the gateway's DATABASE_URL is live; the alias surfacing
 # in the list response means the row round-trips. Both routes are local
 # DB operations: no upstream LLM traffic, preserving AC9's smoke property.
-# Route shapes verified against the pinned ghcr.io/berriai/litellm:1.100.1
+# Route shapes verified against the pinned ghcr.io/berriai/litellm:1.105.1
 # sources (litellm/proxy/management_endpoints/key_management_endpoints.py):
 # POST /key/generate -> GenerateKeyResponse{key: str, ...};
 # GET /key/list -> {keys: [...]} with bare token strings unless
