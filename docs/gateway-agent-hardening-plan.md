@@ -51,23 +51,33 @@ Tool calls, streaming, and thinking work on the native path.
 `cache_read_input_token_cost`, `output_cost_per_token`) from ollama.com/pricing.
 
 For the **authoritative bill**, document Ollama's read-only usage endpoint:
-`GET https://ollama.com/api/usage` with the same Bearer key. It returns per-day buckets
-(`request_count`, `usage_usd`, `input_tokens`, `cached_input_tokens`, `output_tokens`) scoped to
-the calling key. It is undocumented upstream, so consumers must fail soft. Run it where the key
-already lives (e.g. inside the gateway container) so the key never leaves that boundary.
+`GET https://ollama.com/api/usage` with the same Bearer key. Shape **as observed with an
+authenticated call on 2026-10-16**: top-level `range` (`"7d"`), `scope` (`"self"` — the calling
+key only), `granularity` (`"day"`), `from`/`until`, a `totals` object, and `buckets[]` per UTC day,
+each with `request_count`, `usage_usd`, `input_tokens`, `cached_input_tokens`, `output_tokens`
+(the current day carries `"partial": true`). Unauthenticated calls return 401. It is undocumented
+upstream and may change, so consumers must fail soft, and the shape should be re-probed once with
+the real key before anything consumes it (added to the 4.5 runbook). Run it where the key already
+lives (e.g. inside the gateway container) so the key never leaves that boundary.
 
-### 1.3 Agent keys see an empty model list
-**Today:** keys granted `models: ["*"]` alongside a `"*"` pass-through model group.
+### 1.3 Agents can't learn the model's context window from the gateway
+**Today:** keys are minted with no `models` field (full route table) or an explicit group list,
+and the `"*"` pass-through group routes `openai/*`.
 
-**Problem:** LiteLLM's "all models" grant is the special value `all-proxy-models`. A key list
-containing `"*"` is treated as a wildcard route; with a provider-less `"*"` group it expands to
-nothing, so `/v1/models` returns an empty list to agent keys (calls still work). Hermes then
-cannot read the model's context window and falls back to 256K, which shrinks its post-compression
-context tail.
+**Problem:** Hermes reads model metadata from the gateway; when it can't determine the context
+window it falls back to 256K, which shrinks its post-compression context tail. On this baseline
+the listing is non-empty but unhelpful: the `openai/*` pass-through expands to OpenAI's known-model
+catalog (names the agents can't meaningfully use), and on the pinned 1.100.1 the OpenAI-format
+`/v1/models` entries carry no context-window metadata (1.105.1 adds `max_input_tokens` to them).
 
-**Fix (pick one, document both):** set `model.context_length` explicitly in the agent template
-(see 3.3), and/or grant keys `all-proxy-models` instead of `"*"` (test that this does not change
-which pass-through model names a key may call).
+Related pitfall for operators who customise keys: LiteLLM's "all models" grant is the special value
+`all-proxy-models`. A key list containing `"*"` is treated as a wildcard route, and combined with a
+**provider-less** `"*"` group it expands to nothing, giving agent keys an empty `/v1/models`
+(calls still work). Observed in the source fleet; not this repo's default.
+
+**Fix:** set `model.context_length` explicitly in the agent template (see 3.3) — robust on any
+version. Optionally prefer explicit group grants (or `all-proxy-models`) over `"*"`, with a runtime
+check that the grant does not change which pass-through model names a key may call.
 
 ### 1.4 Gateway image is pinned to an old release
 **Today:** `FROM ghcr.io/berriai/litellm:1.100.1`.
@@ -97,15 +107,24 @@ large model for heavy work:
 
 Each gets pricing (1.2) and a fallback chain.
 
+Implementation notes: `registrar/src/persona-library.ts` already routes some personas to
+`ollama-cloud/glm-5.3-flash`, which today rides the `openai/*` pass-through — the explicit group
+replaces that path. The deploy e2e "AC9 models list" assertion checks `glm-5.3` + `glm-5.2`;
+update it alongside the new groups so it doesn't break silently.
+
 ### 2.2 Optional auto-router template
+*Presumes the 1.4 upgrade: the complexity router's context compaction and the `ModelNotMappedError`
+behaviour below are 1.105.x code, not present in the pinned 1.100.1.*
+
 Offer a commented `auto_router/complexity_router` group (tiers SIMPLE/MEDIUM/COMPLEX/REASONING
 mapped to whatever providers the operator configures), with `session_affinity: true` so a
 session stays on one model and keeps its prompt cache. Two pitfalls to document:
 - **`context_compaction` must be `false` when any tier is `ollama_chat/*`.** Compaction sizes the
   chosen deployment via a model-map lookup that raises `ModelNotMappedError` for models absent
   from LiteLLM's map; it is not caught, so every request on that tier silently falls back to the
-  next fallback model (visible only in Prometheus fallback counters). Declaring `model_info`
-  limits does not help — the global map lookup raises first. Related: upstream #23054. Client-side
+  next fallback model (visible only in Prometheus fallback counters). Declaring deployment
+  `model_info` limits did not help in the source fleet's test on 1.105.1 (the global map lookup
+  raised first); smoke-test on the upgraded gateway rather than relying on this as absolute. Related: upstream #23054. Client-side
   compression (3.1) makes router compaction redundant.
 - `classification_rubric` belongs to the LLM-judge classifier; the heuristic classifier silently
   ignores it.
@@ -193,7 +212,8 @@ decision over sensitive free text to the self-hosted model only.
 ### 4.5 Gateway upgrade runbook
 Document the procedure: dump the database (`pg_dump -Fc`, verify with `pg_restore --list`), tag the
 running image as a rollback anchor, bump the pinned base, build while the old container serves,
-swap, wait for migrations, verify (health, model calls on each tier, MCP, A2A, budgets), and keep
+swap, wait for migrations, verify (health, model calls on each tier, MCP, A2A, budgets, and a
+one-time authenticated `/api/usage` shape probe if anything consumes it), and keep
 the rollback commands (retag + recreate; restore the dump only if the old version cannot run on
 the migrated schema). Stored prompts make the dump sensitive — keep it 0600 and delete it once the
 upgrade is trusted.
