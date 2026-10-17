@@ -39,14 +39,25 @@ model_list:
       model: ollama_chat/glm-5.3
       api_base: https://ollama.com  # Native /api/chat endpoint; intentionally no /v1.
       api_key: os.environ/OLLAMA_CLOUD_API_KEY
+    # Pricing as of 2026-10-17, ollama.com/pricing, per the plan §1.2 — re-verify on upgrade.
+    # glm-5.3 and glm-5.2 have identical pricing rows.
     model_info:
       max_input_tokens: 1000000
+      input_cost_per_token: 0.0000014
+      cache_read_input_token_cost: 0.00000026
+      output_cost_per_token: 0.0000044
   # Same reused-id collision and silent SpendLogs skip_duplicates failure mode.
   - model_name: ollama-cloud/glm-5.2
     litellm_params:
       model: ollama_chat/glm-5.2
       api_base: https://ollama.com  # Native /api/chat endpoint; intentionally no /v1.
       api_key: os.environ/OLLAMA_CLOUD_API_KEY
+    # Pricing as of 2026-10-17, ollama.com/pricing, per the plan §1.2 — re-verify on upgrade.
+    # Same prices as glm-5.3; the two Ollama pricing rows are identical.
+    model_info:
+      input_cost_per_token: 0.0000014
+      cache_read_input_token_cost: 0.00000026
+      output_cost_per_token: 0.0000044
     # TODO: repository docs do not verify a glm-5.2 context limit; do not guess.
   # Wildcard pass-through (mirrors the origin fleet's gateway shape): routes any other
   # model name to Ollama Cloud's OpenAI-compatible /v1 endpoint. It ROUTES but

@@ -25,6 +25,18 @@ describe('Ollama Cloud native route configuration', () => {
     }
   });
 
+  it('prices both explicit Ollama groups while leaving wildcard pass-through unpriced', () => {
+    for (const version of ['glm-5.3', 'glm-5.2']) {
+      const group = explicitGroup(version);
+      expect(group).toMatch(/input_cost_per_token: 0\.0000014/);
+      expect(group).toMatch(/cache_read_input_token_cost: 0\.00000026/);
+      expect(group).toMatch(/output_cost_per_token: 0\.0000044/);
+    }
+    const wildcard = config.match(/  - model_name: "\*"[\s\S]*?(?=  # Future anthropic lane)/)?.[0];
+    expect(wildcard).toBeDefined();
+    expect(wildcard).not.toContain('model_info:');
+  });
+
   it('preserves the wildcard OpenAI-compatible pass-through block verbatim', () => {
     const wildcard = config.match(/  # Wildcard pass-through[\s\S]*?(?=  # Future anthropic lane)/)?.[0];
     expect(wildcard).toBe(`  # Wildcard pass-through (mirrors the origin fleet's gateway shape): routes any other
