@@ -16,7 +16,7 @@ function explicitGroup(name: string): string {
 
 describe('Ollama Cloud native route configuration', () => {
   it('routes both explicit groups through native ollama_chat without the /v1 base', () => {
-    for (const version of ['glm-5.3', 'glm-5.2']) {
+    for (const version of ['glm-5.3', 'glm-5.2', 'glm-5.3-flash', 'nemotron-3-super', 'deepseek-v4.1-flash']) {
       const group = explicitGroup(version);
       expect(group).toContain(`model: ollama_chat/${version}`);
       expect(group).toMatch(/api_base: https:\/\/ollama\.com(?:\s|$)/);
@@ -35,6 +35,34 @@ describe('Ollama Cloud native route configuration', () => {
     const wildcard = config.match(/  - model_name: "\*"[\s\S]*?(?=  # Future anthropic lane)/)?.[0];
     expect(wildcard).toBeDefined();
     expect(wildcard).not.toContain('model_info:');
+  });
+
+  it('pins exact pricing and roles for the three new native lanes', () => {
+    const expected = {
+      'glm-5.3-flash': ['0.00000015', '0.00000003', '0.0000005'],
+      'nemotron-3-super': ['0.000000015', '0.000000015', '0.0000006'],
+      'deepseek-v4.1-flash': ['0.0000003', '0.000000006', '0.0000012'],
+    } as const;
+    for (const [name, [input, cached, output]] of Object.entries(expected)) {
+      const group = explicitGroup(name);
+      expect(group).toContain(`input_cost_per_token: ${input}`);
+      expect(group).toContain(`cache_read_input_token_cost: ${cached}`);
+      expect(group).toContain(`output_cost_per_token: ${output}`);
+      expect(group).toMatch(/api_key: os\.environ\/OLLAMA_CLOUD_API_KEY/);
+      expect(group).toMatch(/ROLE:/);
+    }
+    expect(explicitGroup('glm-5.3-flash')).toContain('max_input_tokens: 1000000');
+    for (const name of ['nemotron-3-super', 'deepseek-v4.1-flash']) {
+      expect(explicitGroup(name)).toMatch(/TODO:.*context limit; do not guess/);
+      expect(explicitGroup(name)).not.toContain('max_input_tokens');
+    }
+    expect(explicitGroup('deepseek-v4.1-flash')).toContain('Off-peak pricing row also exists upstream');
+  });
+
+  it('declares the default lane fallback chain in escalation order', () => {
+    const router = config.match(/router_settings:[\s\S]*$/)?.[0] ?? '';
+    expect(router).toContain('- ollama-cloud/glm-5.3-flash: ["ollama-cloud/glm-5.2", "ollama-cloud/glm-5.3", "ollama-cloud/deepseek-v4.1-flash"]');
+    expect(router).not.toMatch(/^- ollama-cloud\/(?:glm-5.3|nemotron-3-super|deepseek-v4.1-flash):/m);
   });
 
   it('preserves the wildcard OpenAI-compatible pass-through block verbatim', () => {

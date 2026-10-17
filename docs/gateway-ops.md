@@ -474,3 +474,35 @@ lanes merge. Run the request inside the gateway container where the key lives so
 the key never leaves that boundary. LiteLLM budgets are approximate (id-based
 accounting and the wildcard $0 gap); Ollama's `/api/usage` endpoint is the
 authoritative bill.
+
+
+## Model lanes and fallback chains
+
+The gateway exposes explicit native `ollama_chat/*` groups for the fleet's
+model lanes. Agent turns are input-dominated (roughly 100 input tokens per
+output token because each turn resends the conversation), so input and cached
+input rates drive typical cost.
+
+| Role | Model | Why |
+|---|---|---|
+| default | `glm-5.3-flash` | ≈9× cheaper per typical turn than `glm-5.3`; 1M context, tools + thinking |
+| heavy reasoning | `glm-5.3` | Best quality; use sparingly |
+| background / cron | `nemotron-3-super` | Near-zero input cost; not for real work |
+| fallback | `deepseek-v4.1-flash` | Cheapest cached input; half price off-peak |
+
+`glm-5.3-flash` falls back in order to `glm-5.2`, then the heavy `glm-5.3`,
+then terminal `deepseek-v4.1-flash`. The background lane and heavy reasoning
+lane stand alone; wildcard pass-through is never a fallback target. All
+fallback targets are explicit model groups. The fallback map is declared in
+`router_settings.fallbacks` in `balena/registrar/litellm-config.yaml`.
+
+Context limits are configured only when verified: `glm-5.3-flash` is declared
+at 1,000,000 tokens. No repository source verifies a limit for
+`nemotron-3-super` or `deepseek-v4.1-flash`, so both omit
+`max_input_tokens` with a TODO rather than guessing. The upstream DeepSeek
+pricing table has an off-peak row, but no off-peak group or variant is
+configured; standard pricing is used.
+
+Deploy e2e AC9's models-list assertion covers `glm-5.3`, `glm-5.2`, and all
+three new groups (`glm-5.3-flash`, `nemotron-3-super`,
+`deepseek-v4.1-flash`).
