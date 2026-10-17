@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { parse as parseYaml } from 'yaml';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const config = readFileSync(path.join(repoRoot, 'balena/registrar/litellm-config.yaml'), 'utf8');
@@ -83,4 +84,32 @@ describe('Ollama Cloud native route configuration', () => {
     expect(explicitGroup('glm-5.2')).toMatch(/# TODO:.*glm-5.2 context limit; do not guess/);
     expect(explicitGroup('glm-5.2')).not.toContain('max_input_tokens');
   });
+
+  it('keeps the auto-router template comments-only and the YAML parseable', () => {
+    const parsed = parseYaml(config) as Record<string, unknown>;
+    expect(parsed).toBeDefined();
+    expect(JSON.stringify(parsed)).not.toMatch(/auto_router|complexity_router/);
+    const template = config.slice(config.indexOf('# auto_router template'), config.indexOf('\nrouter_settings:'));
+    expect(template).toContain('# - model_name: auto_router/complexity_router');
+    expect(template).toContain('#         SIMPLE: ollama-cloud/glm-5.3-flash');
+    expect(template).toContain('#       session_affinity: true');
+    expect(template).toMatch(/^#\s*context_compaction: false$/m);
+    expect(template).toContain('#       # classification_rubric: <operator rubric>');
+    expect(template.split('\n').every((line) => line === '' || line.startsWith('#'))).toBe(true);
+  });
+
+  it('documents weekly budgets and keeps gateway ops copies byte-identical', () => {
+    const canonical = readFileSync(path.join(repoRoot, 'docs/gateway-ops.md'), 'utf8');
+    const registrar = readFileSync(path.join(repoRoot, 'balena/registrar/docs/gateway-ops.md'), 'utf8');
+    const devices = readFileSync(path.join(repoRoot, 'balena/devices/docs/gateway-ops.md'), 'utf8');
+    expect(canonical).toContain('## Per-key budget caps (weekly example)');
+    expect(canonical).toContain('budget_duration: 7d');
+    expect(canonical).toContain('budget_reset_at');
+    expect(canonical).toContain('POST /key/{token}/reset_spend');
+    expect(canonical).toContain('{"reset_to": 0}');
+    expect(canonical).toContain('Budgets also gate MCP calls');
+    expect(registrar).toBe(canonical);
+    expect(devices).toBe(canonical);
+  });
+
 });

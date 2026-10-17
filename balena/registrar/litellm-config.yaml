@@ -113,6 +113,31 @@ model_list:
   #     model: anthropic/claude-sonnet-5
   #     api_key: os.environ/ANTHROPIC_API_KEY
 
+
+# auto_router template (opt-in only; every line remains commented).
+# EXAMPLES only: replace these aliases with model groups configured by the operator.
+# SIMPLE uses the fleet's default flash lane; heavier tiers use glm-5.3 examples.
+# - model_name: auto_router/complexity_router
+#   litellm_params:
+#     model: auto_router/complexity_router
+#     auto_router_config:
+#       model_group_alias:
+#         SIMPLE: ollama-cloud/glm-5.3-flash
+#         MEDIUM: ollama-cloud/glm-5.3
+#         COMPLEX: ollama-cloud/glm-5.3
+#         REASONING: ollama-cloud/glm-5.3
+#       session_affinity: true
+#       context_compaction: false
+#       # Keep compaction false for any ollama_chat/* tier: LiteLLM 1.105.x may
+#       # raise uncaught ModelNotMappedError during model-map sizing; requests
+#       # then fall through to the next fallback (Prometheus fallback counters).
+#       # model_info limits did not help in a source-fleet 1.105.1 test; smoke-test
+#       # on the upgraded gateway. Related upstream #23054; client compression
+#       # (§3.1) makes router compaction redundant.
+#       # classification_rubric: <operator rubric>
+#       # classification_rubric is for the LLM-judge classifier; the heuristic
+#       # classifier silently ignores it.
+
 router_settings:
   fallbacks:
     # Default lane escalates to glm-5.2, then heavy glm-5.3, then terminal deepseek fallback.
