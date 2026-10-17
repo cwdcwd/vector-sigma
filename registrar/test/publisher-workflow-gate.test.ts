@@ -42,6 +42,7 @@ interface WfJob {
   needs?: string | string[];
   permissions?: Record<string, string>;
   if?: string;
+  strategy?: { matrix?: unknown };
   steps?: Array<Record<string, unknown>>;
 }
 
@@ -174,6 +175,42 @@ describe('publisher workflow graph: PR path on build-images.yml has NO promote j
     expect(verifyRemote.if, 'verify-remote must also be excluded from pull_request').toContain(
       "github.event_name != 'pull_request'",
     );
+  });
+
+  it('manual build-images dispatch can select one promotion component while preserving full validation', () => {
+    const doc = loadWf('.github/workflows/build-images.yml');
+    const dispatch = (doc.on as { workflow_dispatch?: { inputs?: Record<string, { type?: string; default?: string; options?: string[] }> } })
+      .workflow_dispatch;
+    const componentInput = dispatch?.inputs?.component;
+    expect(componentInput, 'workflow_dispatch must expose a component selector').toBeDefined();
+    expect(componentInput?.type).toBe('choice');
+    expect(componentInput?.default).toBe('all');
+    expect(componentInput?.options).toEqual([
+      'all', 'registrar', 'registrant', 'scotty', 'hermes', 'postgres', 'litellm', 'tailscale', 'agent',
+    ]);
+
+    const promote = doc.jobs.promote;
+    const verifyRemote = doc.jobs['verify-remote'];
+    expect(promote.strategy?.matrix).toBeDefined();
+    expect(verifyRemote.strategy?.matrix).toEqual(promote.strategy?.matrix);
+    const manualSelection = "github.event_name == 'workflow_dispatch' && inputs.component != 'all'";
+    const matrix = JSON.stringify(promote.strategy?.matrix);
+    expect(matrix).toContain(manualSelection);
+    expect(matrix).toContain('fromJSON');
+    expect(matrix).toContain('registrar');
+    expect(matrix).toContain('agent');
+    expect(JSON.stringify(verifyRemote.strategy?.matrix)).toContain(manualSelection);
+
+    // Selection is promotion-only: the scan and aggregate gate still cover
+    // the full build matrix before even one component can be published.
+    const scanComponents = new Set(
+      (doc.jobs['stage-and-scan'] as unknown as { strategy: { matrix: { include: Array<{ component: string }> } } })
+        .strategy.matrix.include.map((item) => item.component),
+    );
+    expect([...scanComponents].sort()).toEqual(
+      ['agent', 'hermes', 'litellm', 'postgres', 'registrant', 'registrar', 'scotty', 'tailscale'].sort(),
+    );
+    expect(needsList(promote)).toContain('all-components-gate');
   });
 
   it('build-images.yml stage-and-scan and assemble-and-validate run unconditionally (validate-only on PR)', () => {
