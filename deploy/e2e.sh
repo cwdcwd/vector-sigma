@@ -1444,9 +1444,17 @@ except Exception as e:
 
   # 5. the round-trip: message/send through the edge -> proxy -> origin.
   local rpc_id="e2e-ac14-$$"
+  # A2A message auth must be the sender mesh identity, not the gateway key.
+  # Read from the seeded Hermes bundle in-container; never log the value.
+  local a2a_identity
+  a2a_identity="$(docker exec "$hcontainer" python3 -c 'import json; print(json.load(open("/data/primus/config/a2a.json"))["identity_key"])')"
+  if [ -z "$a2a_identity" ]; then
+    fail "AC14 round-trip" "seeded A2A identity key is unavailable"
+    return
+  fi
   rpc_code="$(curl -s -o /tmp/ac14-rpc.json -w '%{http_code}' -m 240 \
     "$base/a2a/primus" \
-    -H "Authorization: Bearer $master" \
+    -H "Authorization: Bearer $a2a_identity" \
     -H 'Content-Type: application/json' \
     -H 'A2A-Version: 1.0' \
     -d "{\"jsonrpc\":\"2.0\",\"id\":\"$rpc_id\",\"method\":\"message/send\",\"params\":{\"message\":{\"role\":\"ROLE_USER\",\"messageId\":\"$rpc_id\",\"parts\":[{\"kind\":\"text\",\"text\":\"Mesh round-trip probe (AC14): reply with exactly the word ACK\"}]}}}" 2>/dev/null || true)"
