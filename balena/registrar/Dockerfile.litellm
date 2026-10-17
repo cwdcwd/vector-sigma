@@ -6,12 +6,12 @@
 # artifact, one env contract, no twin drift.
 #
 # Tag scheme note: LiteLLM moved to plain-semver content tags in July 2026
-# ("main-stable" is legacy but still advances); v1.100.1 is the current stable
-# release. The stock image ENTRYPOINT is docker/prod_entrypoint.sh (execs
+# ("main-stable" is legacy but still advances); pin the stock 1.105.1 release.
+# The stock image ENTRYPOINT is docker/prod_entrypoint.sh (execs
 # `litellm "$@"`), which our entrypoint shim re-execs after assembling
 # DATABASE_URL from parts.
 
-FROM ghcr.io/berriai/litellm:1.100.1
+FROM ghcr.io/berriai/litellm:1.105.1
 
 COPY litellm-config.yaml /app/config.yaml
 COPY litellm-entrypoint.sh /app/litellm-entrypoint.sh
