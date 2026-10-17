@@ -1,0 +1,18 @@
+# Device Hermes hardening defaults. Numeric values are overridable via bundle extra_env.
+compression:
+  threshold_tokens: ${VS_HERMES_COMPRESSION_THRESHOLD_TOKENS:-128000}
+tool_output:
+  max_bytes: ${VS_HERMES_TOOL_OUTPUT_MAX_BYTES:-20000}
+file_read_max_chars: ${VS_HERMES_FILE_READ_MAX_CHARS:-40000}
+tool_budget:
+  mcp_result_size_chars: ${VS_HERMES_MCP_RESULT_SIZE_CHARS:-20000}
+model:
+  # Matches the gateway-declared default-model window; override per deployment.
+  context_length: ${VS_HERMES_CONTEXT_LENGTH:-1000000}
+auxiliary:
+  compression:
+    provider: custom
+    # Supply a fast summarizer whose context window is >= the main model.
+    model: "${VS_HERMES_SUMMARY_MODEL}"
+    # The deployed gateway's /v1 URL arrives through GATEWAY_URL in the bundle.
+    base_url: "${GATEWAY_URL}"
