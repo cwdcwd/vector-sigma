@@ -2,7 +2,7 @@
  * Gateway memory-key minting (fleet-ops-e5o.3).
  *
  * The admin console's "mint memory keys" action calls the VS gateway
- * (LiteLLM 1.100.1) over its key-management API to create the two
+ * LiteLLM) over its key-management API to create the two
  * route-restricted per-agent memory keys, then writes them into that
  * device's bundle via the existing rotate/extra_env delivery plane.
  *
@@ -17,7 +17,7 @@
  * pre-authorized fallback from the e5o.2 ruling; it never falls through
  * to master-key use.
  *
- * Wire facts (verified against v1.100.1 sources):
+ * Wire facts (historically verified against the prior release; confirm at staged boot on 1.105.1):
  *   - POST /key/generate {key_alias, user_id, team_id?, allowed_routes,
  *     duration?} -> 200 {key: "sk-…"}; alias must be unique gateway-wide.
  *   - GET /key/list?key_alias=<exact>&return_full_object=true -> the

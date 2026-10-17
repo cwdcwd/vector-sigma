@@ -440,6 +440,112 @@ delivery needs the provision step again).
 is absent from the registrar, and any key carrying a completions route
 whose alias does NOT match the `model-` scheme — both are drift
 signals, same posture as the memory and mesh audits.
+## Gateway upgrade & rollback (LiteLLM 1.x)
+
+This procedure covers the stock LiteLLM image and its PostgreSQL state. It is
+for a controlled staging upgrade, not an instruction to mutate production.
+The non-production verification for this change is the CI end-to-end job,
+which boots the rebuilt gateway image on the pull request. A live production
+upgrade is owner-gated and out of scope for this branch.
+
+### Before the upgrade: backup and rollback anchor
+
+1. Confirm the currently serving image reference and record its immutable local
+   image ID/digest. Tag that exact image in the available image store as a
+   rollback anchor **before** building or swapping anything (for example,
+   `docker tag <current-image-id> litellm:rollback-<change-id>`). Do not rely on
+   a moving upstream tag as the rollback copy.
+2. Take a custom-format PostgreSQL dump of the LiteLLM database using the
+   deployment's established database credentials (do not put credentials in
+   shell history or this runbook):
+
+   ```bash
+   umask 077
+   pg_dump -Fc --dbname="$DATABASE_URL" --file=litellm-before-upgrade.dump
+   chmod 600 litellm-before-upgrade.dump
+   pg_restore --list litellm-before-upgrade.dump > litellm-before-upgrade.list
+   ```
+
+   Require `pg_dump` and `pg_restore --list` to exit successfully and confirm
+   the listing contains the expected LiteLLM schema objects before proceeding.
+   The dump is sensitive: it can contain stored prompts and other request data.
+   Keep it access-restricted (mode `0600`), in approved encrypted storage, and
+   delete the working copy once the upgrade is trusted and the backup-retention
+   policy permits. Never attach it to a ticket or commit it.
+3. Record the current image reference, database backup location, and a
+   successful pre-upgrade health/model baseline without recording credentials
+   or prompt bodies. Confirm the previous image can be recreated before the
+   maintenance window.
+
+### Build and swap
+
+1. Build the new image from the reviewed Dockerfile while the existing gateway
+   container continues serving. Keep the image stock; do not patch LiteLLM.
+   Confirm the built image identifies the intended version before the swap.
+2. Stop/recreate the gateway service with the new image using the deployment's
+   normal owner-controlled rollout mechanism. Preserve the PostgreSQL volume;
+   do not remove or reinitialize it.
+3. Wait for startup and database migrations to finish. Read health and startup
+   logs until the service is ready and there are no migration errors. Do not
+   start verification traffic while migrations are still running.
+4. If a config-key compatibility question cannot be settled from repo-local
+   evidence, explicitly verify it at this first staged boot: inspect startup
+   logs and the live router for the existing `model_list` entries and their
+   `model_name` / `litellm_params` (`model`, `api_base`, `api_key`),
+   `router_settings.fallbacks`, and `general_settings` (`master_key`,
+   `database_url`). Confirm environment-variable resolution and both configured
+   fallback directions. These keys are deliberately not changed by this
+   upgrade; do not guess at renames or deprecations.
+
+### Verification battery
+
+After readiness, run and record results (status, model/group alias, and timings;
+never key values, authorization headers, or prompt contents):
+
+- Health endpoint responds successfully and reports the gateway ready.
+- Make one minimal model call through every configured tier/group, including
+  each explicit model and configured fallback direction; prove a real upstream
+  completion, not merely that `/v1/models` lists it.
+- Complete one MCP round-trip using the normal non-production test client.
+- Complete one A2A send and receive between the test peers.
+- Exercise a disposable virtual key with a small budget: confirm an allowed
+  call succeeds and the expected budget state/limit is visible; remove or let
+  the throwaway key expire afterward.
+- Verify spend logging is still produced and inspect the recorded request
+  fields for credential redaction, specifically the request-body redaction
+  introduced by LiteLLM #43635. Check only sanitized field presence/shape;
+  never print or copy stored prompt/request bodies.
+- If anything consumes the authenticated `/api/usage` endpoint, make one
+  one-time authenticated shape probe from the boundary where its credential
+  already lives. Record only field names and non-sensitive types/counts,
+  compare with the consumer's expectations, and fail soft if the upstream
+  shape differs. Do not expose the credential or response contents containing
+  sensitive usage details.
+
+Non-production verification for this branch is CI e2e booting the rebuilt
+gateway on the PR. The battery above is the staged/live operator checklist;
+ it does not authorize production rollout. Live production upgrade requires
+ explicit owner approval and is outside this branch.
+
+### Rollback
+
+1. If verification fails, restore the rollback anchor by retagging the saved
+   old image to the deployment's expected image reference, then recreate the
+   gateway service with that image. Example: `docker tag
+   litellm:rollback-<change-id> <deployment-image-reference>` followed by the
+   normal service recreate. Keep PostgreSQL and its volume intact initially.
+2. The newer LiteLLM may have migrated the schema. First attempt to run the old
+   image against the migrated schema and verify health. Restore the database
+   dump **only if the old version cannot run on the migrated schema**; a dump
+   restore is a destructive rollback of database state accumulated since the
+   backup and requires owner approval. If needed, stop writes, preserve the
+   failed post-upgrade database for diagnosis, restore the pre-upgrade dump to
+   the intended database, and verify with the old image before reopening
+   traffic.
+3. Repeat the health, one model call per configured tier, MCP, A2A, and
+   budget-key checks. Retain the protected dump only under the approved
+   retention policy, then securely remove working copies once the rollback or
+   upgrade is trusted.
 
 ## Evidence discipline
 
