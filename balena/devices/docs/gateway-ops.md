@@ -412,3 +412,31 @@ counts, HTTP codes, the recorded row's param_name — **never** key
 values, never the mint response body, never a raw `param_value` blob.
 A probe that cannot be pasted safely has not been filtered enough:
 filter it in the probe (the python one-liners above), not by hand.
+
+## Ollama native routing (SpendLogs preservation)
+
+Ollama Cloud's OpenAI-compatible `/v1` endpoint reuses response IDs from
+`chatcmpl-0` through `chatcmpl-999`. LiteLLM uses the provider response ID
+as the SpendLogs `request_id`; once an ID repeats, `skip_duplicates` silently
+drops the successful SpendLogs row. The request itself succeeds, so the missing
+rows are easy to mistake for low traffic. The two explicit GLM groups therefore
+use LiteLLM's native `ollama_chat` provider at `https://ollama.com` (native
+`/api/chat`, with no `/v1`); the wildcard remains on the existing
+`OLLAMA_CLOUD_API_BASE` `/v1` route for compatibility. Native responses omit
+provider IDs, allowing LiteLLM to mint unique request IDs.
+
+**Native-path trade-offs:** Ollama reports cache hits as
+`prompt_eval_cached_count`, which LiteLLM does not currently map. LiteLLM thus
+shows 0% cached and overstates Ollama cost by about 3–4× even though Ollama
+continues caching. Also, `reasoning_effort` maps to think on/off for non-`gpt-oss`
+models, so low/high effort variants behave alike.
+
+Context limits in `/v1/models` are configuration-dependent: LiteLLM needs
+`model_info.max_input_tokens` for aliases absent from its cost map. The
+`glm-5.3` route declares 1,000,000 tokens. The repository does not verify a
+`glm-5.2` limit, so its value is intentionally omitted pending verification.
+
+**How to verify:** issue successful requests through each explicit route and
+confirm SpendLogs row counts increase per successful request. Prometheus
+request counters provide a fallback comparison if SpendLogs rows appear
+missing; the compose end-to-end smoke remains a CI check.
