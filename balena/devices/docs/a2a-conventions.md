@@ -9,6 +9,8 @@ discipline**: how to dispatch, how to answer, and how to interpret
 silence. It is fleet-generic; it names no fleet, agent, host, or
 gateway.
 
+For the repository-wide sender/auth inventory and silent-401 contract, see [`a2a-sender-audit.md`](a2a-sender-audit.md).
+
 One fact drives every rule below: **every A2A delivery opens a
 fresh-context session that cannot see any other session's messages,
 memory, or scratch state.** Two peers share only their shared stores —
