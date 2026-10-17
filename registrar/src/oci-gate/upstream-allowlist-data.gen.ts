@@ -2982,5 +2982,35 @@ export const UPSTREAM_IMAGE_ALLOWLIST: readonly UpstreamFileEntry[] = [
     markerFn: null,
     fileSha256: "a77cc4205cff5bcb62a4b384cdac5e3c7a2920a88b665842629467319cb09e73",
     occurrences: [{ literal: "192.168.1.1" }],
+  },  {
+    // doombot gatefix 2026-10-17: markdown-it 14.3.3 pair (sisters of the
+    // 14.3.1/14.3.2 entries above). Defense in depth beside the
+    // Dockerfile.scotty eleventy-stage pin (markdown-it@14.3.2): bytes
+    // sha-verified this session against the exact upstream npm tarball
+    // markdown-it-14.3.3.tgz; the ONLY rfc1918_private_ip occurrence in each
+    // map is the same single innocuous linkify doc-comment IP as in
+    // 14.3.1/14.3.2 (context: 'because this cases are possible:
+    // // 192.168.1.1@gmail.com'). Keeps a drift-built (unpinned) tree
+    // fail-closed GREEN on exactly the verified stock bytes.
+    name: "npm-markdown-it-markdown-it.js.map-5c4a28e723",
+    patterns: ["rfc1918_private_ip"],
+    matchKind: 'suffix',
+    match: "node_modules/markdown-it/dist/markdown-it.js.map",
+    fileSha256s: null,
+    markers: null,
+    markerFn: null,
+    fileSha256: "5c4a28e72308b80a3ed4f9bf7afe959f05d2c1375bd9ebec287afc863e4e8a85",
+    occurrences: [{ literal: "192.168.1.1" }],
   },
-];
+  {
+    name: "npm-markdown-it-markdown-it.min.js.map-a48ca6d0c4",
+    patterns: ["rfc1918_private_ip"],
+    matchKind: 'suffix',
+    match: "node_modules/markdown-it/dist/markdown-it.min.js.map",
+    fileSha256s: null,
+    markers: null,
+    markerFn: null,
+    fileSha256: "a48ca6d0c454ce35236af8945f71b43eb25f1733272390e6adfeb8a3bdd805e3",
+    occurrences: [{ literal: "192.168.1.1" }],
+  },
+]
