@@ -93,9 +93,20 @@ The release workflows (`release-registrar.yml`, `release-devices.yml`) only
 trigger on a `registrar-v*` / `devices-v*` tag push, which is already an
 explicit human act, but they carry the same variable gate.
 
-Turn it on for the first real run only as a manual `workflow_dispatch` on a
-scratch component, compare the promotion record's digests by hand, and then
-decide whether tag-cut releases may run unattended.
+## Safe first live probe: component-scoped dispatch
+
+`build-images.yml` exposes a required `workflow_dispatch` choice named
+`component`. Select one component (for example, `registrar`) for the first
+live probe; `all` is the default and is intentionally explicit. The selector
+changes only the `promote` and `verify-remote` matrices. The entire eight-
+component build/scan/index matrix and `all-components-gate` still run, so no
+component can publish before the full repository validation succeeds. A
+single-component dispatch therefore writes only that component's package while
+still enforcing the complete scan gate.
+
+The selector is not authorization: keep `VS_GHCR_PUBLISH_ENABLED` unset unless
+the owner explicitly approves a live GHCR write. With the switch unset, manual
+dispatch remains validation-only and both publish jobs skip.
 
 ## Operating it
 

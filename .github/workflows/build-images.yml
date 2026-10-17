@@ -69,6 +69,22 @@ on:
       - 'deploy/**'
       - '.github/workflows/build-images.yml'
   workflow_dispatch:
+    inputs:
+      component:
+        description: 'Component to promote after the full validation matrix passes (all = every component)'
+        type: choice
+        required: true
+        default: all
+        options:
+          - all
+          - registrar
+          - registrant
+          - scotty
+          - hermes
+          - postgres
+          - litellm
+          - tailscale
+          - agent
 
 permissions:
   contents: read
@@ -296,7 +312,9 @@ jobs:
   # promote + verify-remote run ONLY on main push / workflow_dispatch —
   # there is NO promote job at all for pull_request (structurally absent
   # via the `if:` guard below, not a conditionally-skipped no-op). Only
-  # this job carries packages:write / GHCR login.
+  # this job carries packages:write / GHCR login. On manual dispatch, the
+  # component input narrows BOTH promotion and verification to one component
+  # (or all); stage-and-scan, index assembly and the aggregate gate stay full.
   #
   # fleet-ops-r3v: this job NO LONGER rebuilds. It downloads the exact
   # OCI-layout tars the stage-and-scan job built and scanned, and pushes
@@ -317,7 +335,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        component: [registrar, registrant, scotty, hermes, postgres, litellm, tailscale, agent]
+        component: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.component != 'all' && format('["{0}"]', inputs.component) || '["registrar","registrant","scotty","hermes","postgres","litellm","tailscale","agent"]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -370,7 +388,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        component: [registrar, registrant, scotty, hermes, postgres, litellm, tailscale, agent]
+        component: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.component != 'all' && format('["{0}"]', inputs.component) || '["registrar","registrant","scotty","hermes","postgres","litellm","tailscale","agent"]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
