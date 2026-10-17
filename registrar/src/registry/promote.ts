@@ -170,10 +170,26 @@ export async function promoteComponent(opts: PromoteComponentOptions): Promise<P
 
   for (const { manifest, blobs } of staged) {
     // Blobs first: a manifest referencing an absent blob is an invalid
-    // image, and some registries reject the manifest PUT outright.
+    // image, and some registries reject the manifest PUT outright. HEAD
+    // is only an existence hint: whether pre-existing or newly uploaded,
+    // fetch every blob by digest and prove its bytes equal the scanned
+    // layout bytes and hash to the requested content address before any
+    // manifest or tag can be published.
     for (const digest of manifest.blobDigests) {
-      if (await client.blobExists(digest)) continue;
-      await client.uploadBlob(blobs.get(digest)!, digest);
+      const expected = blobs.get(digest);
+      if (!expected || sha256(expected) !== digest) {
+        throw new PromotionError('digest_mismatch', `${manifest.platform}: local blob ${digest} is absent or does not hash to its digest`);
+      }
+      if (!(await client.blobExists(digest))) {
+        await client.uploadBlob(expected, digest);
+      }
+      const fetchedBlob = await client.getBlob(digest);
+      if (!fetchedBlob.equals(expected) || sha256(fetchedBlob) !== digest) {
+        throw new PromotionError(
+          'digest_mismatch',
+          `${manifest.platform}: blob read back from ${digest} differs from the scanned bytes or does not hash to that digest`,
+        );
+      }
     }
     // Manifest by DIGEST reference (content-addressed — cannot point at
     // anything else), then read back by that same digest and compare.

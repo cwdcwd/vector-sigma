@@ -91,12 +91,22 @@ describe('exact-byte promotion: the registry stores the scanned bytes, not a reb
 describe('fail-stop ordering: tags are applied strictly after verification', () => {
   it('applies the first tag only after all blobs, both manifests and the index have been verified', async () => {
     const fake = new FakeRegistry();
-    await promoteComponent(opts(fake));
+    const input = layouts();
+    await promoteComponent(opts(fake, { layouts: input }));
 
     const firstTagIndex = fake.calls.findIndex((c) => /^PUT .*manifests\/abcd1234-(amd64|arm64)$/.test(c));
     expect(firstTagIndex, 'a per-arch tag PUT must have occurred').toBeGreaterThan(-1);
 
     const before = fake.calls.slice(0, firstTagIndex);
+    // Every referenced config/layer blob is fetched before the first
+    // manifest write; the digest-addressed manifest/index read-backs must
+    // also all finish before a human-facing tag can be written.
+    const expectedBlobs = new Set(input.flatMap((l) => digestsOfLayoutBytes(l.tarBytes).map(([digest]) => digest)));
+    const blobReads = fake.calls
+      .map((call, index) => ({ call, index }))
+      .filter(({ call }) => call.startsWith('GET ') && call.includes('/blobs/sha256:') && !call.includes('/blobs/uploads/'));
+    expect(new Set(blobReads.map(({ call }) => call.split('/blobs/')[1])).size).toBe(expectedBlobs.size);
+    expect(blobReads.every(({ index }) => index < firstTagIndex)).toBe(true);
     // Every staging write must precede the first tag.
     expect(before.filter((c) => c.includes('manifests/') && c.includes('PUT')).length).toBe(3); // 2 manifests + index, by digest
     // And each staging write must have been read back before tagging.
@@ -213,6 +223,35 @@ describe('promotion input validation: fail closed before any registry write', ()
     expect(writesAfterSecond).toBe(0);
     expect(input.length).toBe(2);
   });
+
+  it('rejects a pre-existing blob whose bytes do not match its content-addressed digest before tagging', async () => {
+    const fake = new FakeRegistry();
+    const digest = digestsOfLayoutBytes(layouts()[0]!.tarBytes)[0]![0];
+    fake.blobs.set(digest, Buffer.from('wrong bytes at claimed digest'));
+
+    await expect(promoteComponent(opts(fake))).rejects.toMatchObject({ code: 'digest_mismatch' });
+    expect(fake.calls.some((c) => c.startsWith('PUT') && c.includes('/manifests/abcd1234'))).toBe(false);
+  });
+
+  it('rejects a blob corrupted after upload before tagging', async () => {
+    const fake = new FakeRegistry();
+    const originalSend = fake.send.bind(fake);
+    let corrupted = false;
+    fake.send = async (req) => {
+      const res = await originalSend(req);
+      if (!corrupted && req.method === 'PUT' && new URL(req.url).pathname.includes('/blobs/uploads/')) {
+        corrupted = true;
+        const digest = new URL(req.url).searchParams.get('digest')!;
+        fake.blobs.set(digest, Buffer.from('corrupted after upload'));
+      }
+      return res;
+    };
+
+    await expect(promoteComponent(opts(fake))).rejects.toMatchObject({ code: 'digest_mismatch' });
+    expect(corrupted).toBe(true);
+    expect(fake.calls.some((c) => c.startsWith('PUT') && c.includes('/manifests/abcd1234'))).toBe(false);
+  });
+
 });
 
 // ── helpers: read a layout tar's blobs without importing gate internals ──
