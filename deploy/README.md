@@ -194,3 +194,25 @@ Build context is the repo root (see `.dockerignore`); all three workspaces
 are built by the root npm workspaces install. The container runs as the
 base image's built-in non-root `node` user (uid/gid 1000) — the device data
 volume must be writable by that uid (compose named volumes are).
+
+## Device Hermes context and tool-output defaults (1py.18)
+
+The device image seeds these values into `$HERMES_HOME/config.yaml` on boot
+only when an operator has not already set them. Bundle `extra_env` is the
+operator override plane; add the listed `VS_HERMES_*` key to the device's
+registrar-delivered `config/agent.env`. These are defaults, not hard pins.
+
+| Key | Default | Why | Override knob |
+|---|---:|---|---|
+| `compression.threshold_tokens` | `128000` | Absolute cap prevents 1M-context turns from waiting for fraction-based compression. | `VS_HERMES_COMPRESSION_THRESHOLD_TOKENS` |
+| `tool_output.max_bytes` | `20000` | Tool results refill context rapidly and can stall compression in the protected tail. Oversized output continues to spill to `cache/spillover/` with a pointer, not silently truncate. | `VS_HERMES_TOOL_OUTPUT_MAX_BYTES` |
+| `file_read_max_chars` | `40000` | Bounds file reads before they consume the turn context. | `VS_HERMES_FILE_READ_MAX_CHARS` |
+| `tool_budget.mcp_result_size_chars` | `20000` | Bounds MCP payload growth. | `VS_HERMES_MCP_RESULT_SIZE_CHARS` |
+| `model.context_length` | `1000000` | Matches the gateway's declared default-model window rather than Hermes' smaller unknown-window fallback. | `VS_HERMES_CONTEXT_LENGTH` |
+| `auxiliary.compression.model` | `${VS_HERMES_SUMMARY_MODEL}` (operator supplied) | Pin a fast summary model with a window at least as large as the main model; avoids router summaries that took 48–100 seconds. | `VS_HERMES_SUMMARY_MODEL` |
+| `auxiliary.compression.base_url` | `${GATEWAY_URL}` (bundle supplied) | Routes summaries through the configured OpenAI-compatible gateway without embedding a deployment host. | bundle `GATEWAY_URL` |
+
+Hermes' default 0.50 compression fraction on a 1M-token model allows roughly
+500K-token turns before compression. Tool results can refill that context much
+faster than conversation text, stalling compression. An absolute threshold,
+bounded result sizes, and a directly pinned summary model address those cases.

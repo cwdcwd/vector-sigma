@@ -228,9 +228,10 @@ fi
 # everything OUTSIDE the managed set is preserved verbatim (the stage2
 # operator-wins contract holds for unmanaged keys).
 "$PY" - "$CFG_FILE" "$BUNDLE_DIR" <<'PYEOF'
-import os, sys, json
+import os, sys, json, re
 
 cfg_path, bundle_dir = sys.argv[1], sys.argv[2]
+defaults_path = os.environ.get("VS_HERMES_DEFAULTS_FILE", "/opt/vs/hermes-agent-defaults.yaml")
 
 def read_env_file(path):
     out = {}
@@ -316,7 +317,55 @@ try:
             existing = {}
     except FileNotFoundError:
         pass
-    existing.update(managed)
+    # Seed device policy defaults without replacing operator-edited values.
+    # Bundle extra_env is the deployment override plane; unresolved placeholders
+    # (summary model and gateway URL) remain for Hermes environment expansion.
+    try:
+        with open(defaults_path) as f:
+            raw_defaults = f.read()
+        values = dict(os.environ)
+        values.update(agent_env)
+        raw_defaults = re.sub(
+            r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}",
+            lambda m: values.get(m.group(1), m.group(2) if m.group(2) is not None else m.group(0)), raw_defaults)
+        defaults = yaml.safe_load(raw_defaults) or {}
+        def seed_missing(dst, src):
+            for key, value in src.items():
+                if key not in dst:
+                    dst[key] = value
+                elif isinstance(dst[key], dict) and isinstance(value, dict):
+                    seed_missing(dst[key], value)
+        seed_missing(existing, defaults)
+        # Explicit knobs remain effective on later boots even after defaults
+        # were seeded into the persistent volume. Ordinary config edits still
+        # win when their corresponding environment knob is unset.
+        overrides = {
+            "VS_HERMES_COMPRESSION_THRESHOLD_TOKENS": ("compression", "threshold_tokens"),
+            "VS_HERMES_TOOL_OUTPUT_MAX_BYTES": ("tool_output", "max_bytes"),
+            "VS_HERMES_FILE_READ_MAX_CHARS": ("file_read_max_chars",),
+            "VS_HERMES_MCP_RESULT_SIZE_CHARS": ("tool_budget", "mcp_result_size_chars"),
+            "VS_HERMES_CONTEXT_LENGTH": ("model", "context_length"),
+            "VS_HERMES_SUMMARY_MODEL": ("auxiliary", "compression", "model"),
+            "GATEWAY_URL": ("auxiliary", "compression", "base_url"),
+        }
+        for env_key, keys in overrides.items():
+            if env_key not in values or not values[env_key]:
+                continue
+            value = yaml.safe_load(values[env_key]) if env_key.startswith("VS_HERMES_") and env_key != "VS_HERMES_SUMMARY_MODEL" else values[env_key]
+            target = existing
+            for key in keys[:-1]:
+                target = target.setdefault(key, {})
+            target[keys[-1]] = value
+    except FileNotFoundError:
+        # The master image intentionally has no device policy template.
+        pass
+    # Bundle owns model routing, but its managed values must not discard
+    # context_length or other default/operator model settings.
+    for key, value in managed.items():
+        if key == "model" and isinstance(existing.get(key), dict):
+            existing[key].update(value)
+        else:
+            existing[key] = value
     for key in REMOVE_KEYS:
         existing.pop(key, None)
     tmp = cfg_path + ".tmp"

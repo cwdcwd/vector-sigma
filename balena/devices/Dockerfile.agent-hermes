@@ -86,6 +86,7 @@ RUN chmod 0755 /etc/cont-init.d/04-vs-a2a-wiring
 
 # ── Docs (vendored; source of truth = docs/ at the repo root) ─────────────
 COPY docs /opt/vs/docs
+COPY hermes-agent-defaults.yaml /opt/vs/hermes-agent-defaults.yaml
 
 # ── The gateway-memory plugin + install hook (fleet-ops-e5o.3) ────────────
 # Byte-pinned to deploy/gateway-memory/ (the drift test enforces parity
