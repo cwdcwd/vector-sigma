@@ -566,8 +566,11 @@ ac9_litellm_smoke() {
       -H "Authorization: Bearer $master" 2>/dev/null || true)"
   if [ -n "$models" ]; then
     if printf '%s' "$models" | grep -q 'glm-5\.3' \
-      && printf '%s' "$models" | grep -q 'glm-5\.2'; then
-      pass "AC9 models list" "glm-5.3 + glm-5.2 groups served (j9f explicit groups)"
+      && printf '%s' "$models" | grep -q 'glm-5\.2' \
+      && printf '%s' "$models" | grep -q 'glm-5\.3-flash' \
+      && printf '%s' "$models" | grep -q 'nemotron-3-super' \
+      && printf '%s' "$models" | grep -q 'deepseek-v4\.1-flash'; then
+      pass "AC9 models list" "GLM 5.3/5.2, flash, nemotron and deepseek groups served"
     else
       fail "AC9 models list" "explicit groups missing from /v1/models: $models"
     fi

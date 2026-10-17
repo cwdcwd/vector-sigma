@@ -31,16 +31,71 @@ model_list:
   # Explicit entries — j9f lesson applied verbatim: the wildcard can NEVER
   # serve as a fallback target, so every fallback endpoint (below) must be a
   # real, explicitly-listed model group.
+  # Ollama Cloud's OpenAI-compatible endpoint reuses response ids
+  # chatcmpl-0..999. LiteLLM uses those ids as unique SpendLogs request_id
+  # values and skip_duplicates silently drops successful rows on collision.
   - model_name: ollama-cloud/glm-5.3
     litellm_params:
-      model: openai/glm-5.3
-      api_base: os.environ/OLLAMA_CLOUD_API_BASE
+      model: ollama_chat/glm-5.3
+      api_base: https://ollama.com  # Native /api/chat endpoint; intentionally no /v1.
       api_key: os.environ/OLLAMA_CLOUD_API_KEY
+    # Pricing as of 2026-10-17, ollama.com/pricing, per the plan §1.2 — re-verify on upgrade.
+    # glm-5.3 and glm-5.2 have identical pricing rows.
+    model_info:
+      max_input_tokens: 1000000
+      input_cost_per_token: 0.0000014
+      cache_read_input_token_cost: 0.00000026
+      output_cost_per_token: 0.0000044
+  # Same reused-id collision and silent SpendLogs skip_duplicates failure mode.
   - model_name: ollama-cloud/glm-5.2
     litellm_params:
-      model: openai/glm-5.2
-      api_base: os.environ/OLLAMA_CLOUD_API_BASE
+      model: ollama_chat/glm-5.2
+      api_base: https://ollama.com  # Native /api/chat endpoint; intentionally no /v1.
       api_key: os.environ/OLLAMA_CLOUD_API_KEY
+    # Pricing as of 2026-10-17, ollama.com/pricing, per the plan §1.2 — re-verify on upgrade.
+    # Same prices as glm-5.3; the two Ollama pricing rows are identical.
+    model_info:
+      input_cost_per_token: 0.0000014
+      cache_read_input_token_cost: 0.00000026
+      output_cost_per_token: 0.0000044
+    # TODO: repository docs do not verify a glm-5.2 context limit; do not guess.
+  - model_name: ollama-cloud/glm-5.3-flash
+    # ROLE: default — cheaper per typical input-dominated agent turn.
+    litellm_params:
+      model: ollama_chat/glm-5.3-flash
+      api_base: https://ollama.com  # Native /api/chat endpoint; intentionally no /v1.
+      api_key: os.environ/OLLAMA_CLOUD_API_KEY
+    # Pricing as of 2026-10-17, ollama.com/pricing, per 1M tokens.
+    model_info:
+      max_input_tokens: 1000000
+      input_cost_per_token: 0.00000015
+      cache_read_input_token_cost: 0.00000003
+      output_cost_per_token: 0.0000005
+  - model_name: ollama-cloud/nemotron-3-super
+    # ROLE: background and cron — near-zero input cost; not for real work.
+    litellm_params:
+      model: ollama_chat/nemotron-3-super
+      api_base: https://ollama.com  # Native /api/chat endpoint; intentionally no /v1.
+      api_key: os.environ/OLLAMA_CLOUD_API_KEY
+    # Pricing as of 2026-10-17, ollama.com/pricing, per 1M tokens.
+    model_info:
+      input_cost_per_token: 0.000000015
+      cache_read_input_token_cost: 0.000000015
+      output_cost_per_token: 0.0000006
+    # TODO: repository docs do not verify a context limit; do not guess.
+  - model_name: ollama-cloud/deepseek-v4.1-flash
+    # ROLE: fallback — cheapest cached input; half price off-peak upstream.
+    litellm_params:
+      model: ollama_chat/deepseek-v4.1-flash
+      api_base: https://ollama.com  # Native /api/chat endpoint; intentionally no /v1.
+      api_key: os.environ/OLLAMA_CLOUD_API_KEY
+    # Pricing as of 2026-10-17, ollama.com/pricing, per 1M tokens.
+    # Off-peak pricing row also exists upstream; no off-peak variant is configured.
+    model_info:
+      input_cost_per_token: 0.0000003
+      cache_read_input_token_cost: 0.000000006
+      output_cost_per_token: 0.0000012
+    # TODO: repository docs do not verify a context limit; do not guess.
   # Wildcard pass-through (mirrors the origin fleet's gateway shape): routes any other
   # model name to Ollama Cloud's OpenAI-compatible /v1 endpoint. It ROUTES but
   # cannot failover — never list "*" as a fallback target (j9f).
@@ -60,8 +115,9 @@ model_list:
 
 router_settings:
   fallbacks:
-    # glm <-> glm cross-failover between the two explicit groups above.
-    - ollama-cloud/glm-5.3: ["ollama-cloud/glm-5.2"]
+    # Default lane escalates to glm-5.2, then heavy glm-5.3, then terminal deepseek fallback.
+    - ollama-cloud/glm-5.3-flash: ["ollama-cloud/glm-5.2", "ollama-cloud/glm-5.3", "ollama-cloud/deepseek-v4.1-flash"]
+    # glm-5.3 is a standalone heavy lane; glm-5.2 retains its existing recovery target.
     - ollama-cloud/glm-5.2: ["ollama-cloud/glm-5.3"]
     # Future (add with the gw-sonnet lane above):
     # - ollama-cloud/glm-5.3: ["ollama-cloud/glm-5.2", "gw-sonnet"]

@@ -412,3 +412,97 @@ counts, HTTP codes, the recorded row's param_name — **never** key
 values, never the mint response body, never a raw `param_value` blob.
 A probe that cannot be pasted safely has not been filtered enough:
 filter it in the probe (the python one-liners above), not by hand.
+
+## Ollama native routing (SpendLogs preservation)
+
+Ollama Cloud's OpenAI-compatible `/v1` endpoint reuses response IDs from
+`chatcmpl-0` through `chatcmpl-999`. LiteLLM uses the provider response ID
+as the SpendLogs `request_id`; once an ID repeats, `skip_duplicates` silently
+drops the successful SpendLogs row. The request itself succeeds, so the missing
+rows are easy to mistake for low traffic. The two explicit GLM groups therefore
+use LiteLLM's native `ollama_chat` provider at `https://ollama.com` (native
+`/api/chat`, with no `/v1`); the wildcard remains on the existing
+`OLLAMA_CLOUD_API_BASE` `/v1` route for compatibility. Native responses omit
+provider IDs, allowing LiteLLM to mint unique request IDs.
+
+**Native-path trade-offs:** Ollama reports cache hits as
+`prompt_eval_cached_count`, which LiteLLM does not currently map. LiteLLM thus
+shows 0% cached and overstates Ollama cost by about 3–4× even though Ollama
+continues caching. Also, `reasoning_effort` maps to think on/off for non-`gpt-oss`
+models, so low/high effort variants behave alike.
+
+Context limits in `/v1/models` are configuration-dependent: LiteLLM needs
+`model_info.max_input_tokens` for aliases absent from its cost map. The
+`glm-5.3` route declares 1,000,000 tokens. The repository does not verify a
+`glm-5.2` limit, so its value is intentionally omitted pending verification.
+
+**How to verify:** issue successful requests through each explicit route and
+confirm SpendLogs row counts increase per successful request. Prometheus
+request counters provide a fallback comparison if SpendLogs rows appear
+missing; the compose end-to-end smoke remains a CI check.
+
+## Ollama authoritative billing (/api/usage)
+
+LiteLLM's per-model costs provide an estimate, not Ollama's authoritative bill.
+The GLM model pricing verified on 2026-10-17 at [ollama.com/pricing](https://ollama.com/pricing)
+(per million tokens) is:
+
+| Model | Input | Cached input | Output |
+|---|---:|---:|---:|
+| glm-5.3 | $1.40 | $0.26 | $4.40 |
+| glm-5.2 | $1.40 | $0.26 | $4.40 |
+
+The two rows are identical. LiteLLM's corresponding per-token values are
+`input_cost_per_token: 0.0000014`, `cache_read_input_token_cost: 0.00000026`,
+and `output_cost_per_token: 0.0000044`. These are the explicit groups' configured
+prices; wildcard pass-through models are dynamic and have no `model_info`, so
+LiteLLM budgeting treats their cost as $0. That limitation is accepted, not a
+representation of their actual bill.
+
+For the authoritative bill, call `GET https://ollama.com/api/usage` with the
+same Bearer key (`OLLAMA_CLOUD_API_KEY`). The observed response shape, as observed
+with an authenticated call on 2026-10-16: top-level `range` (`"7d"`), `scope`
+(`"self"` — the calling key only), `granularity` (`"day"`), `from`/`until`, a
+`totals` object, and `buckets[]` per UTC day, each with `request_count`,
+`usage_usd`, `input_tokens`, `cached_input_tokens`, and `output_tokens` (the
+current day carries `"partial": true`). Unauthenticated calls return 401.
+
+This endpoint is undocumented upstream and may change; consumers must fail soft.
+Re-probe once with the real key before anything consumes it; that re-probe is a
+4.5-runbook step, and the cross-link into the upgrade runbook lands when the doc
+lanes merge. Run the request inside the gateway container where the key lives so
+the key never leaves that boundary. LiteLLM budgets are approximate (id-based
+accounting and the wildcard $0 gap); Ollama's `/api/usage` endpoint is the
+authoritative bill.
+
+
+## Model lanes and fallback chains
+
+The gateway exposes explicit native `ollama_chat/*` groups for the fleet's
+model lanes. Agent turns are input-dominated (roughly 100 input tokens per
+output token because each turn resends the conversation), so input and cached
+input rates drive typical cost.
+
+| Role | Model | Why |
+|---|---|---|
+| default | `glm-5.3-flash` | ≈9× cheaper per typical turn than `glm-5.3`; 1M context, tools + thinking |
+| heavy reasoning | `glm-5.3` | Best quality; use sparingly |
+| background / cron | `nemotron-3-super` | Near-zero input cost; not for real work |
+| fallback | `deepseek-v4.1-flash` | Cheapest cached input; half price off-peak |
+
+`glm-5.3-flash` falls back in order to `glm-5.2`, then the heavy `glm-5.3`,
+then terminal `deepseek-v4.1-flash`. The background lane and heavy reasoning
+lane stand alone; wildcard pass-through is never a fallback target. All
+fallback targets are explicit model groups. The fallback map is declared in
+`router_settings.fallbacks` in `balena/registrar/litellm-config.yaml`.
+
+Context limits are configured only when verified: `glm-5.3-flash` is declared
+at 1,000,000 tokens. No repository source verifies a limit for
+`nemotron-3-super` or `deepseek-v4.1-flash`, so both omit
+`max_input_tokens` with a TODO rather than guessing. The upstream DeepSeek
+pricing table has an off-peak row, but no off-peak group or variant is
+configured; standard pricing is used.
+
+Deploy e2e AC9's models-list assertion covers `glm-5.3`, `glm-5.2`, and all
+three new groups (`glm-5.3-flash`, `nemotron-3-super`,
+`deepseek-v4.1-flash`).
