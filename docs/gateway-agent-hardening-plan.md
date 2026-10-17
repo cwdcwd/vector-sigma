@@ -67,8 +67,11 @@ and the `"*"` pass-through group routes `openai/*`.
 **Problem:** Hermes reads model metadata from the gateway; when it can't determine the context
 window it falls back to 256K, which shrinks its post-compression context tail. On this baseline
 the listing is non-empty but unhelpful: the `openai/*` pass-through expands to OpenAI's known-model
-catalog (names the agents can't meaningfully use), and on the pinned 1.100.1 the OpenAI-format
-`/v1/models` entries carry no context-window metadata (1.105.1 adds `max_input_tokens` to them).
+catalog (names the agents can't meaningfully use; those rows may carry cost-map metadata), and the
+`ollama-cloud/glm-*` alias groups declare no `model_info` context limits, so their `/v1/models` rows
+can omit `max_input_tokens`. This is configuration-dependent, not version-dependent: LiteLLM fills
+`max_input_tokens` from the cost map or router-configured limits on both 1.100.1 and 1.105.1 — an
+Ollama alias absent from the cost map needs `model_info.max_input_tokens` declared to expose it.
 
 Related pitfall for operators who customise keys: LiteLLM's "all models" grant is the special value
 `all-proxy-models`. A key list containing `"*"` is treated as a wildcard route, and combined with a
