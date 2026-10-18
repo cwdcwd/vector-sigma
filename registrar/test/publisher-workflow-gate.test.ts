@@ -347,3 +347,97 @@ describe('publisher workflow graph: CI loads the gate module built from registra
     expect(() => readFileSync(scriptPath, 'utf8')).not.toThrow();
   });
 });
+
+describe('publisher workflow steps: shape invariants that catch YAML parse-time breakage', () => {
+  // GitHub Actions rejects a workflow file at parse time when a step carries
+  // both run: and uses: — a failure mode naive YAML-parsing tests miss,
+  // because the malformed nesting is legal YAML. This pins the shape so the
+  // next tag cut cannot inherit it (1py.r3v review finding 1-2).
+  for (const wf of WORKFLOWS) {
+    it(`${wf}: every step in every job carries at most one of run/uses`, () => {
+      const doc = loadWf(wf);
+      for (const [jobId, job] of Object.entries(doc.jobs)) {
+        const steps = Array.isArray(job.steps) ? job.steps : [];
+        steps.forEach((step, i) => {
+          const hasRun = typeof step.run === 'string';
+          const hasUses = typeof step.uses === 'string';
+          expect(
+            hasRun && hasUses,
+            `${wf}#${jobId} step ${i + 1} (${String(step.name ?? step.uses ?? '?')}): run and uses are mutually exclusive`,
+          ).toBe(false);
+        });
+      }
+    });
+  }
+
+  // An unterminated double quote inside a run: block grafts the following
+  // YAML into a single scalar — legal YAML, but the step's shell script is
+  // truncated and the next steps are never emitted. Two guards: every
+  // --component ledger pin must be a fully-quoted assignment (raw line
+  // check — the parsed view cannot see where a grafted scalar ends), and
+  // every run: block must carry an even double-quote count end-to-end
+  // (line-level counts would false-positive on multi-line node -e '
+  // payloads whose interior lines legitimately open quotes).
+  for (const wf of ['.github/workflows/release-registrar.yml', '.github/workflows/release-devices.yml']) {
+    it(`${wf}: every --component ledger pin is a fully-quoted assignment on its own line`, () => {
+      const raw = read(wf);
+      const componentLines = raw.split('\n').map((line, i) => [i + 1, line] as const).filter(([, line]) =>
+        /^\s*--component\s/.test(line),
+      );
+      expect(componentLines.length, `${wf}: expected ledger component pins`).toBeGreaterThan(0);
+      for (const [n, rawLine] of componentLines) {
+        const line = rawLine.trimEnd();
+        expect(
+          line,
+          `${wf} line ${n}: --component pin must close its double-quoted value before the line end (unterminated quote grafts the following YAML into one scalar)`,
+        ).toMatch(/^\s*--component\s+.*"\s*(?:\\)?$/);
+      }
+    });
+
+    it(`${wf}: every run: block has an even double-quote count across the whole block`, () => {
+      const doc = loadWf(wf);
+      for (const [jobId, job] of Object.entries(doc.jobs)) {
+        const steps = Array.isArray(job.steps) ? job.steps : [];
+        steps.forEach((step) => {
+          if (typeof step.run !== 'string') return;
+          const quotes = (step.run.match(/"/g) ?? []).length;
+          expect(
+            quotes % 2,
+            `${wf}#${jobId} step "${String(step.name)}": block carries ${quotes} unpaired double quotes (unterminated quote grafts subsequent YAML into this scalar)`,
+          ).toBe(0);
+        });
+      }
+    });
+  }
+
+  // The evidence-ledger rollback artifact must name exactly the components
+  // the release promotes: pin the ledger's --component list to the promote
+  // matrix (thanosbot's review note on #83).
+  for (const wf of ['.github/workflows/release-registrar.yml', '.github/workflows/release-devices.yml']) {
+    it(`${wf}: release-evidence ledger --component list equals the promote matrices' component set`, () => {
+      const doc = loadWf(wf);
+      const matrixSets = new Set<string>();
+      for (const job of Object.values(doc.jobs)) {
+        const comps = job?.strategy?.matrix?.component as string[] | string | undefined;
+        if (Array.isArray(comps)) comps.forEach((c) => matrixSets.add(String(c)));
+        else if (typeof comps === 'string') comps.split(',').forEach((c) => matrixSets.add(c.trim()));
+      }
+      expect(matrixSets.size, `${wf}: expected a non-empty component matrix`).toBeGreaterThan(0);
+      const expected = [...matrixSets].sort();
+
+      const ledgerSteps = Object.values(doc.jobs).flatMap((job) =>
+        ([] as Array<Record<string, unknown>>)
+          .concat(Array.isArray(job.steps) ? (job.steps as Array<Record<string, unknown>>) : [])
+          .filter((step) => typeof step.run === 'string' && /ghcr-promote-run\.mjs ledger/.test(step.run as string)),
+      );
+      expect(ledgerSteps.length, `${wf}: exactly one release-evidence ledger step expected`).toBe(1);
+      const found: string[] = [];
+      for (const match of (ledgerSteps[0].run as string).matchAll(/--component\s+([^=\s]+)=/g)) {
+        found.push(match[1]);
+      }
+      expect(found.sort(), `${wf}: ledger --component list must pin the promote component matrix exactly`).toEqual(
+        expected,
+      );
+    });
+  }
+});

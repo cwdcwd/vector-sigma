@@ -26,6 +26,10 @@
 //       --repo vector-sigma --sha <full 40-char commit> --out <dir>
 //   node scripts/render-release-compose.mjs --app registrar --registry-owner cwdcwd \
 //       --repo vector-sigma --sha <sha> --check     (offline validation)
+//   node scripts/render-release-compose.mjs --app registrar --registry-owner cwdcwd \
+//       --repo vector-sigma --records-dir <dir of promoted-<component>.json> --out <dir>
+//       (digest handoff: pin from the verified promotion records the exact-byte
+//        promote job wrote; no tag/daemon resolution happens at all)
 //
 // Digests resolve from the local docker daemon when available (CI logs into
 // GHCR first), else via anonymous registry tokens (public images only).
@@ -56,6 +60,8 @@ function parseArgs(argv) {
     else if (a.startsWith('--sha=')) out.sha = a.slice(6);
     else if (a === '--out') out.out = argv[++i];
     else if (a.startsWith('--out=')) out.out = a.slice(6);
+    else if (a === '--records-dir') out.recordsDir = argv[++i];
+    else if (a.startsWith('--records-dir=')) out.recordsDir = a.slice(14);
     else if (a === '--help' || a === '-h') out.help = true;
     else { console.error(`render-release-compose: unknown argument ${a}`); out.help = true; }
   }
@@ -64,8 +70,8 @@ function parseArgs(argv) {
 
 const args = parseArgs(process.argv.slice(2));
 
-if (args.help || !args.app || !args.registryOwner || !args.repo || (!args.check && !args.sha)) {
-  console.error(`Usage: node scripts/render-release-compose.mjs --app <registrar|devices> --registry-owner <owner> --repo <repo> [--sha <40-char commit>] [--out <dir>] [--check]`);
+if (args.help || !args.app || !args.registryOwner || !args.repo || (!args.check && !args.sha && !args.recordsDir)) {
+  console.error(`Usage: node scripts/render-release-compose.mjs --app <registrar|devices> --registry-owner <owner> --repo <repo> [--sha <40-char commit>] [--records-dir <dir with promoted-<component>.json promotion records>] [--out <dir>] [--check]`);
   process.exit(args.help && args.app && args.registryOwner && args.repo ? 0 : 1);
 }
 
@@ -162,6 +168,55 @@ async function arm64DigestViaRegistry(owner, repo, component, tag) {
   return arm.digest;
 }
 
+// ─── promotion-record ingestion (r3v digest handoff) ───────────────────────
+// The renderer used to resolve the arm64 child digest itself — from the
+// docker daemon or the registry API — by WHATEVER the mutable `<sha>` tag
+// pointed at at render time. The exact-byte promotion job already verified
+// every byte and wrote a promotion record (promoted-<component>.json) with
+// the index + per-arch digests it actually pushed. When --records-dir is
+// supplied the renderer pins FROM THOSE RECORDS and resolves nothing: the
+// released compose is pinned to the exact digests verify-remote re-fetched,
+// not to another lookup that could drift. Fail closed on any malformed or
+// missing record — a release that cannot be tied to a promotion record
+// cannot be rendered from records.
+const SHA256_RE = /^sha256:[0-9a-f]{64}$/;
+
+function loadPromotionRecords(recordsDir, map, registryOwner, repo) {
+  if (!existsSync(recordsDir)) fail(`--records-dir ${recordsDir} does not exist`);
+  const records = new Map();
+  const components = [...new Set(Object.values(map))].filter((c) => c !== null);
+  for (const component of components) {
+    const path_ = path.join(recordsDir, `promoted-${component}.json`);
+    if (!existsSync(path_)) fail(`promotion record missing: ${path_} — refusing to render ${component} without a verified promotion record`);
+    let rec;
+    try {
+      rec = JSON.parse(readFileSync(path_, 'utf8'));
+    } catch (e) {
+      fail(`promotion record ${path_} is not valid JSON: ${e.message}`);
+    }
+    const expectedRepo = `${registryOwner}/${repo}/${component}`;
+    if (rec.repository !== expectedRepo) {
+      fail(`promotion record ${path_}: repository ${JSON.stringify(rec.repository)} does not match the expected ${JSON.stringify(expectedRepo)}`);
+    }
+    if (rec.registry !== 'ghcr.io') {
+      fail(`promotion record ${path_}: registry ${JSON.stringify(rec.registry)} is not ghcr.io`);
+    }
+    if (!rec.index || typeof rec.index.tag !== 'string' || !SHA256_RE.test(rec.index.digest ?? '')) {
+      fail(`promotion record ${path_}: index entry missing or its digest is not a sha256:... digest`);
+    }
+    const platforms = Array.isArray(rec.perPlatform) ? rec.perPlatform : [];
+    const wanted = { 'linux/amd64': null, 'linux/arm64': null };
+    for (const p of platforms) {
+      if (p && (p.platform in wanted) && SHA256_RE.test(p.digest ?? '')) wanted[p.platform] = p.digest;
+    }
+    for (const [platform, digest] of Object.entries(wanted)) {
+      if (!digest) fail(`promotion record ${path_}: no verified linux/${platform.split('/')[1]} child digest`);
+    }
+    records.set(component, { repository: expectedRepo, tag: rec.index.tag, indexDigest: rec.index.digest, arm64Digest: wanted['linux/arm64'], amd64Digest: wanted['linux/amd64'] });
+  }
+  return records;
+}
+
 // ─── main ───────────────────────────────────────────────────────────────────
 async function main() {
   const app = args.app;
@@ -207,25 +262,41 @@ async function main() {
     process.exit(0);
   }
 
-  const useDocker = haveDocker();
+  const useDocker = haveDocker() && !args.recordsDir;
+  const records = args.recordsDir ? loadPromotionRecords(args.recordsDir, map, args.registryOwner, args.repo) : null;
   const rendered = structuredClone(parsed);
-  const provenance = { app, commit: args.sha, renderedAt: new Date().toISOString(), images: {} };
+  const provenance = {
+    app,
+    ...(args.sha ? { commit: args.sha } : {}),
+    ...(records ? { digestSource: 'promotion-records', recordsDir: args.recordsDir } : { digestSource: useDocker ? 'docker-daemon' : 'registry-api' }),
+    renderedAt: new Date().toISOString(),
+    images: {},
+  };
 
   for (const [svc, component] of Object.entries(map)) {
     if (component === null) continue;
     const imageBase = `ghcr.io/${args.registryOwner}/${args.repo}/${component}`;
-    const tagged = `${imageBase}:${args.sha}`;
     let digest;
-    if (useDocker) {
-      digest = arm64DigestViaDocker(tagged);
+    let entry;
+    if (records) {
+      const rec = records.get(component);
+      digest = rec.arm64Digest;
+      entry = { component, promotedRepository: rec.repository, promotedTag: rec.tag, indexDigest: rec.indexDigest, arm64Digest: digest, image: '', source: 'promotion-record' };
     } else {
-      digest = await arm64DigestViaRegistry(args.registryOwner, args.repo, component, args.sha);
+      const tagged = `${imageBase}:${args.sha}`;
+      if (useDocker) {
+        digest = arm64DigestViaDocker(tagged);
+      } else {
+        digest = await arm64DigestViaRegistry(args.registryOwner, args.repo, component, args.sha);
+      }
+      entry = { component, ghcrTag: tagged, arm64Digest: digest, image: '', source: useDocker ? 'docker-daemon' : 'registry-api' };
     }
     const svcDef = rendered.services[svc];
     svcDef.image = `${imageBase}@${digest}`;
     delete svcDef.build;
-    provenance.images[svc] = { component, ghcrTag: tagged, arm64Digest: digest, image: svcDef.image };
-    console.log(`render: ${app}/${svc} -> ${svcDef.image}`);
+    entry.image = svcDef.image;
+    provenance.images[svc] = entry;
+    console.log(`render: ${app}/${svc} -> ${svcDef.image}${records ? ' (from promotion record)' : ''}`);
   }
 
   const text = stringifyYaml(rendered);
@@ -249,7 +320,7 @@ async function main() {
   writeFileSync(provPath, JSON.stringify(provenance, null, 2) + '\n');
   console.log(`render: wrote ${outPath}`);
   console.log(`render: wrote ${provPath}`);
-  console.log(`render: summary — app=${app} commit=${args.sha} services=${Object.keys(provenance.images).length} resolution=${useDocker ? 'docker-daemon' : 'registry-api'}`);
+  console.log(`render: summary — app=${app}${args.sha ? ` commit=${args.sha}` : ''} services=${Object.keys(provenance.images).length} resolution=${records ? 'promotion-records' : (useDocker ? 'docker-daemon' : 'registry-api')}`);
 }
 
 main().catch((e) => {

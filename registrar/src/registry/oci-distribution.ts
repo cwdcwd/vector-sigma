@@ -110,7 +110,21 @@ export class OciDistributionClient {
     if (!location) {
       throw new RegistryClientError(post.status, `blob upload session for ${digest}: registry returned no Location header`);
     }
-    const uploadUrl = new URL(location, this.origin).toString();
+    // Origin pin (r3v, thanos review note on #62): the upload session's
+    // Location is registry-controlled, so a hostile or misconfigured
+    // registry could hand back a Location on a different host and have the
+    // bearer-authenticated PUT (and the raw bytes) go there. Fail closed:
+    // resolve the Location against THIS client's configured origin and
+    // refuse any redirect to another origin. The PUT below is derived from
+    // this pinned-origin URL, so no other host ever sees the byte payload.
+    const fromLocation = new URL(location, this.origin);
+    if (fromLocation.origin !== this.origin) {
+      throw new RegistryClientError(
+        post.status,
+        `blob upload session for ${digest}: registry Location ${fromLocation.origin} is outside the configured registry origin ${this.origin}`,
+      );
+    }
+    const uploadUrl = fromLocation.toString();
     const withDigest = new URL(uploadUrl);
     withDigest.searchParams.set('digest', digest);
 
