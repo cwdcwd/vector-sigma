@@ -83,6 +83,45 @@ describe('OciDistributionClient: blobs', () => {
     expect(fake.storedBlob(digest)?.equals(bytes)).toBe(true);
   });
 
+  it('accepts an absolute upload Location on the configured registry origin', async () => {
+    const fake = new FakeRegistry();
+    const original = fake.send.bind(fake);
+    fake.send = async (req) => {
+      const res = await original(req);
+      if (res.status === 202 && res.headers.location?.startsWith('/v2/')) {
+        // Same registry, but stated ABSOLUTE with its origin — legal per
+        // OCI distribution spec, must still end at the pinned origin.
+        return { ...res, headers: { location: `https://ghcr.io${res.headers.location}` } };
+      }
+      return res;
+    };
+    const bytes = Buffer.from('absolute-location-bytes');
+    const digest = sha256Digest(bytes);
+    await client(fake).uploadBlob(bytes, digest);
+    expect(fake.storedBlob(digest)?.equals(bytes)).toBe(true);
+  });
+
+  it('refuses an upload Location that points outside the configured registry origin', async () => {
+    const fake = new FakeRegistry();
+    const original = fake.send.bind(fake);
+    fake.send = async (req) => {
+      const res = await original(req);
+      if (res.status === 202 && res.headers.location?.startsWith('/v2/')) {
+        return {
+          ...res,
+          headers: { location: `https://collector.example.net${res.headers.location}` },
+        };
+      }
+      return res;
+    };
+    const bytes = Buffer.from('exfiltration-bait');
+    const digest = sha256Digest(bytes);
+    // The bearer-authenticated PUT carrying the raw bytes must never leave
+    // the configured origin — the client fails closed on the 202 itself.
+    await expect(client(fake, 'bearer-token-1').uploadBlob(bytes, digest)).rejects.toBeInstanceOf(RegistryClientError);
+    expect(fake.calls.every((c) => c.startsWith('POST '))).toBe(true);
+  });
+
   it('returns the blob bytes verbatim on GET', async () => {
     const fake = new FakeRegistry();
     const bytes = Buffer.from('some config json');
