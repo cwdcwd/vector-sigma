@@ -121,9 +121,17 @@ describe('release workflows: tag-cut blocker classes (findings 1-2)', () => {
     for (const wf of WORKFLOWS) {
       const app = appFor[wf];
       const text = read(wf);
-      expect(text, `${wf} smokes the ${app} app`).toContain(`scripts/release-smoke.sh cwdcwd/vector-sigma \${{ github.sha }} ${app}`);
+      // fleet-ops-r3v: the smoke MUST run digest-pinned to the promotion
+      // records (arg 4) — not against whatever the mutable <sha> tag
+      // resolves to at smoke time.
+      expect(text, `${wf} smokes the ${app} app digest-pinned to promotion records`).toContain(
+        `scripts/release-smoke.sh cwdcwd/vector-sigma "\${GITHUB_SHA}" ${app} "\${RUNNER_TEMP}/records"`,
+      );
       expect(text, `${wf} smoke step names the ${app} components`).toContain(
-        `Boot-path smoke (${app} app components)`,
+        `Boot-path smoke (${app} app components; digest-pinned to promotion records)`,
+      );
+      expect(text, `${wf} smoke downloads promotion records before running`).toContain(
+        'pattern: promoted-*',
       );
     }
   });

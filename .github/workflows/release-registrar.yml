@@ -375,6 +375,53 @@ jobs:
             --registry ghcr.io \
             --record "${{ runner.temp }}/promoted-${{ matrix.component }}.json"
 
+  # r3v: ONE deterministic rollback ledger for the whole run — collated from
+  # the verified promotion records only (no registry I/O, no credentials).
+  # This is the artifact the rollback runbook cites: exact index + per-arch
+  # digests per component, re-renderable without resolving any mutable tag.
+  release-evidence:
+    name: Release-evidence ledger (rollback)
+    needs: verify-remote
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install gate runtime deps
+        run: npm ci --silent
+      - name: Build (typecheck) so the ledger validator dist/ exists
+        run: npm run build --silent
+      - name: Download every promotion record
+        uses: actions/download-artifact@v4
+        with:
+          pattern: promoted-*
+          path: ${{ runner.temp }}/records
+          merge-multiple: true
+      - name: Collate the release-evidence ledger
+        run: |
+          set -euo pipefail
+          node scripts/ghcr-promote-run.mjs ledger \
+            --out release-evidence/release-evidence.json \
+            --commit "${GITHUB_SHA}" \
+            --ref "${GITHUB_REF_NAME}" \
+            --run-id "${GITHUB_RUN_ID}" \
+            --actor "${GITHUB_ACTOR}" \
+            --component registrar="${RUNNER_TEMP}/records/promoted-registrar.json" \
+            --component registrant="${RUNNER_TEMP}/records/promoted-registrant.json" \
+            --component scotty="${RUNNER_TEMP}/records/promoted-scotty.json" \
+            --component hermes="${RUNNER_TEMP}/records/promoted-hermes.json" \
+            --component postgres="${RUNNER_TEMP}/records/promoted-postgres.json" \
+            --component litellm="${RUNNER_TEMP}/records/promoted-litellm.json" \
+            --component tailscale="${RUNNER_TEMP}/records/promoted-tailscale.json
+      - name: Upload the release-evidence ledger (rollback artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-evidence
+          path: release-evidence/release-evidence.json
+          retention-days: 90
   scan:
     name: Vulnerability gate (trivy CRITICAL,HIGH)
     needs: verify-remote
@@ -393,10 +440,38 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Scan ${{ matrix.component }}:${{ github.sha }}
+      - name: Download promotion records (r3v digest handoff)
+        uses: actions/download-artifact@v4
+        with:
+          name: promoted-${{ matrix.component }}
+          path: ${{ runner.temp }}/records
+      - name: Resolve the promoted child digests from the record
+        run: |
+          set -euo pipefail
+          RECORD="${{ runner.temp }}/records/promoted-${{ matrix.component }}.json"
+          DIGESTS="$(node -e '
+          const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));
+          const d=(p)=>(r.perPlatform||[]).find(x=>x&&x.platform===p)?.digest;
+          const ok=(s)=>typeof s==="string"&&/^sha256:[0-9a-f]{64}$/.test(s);
+          const amd=d("linux/amd64"), arm=d("linux/arm64");
+          if(!ok(amd)||!ok(arm)) throw new Error("promoted record lacks verified amd64/arm64 child digests");
+          console.log(amd+" "+arm);
+          ' "$RECORD")"
+          printf 'AMD64_DIGEST=%s\nARM64_DIGEST=%s\n' "${DIGESTS%% *}" "${DIGESTS##* }" >> "$GITHUB_ENV"
+      - name: Scan the PROMOTED amd64 child bytes
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: ghcr.io/${{ env.REGISTRY_NS }}/${{ matrix.component }}:${{ github.sha }}
+          image-ref: ghcr.io/${{ env.REGISTRY_NS }}/${{ matrix.component }}@${{ env.AMD64_DIGEST }}
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+          skip-setup-trivy: false
+      - name: Scan the PROMOTED arm64 child bytes
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ghcr.io/${{ env.REGISTRY_NS }}/${{ matrix.component }}@${{ env.ARM64_DIGEST }}
           format: table
           exit-code: "1"
           ignore-unfixed: true
@@ -419,8 +494,14 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Boot-path smoke (registrar app components)
-        run: scripts/release-smoke.sh cwdcwd/vector-sigma ${{ github.sha }} registrar
+      - name: Download promotion records (r3v digest handoff)
+        uses: actions/download-artifact@v4
+        with:
+          pattern: promoted-*
+          path: ${{ runner.temp }}/records
+          merge-multiple: true
+      - name: Boot-path smoke (registrar app components; digest-pinned to promotion records)
+        run: scripts/release-smoke.sh cwdcwd/vector-sigma "${GITHUB_SHA}" registrar "${RUNNER_TEMP}/records"
 
   render:
     name: Render digest-pinned compose
@@ -445,11 +526,21 @@ jobs:
       - name: Render balena/registrar digest-pinned compose
         run: |
           set -euo pipefail
+                - name: Download promotion records (r3v digest handoff)
+        uses: actions/download-artifact@v4
+        with:
+          pattern: promoted-*
+          path: ${{ runner.temp }}/records
+          merge-multiple: true
+      - name: Render balena digest-pinned compose pinned FROM the promotion records
+        run: |
+          set -euo pipefail
           node scripts/render-release-compose.mjs \
             --app registrar \
             --registry-owner cwdcwd \
             --repo vector-sigma \
             --sha "$GITHUB_SHA" \
+            --records-dir "${RUNNER_TEMP}/records" \
             --out release/registrar
           echo "=== rendered compose ==="
           cat release/registrar/docker-compose.yml

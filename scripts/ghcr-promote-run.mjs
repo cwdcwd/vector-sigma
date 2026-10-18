@@ -26,17 +26,26 @@
 //     closed on any difference. Runs with no credentials for a public
 //     package, so nothing about this check depends on the writer.
 //
+//   ledger   --out <path> --commit <sha> --ref <name> --run-id <id>
+//            [--actor <u>] [--generated-at <iso>]
+//            --component <name>=<record.json> [...]
+//     Collates this run's verified promotion records into ONE
+//     release-evidence.json (the rollback ledger). Fails closed on any
+//     malformed record or a zero-component call. No registry I/O.
+//
 // --scheme exists ONLY so scripts/ghcr-promote-run.integration.test.ts can
 // point the real script at a local `http` socket; production omits it and
 // gets `https`.
 //
 // Exit code: 0 on success, 1 on any failure (fail-closed).
-import { readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
 import process from 'node:process';
 import { createFetchTransport } from '@vector-sigma/registrar/dist/registry/fetch-transport.js';
 import { fetchRegistryToken } from '@vector-sigma/registrar/dist/registry/auth.js';
 import { promoteComponent, PromotionError } from '@vector-sigma/registrar/dist/registry/promote.js';
 import { verifyRemote, VerifyRemoteError } from '@vector-sigma/registrar/dist/registry/verify-remote.js';
+import { buildReleaseEvidence, parsePromotionRecord, ReleaseEvidenceError } from '@vector-sigma/registrar/dist/registry/release-evidence.js';
 
 function fail(msg) {
   console.error(`::error::ghcr-promote-run: ${msg}`);
@@ -188,9 +197,63 @@ async function runVerify(args) {
   }
 }
 
+/**
+ * Ledger subcommand (fleet-ops-r3v): collate the run's verified promotion
+ * records into one release-evidence.json rollback ledger. Reads ONLY the
+ * record files the promote jobs wrote — no registry I/O, no credentials —
+ * and fails closed on any malformed record via the registrar's own
+ * parsePromotionRecord/buildReleaseEvidence validators.
+ */
+function runLedger(argv) {
+  const outPath = argVal(argv, '--out');
+  const commit = argVal(argv, '--commit');
+  const refName = argVal(argv, '--ref');
+  const runId = argVal(argv, '--run-id');
+  const actor = argVal(argv, '--actor');
+  const generatedAt = argVal(argv, '--generated-at');
+  const componentArgs = argAll(argv, '--component');
+  if (!outPath || !commit || !refName || !runId || componentArgs.length === 0) {
+    fail('ledger requires --out <path> --commit <sha> --ref <name> --run-id <id> --component <name>=<record.json> [...]');
+  }
+  const records = new Map();
+  for (const spec of componentArgs) {
+    const eq = spec.indexOf('=');
+    if (eq === -1) fail(`malformed --component "${spec}" (expected <name>=<record.json>)`);
+    const name = spec.slice(0, eq);
+    const recordPath = spec.slice(eq + 1);
+    let raw;
+    try {
+      raw = JSON.parse(readFileSync(recordPath, 'utf8'));
+    } catch (err) {
+      fail(`cannot read promotion record "${recordPath}" for component ${name}: ${err.message}`);
+    }
+    try {
+      records.set(name, parsePromotionRecord(name, raw));
+    } catch (err) {
+      if (err instanceof ReleaseEvidenceError) fail(`promotion record REJECTED for ${name} [${err.code}]: ${err.message}`);
+      throw err;
+    }
+  }
+  let evidence;
+  try {
+    evidence = buildReleaseEvidence(
+      { commit, refName, runId, ...(actor ? { actor } : {}), ...(generatedAt ? { generatedAt } : {}) },
+      records,
+    );
+  } catch (err) {
+    if (err instanceof ReleaseEvidenceError) fail(`release evidence REJECTED [${err.code}]: ${err.message}`);
+    throw err;
+  }
+  mkdirSync(path.dirname(outPath), { recursive: true });
+  writeFileSync(outPath, `${JSON.stringify(evidence, null, 2)}\n`);
+  console.log(
+    `ghcr-promote-run: ledged ${records.size} component(s) into ${outPath} — content ${evidence.contentDigest}`,
+  );
+}
+
 const [, , cmd, ...rest] = process.argv;
-const runner = cmd === 'promote' ? runPromote : cmd === 'verify' ? runVerify : null;
+const runner = cmd === 'promote' ? runPromote : cmd === 'verify' ? runVerify : cmd === 'ledger' ? runLedger : null;
 if (!runner) {
-  fail(`unknown subcommand "${cmd ?? ''}" — expected "promote" or "verify"`);
+  fail(`unknown subcommand "${cmd ?? ''}" — expected "promote", "verify", or "ledger"`);
 }
 await runner(rest);
