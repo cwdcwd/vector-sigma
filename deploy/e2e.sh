@@ -719,6 +719,235 @@ ac9b_litellm_db_smoke() {
   fi
 }
 
+# fleet-ops-1py.17 review regression: stored spend-log request bodies must
+# redact credential-named values. Behavior verified against the pinned
+# upstream v1.105.1 sources:
+#   - litellm/proxy/spend_tracking/spend_tracking_utils.py: SpendLogs rows
+#     store the proxy request body only when
+#     general_settings.store_prompts_in_spend_logs (or env
+#     STORE_PROMPTS_IN_SPEND_LOGS) is true — default off. The probe toggles
+#     it in this disposable E2E database only and always restores it.
+#   - The stored body passes through _sanitize_request_body_for_spend_logs_
+#     payload(): every string value under a credential-classified key is
+#     replaced, at any nesting depth, with the REDACTED_BY_LITELLM_STRING
+#     sentinel (litellm/constants.py: "REDACTED_BY_LITELLM"), and
+#     "secret_fields" (raw captured headers) is dropped entirely. This
+#     masking is unconditional — it does not depend on the prompt-storage
+#     flag.
+#   - The probe's completion is a local mock (mock_response) against an
+#     explicitly-configured model group: no provider/upstream traffic
+#     involves the wildcard, and no real credential is ever used — only
+#     synthetic canaries. Neither the request nor the stored body is
+#     printed.
+ac9c_litellm_spend_log_redaction() {
+  note "AC9c: LiteLLM spend-log request-body credential redaction (upstream #43635 behavior)"
+  local base="$GATEWAY_LB"
+  local call_id="e2e-redaction-$(date +%s)-$$"
+  local request_body=/tmp/e2e-ac9c-redaction-request.json
+  local row_body=/tmp/e2e-ac9c-redaction-row.json
+  local list_body=/tmp/e2e-ac9c-redaction-list.json
+  local status lookup_status config_status
+  local master
+  master="$(grep -E '^LITELLM_MASTER_KEY=' "$ENV_FILE" | cut -d= -f2-)"
+  if [ -z "$master" ]; then
+    fail AC9c "LITELLM_MASTER_KEY missing from $ENV_FILE"
+    return
+  fi
+
+  # Prompt storage is off by default. The probe is the only in-battery caller
+  # that needs it; restore it on every exit path. A failed restore is itself
+  # a hard failure so the disposable DB is never left behind on a changed
+  # setting.
+  ac9c_restore_prompt_storage() {
+    config_status="$(curl -s -o /dev/null -w '%{http_code}' -m 30 \
+        -X POST "$base/config/update" \
+        -H "Authorization: Bearer $master" \
+        -H 'Content-Type: application/json' \
+        -d '{"general_settings":{"store_prompts_in_spend_logs":false}}' 2>/dev/null || true)"
+    if [ "$config_status" != "200" ]; then
+      fail AC9c "could not restore store_prompts_in_spend_logs=false in the disposable E2E DB (HTTP ${config_status:-none})"
+    else
+      pass AC9c "prompt storage restored" "disposable E2E config returned to store_prompts_in_spend_logs=false"
+    fi
+  }
+
+  config_status="$(curl -s -o /dev/null -w '%{http_code}' -m 30 \
+      -X POST "$base/config/update" \
+      -H "Authorization: Bearer $master" \
+      -H 'Content-Type: application/json' \
+      -d '{"general_settings":{"store_prompts_in_spend_logs":true}}' 2>/dev/null || true)"
+  if [ "$config_status" != "200" ]; then
+    fail AC9c "could not enable prompt storage for the redaction probe (HTTP ${config_status:-none})"
+    return
+  fi
+
+  # Synthetic canaries only, body written without echoing it. An extra auth
+  # header rides in extra_headers so the stored-header path is covered too:
+  # "secret_fields" (captured raw headers) is dropped outright by the
+  # sanitizer, while a body-embedded Authorization value is masked.
+  node -e '
+    const fs = require("fs");
+    const body = {
+      model: "ollama-cloud/glm-5.3",
+      messages: [{ role: "user", content: "synthetic redaction probe (AC9c)" }],
+      mock_response: "e2e mock completion — no upstream call",
+      aws_access_key_id: "AKIACANARY_E2E_ONLY",
+      aws_secret_access_key: "SECRETCANARY_E2E_ONLY",
+      aws_session_token: "TOKENCANARY_E2E_ONLY",
+      extra_body: { client_secret: "NESTEDCANARY_E2E_ONLY" },
+      extra_headers: { Authorization: "Bearer HEADERCANARY_E2E_ONLY" }
+    };
+    fs.writeFileSync(process.argv[1], JSON.stringify(body), { mode: 0o600 });
+  ' "$request_body" || {
+    fail AC9c "could not prepare synthetic request"
+    ac9c_restore_prompt_storage
+    rm -f "$request_body" "$row_body" "$list_body"
+    return
+  }
+
+  status="$(curl -s -o "$row_body" -w '%{http_code}' -m 30 \
+      -X POST "$base/v1/chat/completions" \
+      -H "Authorization: Bearer $master" \
+      -H "x-litellm-call-id: $call_id" \
+      -H 'Content-Type: application/json' \
+      --data-binary "@$request_body" 2>/dev/null || true)"
+  if [ "$status" != "200" ]; then
+    fail AC9c "mock completion returned HTTP ${status:-none}; expected 200 — request suppressed"
+    ac9c_restore_prompt_storage
+    rm -f "$request_body" "$row_body" "$list_body"
+    return
+  fi
+  pass "AC9c mock completion" "explicit model group served by mock_response (HTTP 200); no upstream/provider traffic"
+
+  # The spend row is written by an async logging task: poll before giving up.
+  # Primary lookup rides /spend/logs/ui/<request_id>; if that misses, fall
+  # back to the windowed list endpoint and match the row client-side by call
+  # id. Row status codes and counts are printed for diagnosis; payloads are
+  # never printed.
+  local found=""
+  local i
+  for i in $(seq 1 15); do
+    lookup_status="$(curl -s -o "$row_body" -w '%{http_code}' -m 30 \
+        "$base/spend/logs/ui/$call_id" \
+        -H "Authorization: Bearer $master" 2>/dev/null || true)"
+    if [ "$lookup_status" = "200" ]; then
+      found="ui"
+      break
+    fi
+    sleep 2
+  done
+  if [ -z "$found" ]; then
+    local since until_
+    since="$(date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
+    until_="$(date -u -d '5 minutes' +%Y-%m-%dT%H:%M:%SZ)"
+    for i in $(seq 1 10); do
+      lookup_status="$(curl -s -o "$list_body" -w '%{http_code}' -m 30 \
+          --get "$base/spend/logs" \
+          --data-urlencode "start_date=$since" \
+          --data-urlencode "end_date=$until_" \
+          --data-urlencode "page=1" \
+          -H "Authorization: Bearer $master" 2>/dev/null || true)"
+      if [ "$lookup_status" = "200" ]; then
+        if node -e '
+          const fs = require("fs");
+          const list = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+          const rows = Array.isArray(list.data) ? list.data : (Array.isArray(list) ? list : []);
+          const row = rows.find(r => r && (r.litellm_call_id === process.argv[2] || r.request_id === process.argv[2]));
+          if (!row) process.exit(1);
+          fs.writeFileSync(process.argv[3], JSON.stringify(row), { mode: 0o600 });
+        ' "$list_body" "$call_id" "$row_body" 2>/dev/null; then
+          found="list"
+          break
+        fi
+      fi
+      sleep 2
+    done
+  fi
+  if [ -z "$found" ]; then
+    fail AC9c "spend-log row for the probe call id not found via /spend/logs/ui (last HTTP ${lookup_status:-none}) or the list endpoint"
+    ac9c_restore_prompt_storage
+    rm -f "$request_body" "$row_body" "$list_body"
+    return
+  fi
+  pass "AC9c spend-log row found" "row discovered via the $found endpoint (found by call id; body not printed)"
+
+  # Assertion, computed on the parsed payload only: every canary absent from
+  # ANY string anywhere in the row, and all five credential-named values
+  # exactly the REDACTED_BY_LITELLM sentinel after the sanitizer. Nested
+  # JSON strings (e.g. the request-body column emitted as a string) are
+  # parsed and walked too, bounded. Only the boolean verdict is emitted —
+  # never the payload, canary strings, or auth values.
+  local verdict
+  verdict="$(node -e '
+    const fs = require("fs");
+    const REQUEST = "/tmp/e2e-ac9c-redaction-request.json";
+    let root;
+    try { root = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); }
+    catch { console.log("row_not_json"); process.exit(0); }
+    let expected;
+    try { expected = JSON.parse(fs.readFileSync(REQUEST, "utf8")); } catch { expected = null; }
+    const CREDENTIAL_KEYS = new Set([
+      "aws_access_key_id", "aws_secret_access_key", "aws_session_token",
+      "client_secret", "Authorization"
+    ]);
+    const SENTINEL = "REDACTED_BY_LITELLM";
+    // Credential canaries derive from the request body: credential-named
+    // values only: with prompt storage deliberately ON, the row legitimately
+    // contains model names and prompt strings — only credential values must
+    // be absent.
+    const canaries = [];
+    (function collect(v, parentKey) {
+      if (v === null || v === undefined) return;
+      if (typeof v === "string") {
+        if (CREDENTIAL_KEYS.has(parentKey ?? "")) canaries.push(v);
+        return;
+      }
+      if (Array.isArray(v)) { v.forEach(x => collect(x, parentKey)); return; }
+      if (typeof v === "object") for (const [k, child] of Object.entries(v)) collect(child, k);
+    })(expected ?? {});
+    const found = new Set();
+    let leaked = false;
+    const seen = new Set();
+    function classify(key, value) {
+      if (typeof value !== "string" || !CREDENTIAL_KEYS.has(key)) return;
+      if (value === SENTINEL) found.add(key);
+      else if (canaries.some(c => value.includes(c))) leaked = true;
+    }
+    function walk(value, depth) {
+      if (value === null || value === undefined || seen.has(value)) return;
+      if (depth > 6) return;
+      if (typeof value === "string") {
+        if (canaries.some(c => value.includes(c))) leaked = true;
+        const t = value.trimStart();
+        if ((t.startsWith("{") || t.startsWith("[")) && value.length > 16 && value.length < 200000) {
+          try { walk(JSON.parse(value), depth + 1); } catch { /* plain string */ }
+        }
+        return;
+      }
+      if (typeof value !== "object") return;
+      seen.add(value);
+      for (const [k, v] of Object.entries(value)) {
+        if (typeof v === "string") {
+          if (canaries.some(c => v.includes(c))) leaked = true;
+          classify(k, v);
+        }
+        walk(v, depth + 1);
+      }
+    }
+    walk(root, 0);
+    const missing = [...CREDENTIAL_KEYS].filter(k => !found.has(k));
+    if (leaked) { console.log("leaked"); process.exit(0); }
+    if (missing.length) { console.log("missing::" + missing.join(",")); process.exit(0); }
+    console.log("clean");
+  ' "$row_body")"
+  if [ "$verdict" = "clean" ]; then
+    pass "AC9c stored spend-log credentials redacted" "all five credential-named values are REDACTED_BY_LITELLM in the stored body and no canary literal survives anywhere in the row"
+  else
+    fail "AC9c stored spend-log credentials redacted" "stored body not provably sanitized (verdict kind: ${verdict%%::*}, row status ${lookup_status}) — payload suppressed"
+  fi
+  ac9c_restore_prompt_storage
+  rm -f "$request_body" "$row_body" "$list_body"
+}
 # ---- AC-anc (fleet-ops-anc): the postgres consolidation — wrapper image,
 # no one-shot init container, SIGTERM hard gate, idempotent re-provision ------
 
@@ -2017,6 +2246,7 @@ ac8_grace_self_heal
 ac9_litellm_smoke
 ac9_litellm_runtime_spendlogs
 ac9b_litellm_db_smoke
+ac9c_litellm_spend_log_redaction
 ac_anc_postgres_consolidation
 ac_w5d_admin_key_ui
 ac10_queue_plane
