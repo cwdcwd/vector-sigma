@@ -543,7 +543,7 @@ ac9_litellm_runtime_spendlogs() {
   fi
   local before after distinct mock_count
   before="$(docker exec "$PROJECT-postgres-runtime-1" psql -U runtime -d litellm_runtime -tA -c \
-    'SELECT count(*) FROM "LiteLLM_SpendLogs" WHERE model = '\''runtime-spendlogs-test'\'';' 2>/dev/null | tr -d '[:space:]')"
+    'SELECT count(*) FROM "LiteLLM_SpendLogs";' 2>/dev/null | tr -d '[:space:]')"
   if ! [[ "$before" =~ ^[0-9]+$ ]]; then
     fail "AC9c spendlogs baseline" "query failed or table absent (value=${before:-empty})"
     return
@@ -566,7 +566,7 @@ ac9_litellm_runtime_spendlogs() {
   after="$before"
   while [ "$SECONDS" -lt "$spent_deadline" ]; do
     after="$(docker exec "$PROJECT-postgres-runtime-1" psql -U runtime -d litellm_runtime -tA -c \
-      'SELECT count(*) FROM "LiteLLM_SpendLogs" WHERE model = '\''runtime-spendlogs-test'\'';' 2>/dev/null | tr -d '[:space:]')"
+      'SELECT count(*) FROM "LiteLLM_SpendLogs";' 2>/dev/null | tr -d '[:space:]')"
     [[ "$after" =~ ^[0-9]+$ ]] && [ "$((after - before))" -ge "$expected_rows" ] && break
     sleep 2
   done
@@ -574,9 +574,17 @@ ac9_litellm_runtime_spendlogs() {
     pass "AC9c distinct SpendLogs rows" "three successful request modes added exactly 3 rows (count $before -> $after)"
   else
     fail "AC9c distinct SpendLogs rows" "expected exactly 3 new rows, count $before -> ${after:-unreadable}"
+    # 1py.15 diagnostics: the DB is dedicated to this fixture, so model-name
+    # mismatch (LiteLLM may log the MAPPED model) or silent prisma-client
+    # failure are the usual causes — dump both before failing the run.
+    docker exec "$PROJECT-postgres-runtime-1" psql -U runtime -d litellm_runtime -tA -c \
+      'SELECT coalesce(model,'\''<null>'\''), count(*) FROM "LiteLLM_SpendLogs" GROUP BY 1 ORDER BY 2 DESC;' 2>&1 | head -10 || true
+    docker exec "$PROJECT-postgres-runtime-1" psql -U runtime -d litellm_runtime -tA -c \
+      'SELECT request_id, model, request_id IS NOT NULL AS has_id FROM "LiteLLM_SpendLogs" ORDER BY "startTime" DESC LIMIT 8;' 2>&1 | head -10 || true
+    docker logs "$PROJECT-litellm-runtime-1" 2>&1 | tail -60 || true
   fi
   distinct="$(docker exec "$PROJECT-postgres-runtime-1" psql -U runtime -d litellm_runtime -tA -c \
-    "SELECT count(DISTINCT request_id) FROM \"LiteLLM_SpendLogs\" WHERE model = 'runtime-spendlogs-test';" 2>/dev/null | tr -d '[:space:]')"
+    'SELECT count(DISTINCT request_id) FROM "LiteLLM_SpendLogs";' 2>/dev/null | tr -d '[:space:]')"
   if [[ "$distinct" =~ ^[0-9]+$ ]] && [ "$distinct" -eq "$after" ]; then
     pass "AC9c unique SpendLogs request IDs" "$distinct distinct request IDs for $after rows"
   else
