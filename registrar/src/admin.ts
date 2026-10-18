@@ -1175,7 +1175,7 @@ export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): v
         err instanceof MintConfigError
           ? err.message
           : err instanceof MintCallError
-            ? `${err.message} (HTTP ${err.status ?? '—'}: ${(err.body ?? '').slice(0, 300)})`
+            ? `${err.message} (HTTP ${err.status ?? '—'})`
             : 'Memory key mint failed unexpectedly.';
       return securityHeaders(reply)
         .type('text/html')
@@ -1305,7 +1305,7 @@ export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): v
           : err instanceof ModelKeyAliasLiveError
             ? err.message
             : err instanceof MintCallError
-              ? `${err.message} (HTTP ${err.status ?? '—'}: ${(err.body ?? '').slice(0, 300)})`
+              ? `${err.message} (HTTP ${err.status ?? '—'})`
               : 'Model key provisioning failed unexpectedly.';
       return securityHeaders(reply)
         .type('text/html')

@@ -54,10 +54,13 @@ export const MEMORY_KEY_ENV_VARS = {
 
 export class MintConfigError extends Error {}
 export class MintCallError extends Error {
+  /** Upstream bodies are deliberately discarded: they may contain credentials. */
+  public readonly body: null = null;
+
   constructor(
     message: string,
     public readonly status: number | null,
-    public readonly body: string | null,
+    _body: string | null,
   ) {
     super(message);
   }
@@ -332,9 +335,9 @@ async function findModelKeyRow(cfg: GatewayConfig, alias: string): Promise<boole
   );
   if (res.status !== 200) {
     throw new MintCallError(
-      `gateway /key/list for '${alias}' failed (HTTP ${res.status}: ${(res.raw ?? '').slice(0, 300)})`,
+      `gateway /key/list for '${alias}' failed (HTTP ${res.status})`,
       res.status,
-      res.raw,
+      null,
     );
   }
   const keys = (res.json as { keys?: unknown[] } | null)?.keys;

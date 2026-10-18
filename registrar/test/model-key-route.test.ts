@@ -288,12 +288,13 @@ describe('mint-model-key route', () => {
     expect(agentEnv).toBe('GATEWAY_API_KEY=sk-model-test-1\n');
   });
 
-  it('a gateway failure renders status + body for triage (not a 500)', async () => {
+  it('a gateway failure shows status without leaking an upstream credential body', async () => {
     setCreatorEnv();
+    const upstreamCredential = 'synthetic-upstream-credential-value';
     route = [
       () => respond(200, { keys: [] }),
       () => respond(200, { user_id: 'agent-wheeljack' }),
-      () => respond(502, 'upstream dead'),
+      () => respond(502, `upstream rejected Authorization: Bearer ${upstreamCredential}`),
     ];
     const c = await loginClient();
     const csrf = await c.csrfFrom(`/admin/devices/${env.device.uuid}`);
@@ -301,6 +302,8 @@ describe('mint-model-key route', () => {
     expect(res.status).toBe(200);
     expect(res.html).toContain('class="danger"');
     expect(res.html).toContain('502');
+    expect(res.html).not.toContain(upstreamCredential);
+    expect(res.html).not.toContain('Authorization: Bearer');
     expect(await currentBundle(env.device.uuid)).toBeUndefined();
   });
 });

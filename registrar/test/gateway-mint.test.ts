@@ -185,7 +185,7 @@ describe('mintMemoryKeys', () => {
     expect(paths).toEqual(['/user/new', '/team/list', '/team/member_add', '/key/generate', '/key/generate']);
   });
 
-  it('a mint failure surfaces status + body, never a silent success', async () => {
+  it('a mint failure surfaces status without retaining upstream response data', async () => {
     route = [
       () => respond(200, { user_id: 'agent-wheeljack' }),
       () => respond(200, []),
@@ -200,7 +200,8 @@ describe('mintMemoryKeys', () => {
       expect(e).toBeInstanceOf(MintCallError);
       const err = e as MintCallError;
       expect(err.status).toBe(500);
-      expect(err.body).toContain('boom');
+      expect(err.body).toBeNull();
+      expect(err.message).not.toContain('boom');
     }
   });
 
@@ -347,11 +348,20 @@ describe('model key provisioning (fleet-ops-1py.46)', () => {
     expect(calls.some((c) => c.url.includes('/key/generate'))).toBe(false);
   });
 
-  it('a failing /key/list probe is a MintCallError (never a mint)', async () => {
-    route = [() => respond(500, { error: 'boom' })];
-    await expect(provisionModelKey(ENV, 'wheeljack', false)).rejects.toThrowError(
-      /key\/list for 'model-wheeljack' failed/,
-    );
+  it('a failing /key/list probe does not retain or expose upstream response data', async () => {
+    const upstreamCredential = 'synthetic-key-list-credential-value';
+    route = [() => respond(500, { error: `rejected Bearer ${upstreamCredential}` })];
+    let caught: unknown = null;
+    try {
+      await provisionModelKey(ENV, 'wheeljack', false);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(MintCallError);
+    const err = caught as MintCallError;
+    expect(err.status).toBe(500);
+    expect(err.body).toBeNull();
+    expect(err.message).not.toContain(upstreamCredential);
     expect(calls.some((c) => c.url.includes('/key/generate'))).toBe(false);
   });
 
@@ -370,7 +380,8 @@ describe('model key provisioning (fleet-ops-1py.46)', () => {
     expect(caught).toBeInstanceOf(MintCallError);
     const err = caught as MintCallError;
     expect(err.status).toBe(400);
-    expect(err.body).toContain('malformed alias');
+    expect(err.body).toBeNull();
+    expect(err.message).not.toContain('malformed alias');
   });
 
   it('missing creator config refuses BEFORE any network call', async () => {
