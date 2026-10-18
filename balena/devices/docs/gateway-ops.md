@@ -418,7 +418,8 @@ the completions surface only: `/v1/chat/completions`, `/v1/completions`,
 `/v1/responses`, `/v1/embeddings`, `/v1/models` (bare + `/*` pairs). A
 model key serves the agent's model calls and nothing else — no key
 management, no mesh, no memory routes. The minted value reaches the
-device through the bundle plane (0600) and is shown in the console once.
+device through the bundle plane (0600) and is never shown in the console
+(the no-secret-output rule: registrar UI output renders no key values).
 
 **Decision table (mirrors the mesh-enroll enroll):** MINT when the alias
 is absent (the agent's `agent-<name>` user row is ensured idempotently

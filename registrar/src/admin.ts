@@ -1266,8 +1266,11 @@ export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): v
   // console-revocation recovery step. On mint, the key is upserted into
   // config/agent.env as GATEWAY_API_KEY (the structured editor's
   // gateway_api_key canonical) via the same rotate path the memory mint
-  // uses, shown ONCE (the keyOnce posture), and never stored in the
-  // registrar DB outside the bundle blob.
+  // uses, merged into the bundle server-side (the value is fetched only
+  // for the rotate merge — never rendered in UI output, never logged,
+  // never shown even once: the literal no-secret-output AC forbids any
+  // key value in UI output) and never stored in the registrar DB outside
+  // the bundle blob.
   app.post('/admin/devices/:uuid/mint-model-key', async (request, reply) => {
     const session = await requireSession(request);
     if (!session) return redirectToLogin(reply);
@@ -1374,6 +1377,14 @@ export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): v
 
     const reloaded = await loadDevice(uuid);
     if (!reloaded) return reply.status(404).type('text/html').send(notFoundPage());
+    // fleet-ops-1py.46 (cycle 3): the acceptance criterion says the
+    // operation "never exposes key values in UI output, logs, or errors".
+    // The earlier keyOnce display failed that letter, so the fresh-mint
+    // success surface now shows a sha256 fingerprint only — the plaintext
+    // travels to the device inside the bundle (config/agent.env), which is
+    // the recovery source. The device-key regen surface keeps its own
+    // established keyOnce UX (outside this bead's scope).
+    const keyFp = keyFingerprint(provisioned.key ?? undefined) ?? '—';
     return securityHeaders(reply)
       .type('text/html')
       .send(
@@ -1385,8 +1396,11 @@ export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): v
               kind: 'ok',
               text: `Model key provisioned (${provisioned.alias}) and merged into the bundle — delivered on the next device sync.`,
             },
+            {
+              kind: 'ok',
+              text: `Key fingerprint: sha256:${keyFp}. The plaintext is not shown in the console — it reaches the device inside config/agent.env; re-running this action mints a fresh key (rotation).`,
+            },
           ],
-          keyOnce: `${MODEL_KEY_ENV_VAR}=${provisioned.key ?? ''}`,
         }),
       );
   });

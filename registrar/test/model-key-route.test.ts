@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import {
   createTestEnv,
   seedDevice,
@@ -17,10 +18,10 @@ import type { IdentityBundle } from '@vector-sigma/shared';
  * Exercises the console action end-to-end against pg-mem with a
  * fetch-mocked gateway (the gateway-mint.test.ts pattern): auth + CSRF
  * gating, the MINT path (probe -> user row -> key/generate -> bundle
- * merge -> keyOnce shown once), the OPEN path (bundle is the truth, no
- * rotation), the REFUSE path (alias live + empty bundle), and the
- * not-configured fallback. No real gateway, no real key material — the
- * minted "keys" below are synthetic test fixtures.
+ * merge -> fingerprint-only success surface), the OPEN path (bundle is
+ * the truth, no rotation), the REFUSE path (alias live + empty bundle),
+ * and the not-configured fallback. No real gateway, no real key
+ * material — the minted "keys" below are synthetic test fixtures.
  */
 
 let env: TestEnv;
@@ -173,8 +174,14 @@ describe('mint-model-key route', () => {
     const res = await c.postForm(`/admin/devices/${env.device.uuid}/mint-model-key`, { _csrf: csrf });
 
     expect(res.status).toBe(200);
-    // the minted value appears EXACTLY once (keyOnce), never in a message
-    expect(res.html.split('sk-model-test-1').length - 1).toBe(1);
+    // fleet-ops-1py.46 cycle 3 (AC: key values never exposed in UI output):
+    // the minted plaintext appears ZERO times — the success surface shows a
+    // sha256 fingerprint instead (the value itself reaches the device via
+    // the bundle). The device-key regen keyOnce card must not render here.
+    expect(res.html).not.toContain('sk-model-test-1');
+    expect(res.html).not.toContain('New device key — shown once');
+    const expectedFp = createHash('sha256').update('sk-model-test-1').digest('hex').slice(0, 16);
+    expect(res.html).toContain(`Key fingerprint: sha256:${expectedFp}`);
     expect(res.html).toContain('Model key provisioned (model-wheeljack)');
     expect(res.html).toContain('delivered on the next device sync');
 

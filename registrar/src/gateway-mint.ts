@@ -305,7 +305,7 @@ export interface ModelKeyProvisionResult {
   alias: string;
   /** 'mint' = fresh key minted (value set); 'open' = bundle already carries it (value null). */
   action: 'mint' | 'open';
-  /** The minted key value — shown once in the console, never stored. Null on 'open'. */
+  /** The minted key value — for the server-side bundle merge only; never rendered in UI output (no-secret-output). Null on 'open'. */
   key: string | null;
 }
 
