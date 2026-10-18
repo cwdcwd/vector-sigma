@@ -526,6 +526,71 @@ ac8_grace_self_heal() {
   fi
 }
 
+ac9_litellm_runtime_spendlogs() {
+  note "AC9c (1py.15): LiteLLM runtime plain, streaming, tool-call SpendLogs uniqueness against local mock"
+  local base="http://127.0.0.1:4001"
+  local key="sk-runtime-e2e-test"
+  local deadline=$((SECONDS + 180)) code=""
+  until code="$(curl -s -o /dev/null -w '%{http_code}' -m 5 "$base/health/liveliness" 2>/dev/null)" \
+    && [ "$code" = "200" ]; do
+    [ "$SECONDS" -ge "$deadline" ] && break
+    sleep 3
+  done
+  if [ "$code" != "200" ]; then
+    fail "AC9c runtime gateway" "liveliness code=${code:-none} (deadline 180s)"
+    docker logs "$PROJECT-litellm-runtime-1" 2>&1 | tail -25 || true
+    return
+  fi
+  local before after distinct mock_count
+  before="$(docker exec "$PROJECT-postgres-runtime-1" psql -U runtime -d litellm_runtime -tA -c \
+    'SELECT count(*) FROM "LiteLLM_SpendLogs" WHERE model = '\''runtime-spendlogs-test'\'';' 2>/dev/null | tr -d '[:space:]')"
+  if ! [[ "$before" =~ ^[0-9]+$ ]]; then
+    fail "AC9c spendlogs baseline" "query failed or table absent (value=${before:-empty})"
+    return
+  fi
+  local request_body
+  request_body='{"model":"runtime-spendlogs-test","messages":[{"role":"user","content":"hello"}]}'
+  code="$(curl -s -o /dev/null -w '%{http_code}' -m 60 -X POST "$base/v1/chat/completions" \
+    -H "Authorization: Bearer $key" -H 'Content-Type: application/json' -d "$request_body" 2>/dev/null || true)"
+  expect "AC9c plain request" "$code" "200"
+  request_body='{"model":"runtime-spendlogs-test","messages":[{"role":"user","content":"stream"}],"stream":true}'
+  code="$(curl -s -o /dev/null -w '%{http_code}' -m 60 -X POST "$base/v1/chat/completions" \
+    -H "Authorization: Bearer $key" -H 'Content-Type: application/json' -d "$request_body" 2>/dev/null || true)"
+  expect "AC9c streaming request" "$code" "200"
+  request_body='{"model":"runtime-spendlogs-test","messages":[{"role":"user","content":"call tool"}],"tools":[{"type":"function","function":{"name":"fixture_tool","description":"test","parameters":{"type":"object","properties":{}}}}],"tool_choice":"auto"}'
+  code="$(curl -s -o /dev/null -w '%{http_code}' -m 60 -X POST "$base/v1/chat/completions" \
+    -H "Authorization: Bearer $key" -H 'Content-Type: application/json' -d "$request_body" 2>/dev/null || true)"
+  expect "AC9c tool-call request" "$code" "200"
+  local expected_rows=3
+  local spent_deadline=$((SECONDS + 45))
+  after="$before"
+  while [ "$SECONDS" -lt "$spent_deadline" ]; do
+    after="$(docker exec "$PROJECT-postgres-runtime-1" psql -U runtime -d litellm_runtime -tA -c \
+      'SELECT count(*) FROM "LiteLLM_SpendLogs" WHERE model = '\''runtime-spendlogs-test'\'';' 2>/dev/null | tr -d '[:space:]')"
+    [[ "$after" =~ ^[0-9]+$ ]] && [ "$((after - before))" -ge "$expected_rows" ] && break
+    sleep 2
+  done
+  if [[ "$after" =~ ^[0-9]+$ ]] && [ "$((after - before))" -eq "$expected_rows" ]; then
+    pass "AC9c distinct SpendLogs rows" "three successful request modes added exactly 3 rows (count $before -> $after)"
+  else
+    fail "AC9c distinct SpendLogs rows" "expected exactly 3 new rows, count $before -> ${after:-unreadable}"
+  fi
+  distinct="$(docker exec "$PROJECT-postgres-runtime-1" psql -U runtime -d litellm_runtime -tA -c \
+    "SELECT count(DISTINCT request_id) FROM \"LiteLLM_SpendLogs\" WHERE model = 'runtime-spendlogs-test';" 2>/dev/null | tr -d '[:space:]')"
+  if [[ "$distinct" =~ ^[0-9]+$ ]] && [ "$distinct" -eq "$after" ]; then
+    pass "AC9c unique SpendLogs request IDs" "$distinct distinct request IDs for $after rows"
+  else
+    fail "AC9c unique SpendLogs request IDs" "distinct request IDs=${distinct:-unreadable}, total rows=${after:-unreadable}"
+  fi
+  local mock_count
+  mock_count="$(curl -fsS -m 5 http://127.0.0.1:11434/_count 2>/dev/null | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{process.stdout.write(String(JSON.parse(d).requests))}catch{process.stdout.write("invalid")}})' 2>/dev/null || true)"
+  if [ "$mock_count" = "3" ]; then
+    pass "AC9c local upstream calls" "mock Ollama received all 3 successful request modes"
+  else
+    fail "AC9c local upstream calls" "mock request count=${mock_count:-unreadable}, expected 3"
+  fi
+}
+
 ac9_litellm_smoke() {
   note "AC9: VS gateway smoke — liveliness + models list over TLS (f57.12 + f57.13)"
   # f57.13: the gateway is fronted by caddy at https://vsigma.lan:8443 —
@@ -1942,6 +2007,7 @@ ac7_console_structured_save
 ac7b_persona_picker
 ac8_grace_self_heal
 ac9_litellm_smoke
+ac9_litellm_runtime_spendlogs
 ac9b_litellm_db_smoke
 ac_anc_postgres_consolidation
 ac_w5d_admin_key_ui
