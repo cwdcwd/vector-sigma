@@ -1,0 +1,12 @@
+# Isolated, simulation-only LiteLLM runtime used by CI to verify SpendLogs.
+# It routes exclusively to the local mock Ollama service; no upstream network.
+model_list:
+  - model_name: runtime-spendlogs-test
+    litellm_params:
+      model: ollama_chat/test-model
+      api_base: http://ollama-mock:11434
+      api_key: e2e-runtime-only
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL

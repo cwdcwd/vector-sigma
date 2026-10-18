@@ -32,6 +32,50 @@
 # construction.
 
 services:
+  # 1py.15: isolated LiteLLM runtime fixture. All model traffic terminates at
+  # the local mock; this stack never calls Ollama Cloud or production.
+  ollama-mock:
+    image: node:22-alpine
+    command: ["node", "/fixture/ollama-mock.mjs"]
+    volumes:
+      - ./e2e/ollama-mock.mjs:/fixture/ollama-mock.mjs:ro
+    ports:
+      - "127.0.0.1:11434:11434"
+    restart: "no"
+
+  postgres-runtime:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: runtime
+      POSTGRES_PASSWORD: runtime-e2e-only
+      POSTGRES_DB: litellm_runtime
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U runtime -d litellm_runtime"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: "no"
+
+  litellm-runtime:
+    image: ghcr.io/berriai/litellm:1.100.1
+    command: ["--config", "/fixture/config.yaml", "--port", "4001"]
+    volumes:
+      - ./e2e/litellm-runtime-config.yaml:/fixture/config.yaml:ro
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_RUNTIME_MASTER_KEY:-sk-runtime-e2e-test}
+      DATABASE_URL: postgresql://runtime:runtime-e2e-only@postgres-runtime:5432/litellm_runtime
+    depends_on:
+      postgres-runtime:
+        condition: service_healthy
+      ollama-mock:
+        condition: service_started
+    ports:
+      - "127.0.0.1:4001:4001"
+    restart: "no"
+
+  # Keep the local mock off the host network; only the gateway reaches it.
+  # Its container-local healthcheck provides fixture readiness without a host port.
+  # Compose builds the mock from the standard Node image already used by CI.
   # 1py.14 follow-on: resolveMeshTopology() (registrar/src/mesh-enroll.ts)
   # made the tailnet suffix/edge host fail-closed runtime env instead of
   # baked constants — the e2e registrar never carried them, so AC17
