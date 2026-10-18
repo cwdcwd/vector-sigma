@@ -335,7 +335,7 @@ jobs:
             --actor "${GITHUB_ACTOR}" \
             --component agent="${RUNNER_TEMP}/records/promoted-agent.json" \
             --component registrant="${RUNNER_TEMP}/records/promoted-registrant.json" \
-            --component tailscale-devices="${RUNNER_TEMP}/records/promoted-tailscale-devices.json
+            --component tailscale-devices="${RUNNER_TEMP}/records/promoted-tailscale-devices.json"
       - name: Upload the release-evidence ledger (rollback artifact)
         uses: actions/upload-artifact@v4
         with:
@@ -443,10 +443,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Render balena/registrar digest-pinned compose
-        run: |
-          set -euo pipefail
-                - name: Download promotion records (r3v digest handoff)
+      - name: Download promotion records (r3v digest handoff)
         uses: actions/download-artifact@v4
         with:
           pattern: promoted-*

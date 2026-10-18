@@ -415,7 +415,7 @@ jobs:
             --component hermes="${RUNNER_TEMP}/records/promoted-hermes.json" \
             --component postgres="${RUNNER_TEMP}/records/promoted-postgres.json" \
             --component litellm="${RUNNER_TEMP}/records/promoted-litellm.json" \
-            --component tailscale="${RUNNER_TEMP}/records/promoted-tailscale.json
+            --component tailscale="${RUNNER_TEMP}/records/promoted-tailscale.json"
       - name: Upload the release-evidence ledger (rollback artifact)
         uses: actions/upload-artifact@v4
         with:
@@ -523,10 +523,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Render balena/registrar digest-pinned compose
-        run: |
-          set -euo pipefail
-                - name: Download promotion records (r3v digest handoff)
+      - name: Download promotion records (r3v digest handoff)
         uses: actions/download-artifact@v4
         with:
           pattern: promoted-*
