@@ -38,6 +38,11 @@ const {
   GATEWAY_BASE_URL_ENV,
   MintConfigError,
   MintCallError,
+  provisionModelKey,
+  modelKeyAlias,
+  MODEL_KEY_ALLOWED_ROUTES,
+  MODEL_KEY_ENV_VAR,
+  ModelKeyAliasLiveError,
 } = await import('../src/gateway-mint.js');
 
 interface Call {
@@ -215,5 +220,171 @@ describe('mintMemoryKeys', () => {
       () => respond(200, { key: '' }),
     ];
     await expect(mintMemoryKeys(ENV, 'wheeljack')).rejects.toThrowError(/no key/);
+  });
+});
+
+describe('model key provisioning (fleet-ops-1py.46)', () => {
+  it('aliases: deterministic model-<agent>, memory-scheme sanitization', () => {
+    expect(modelKeyAlias('wheeljack')).toBe('model-wheeljack');
+    expect(modelKeyAlias('agent one!')).toBe('model-agent-one-');
+    expect(modelKeyAlias('prîmus')).toBe('model-pr-mus');
+  });
+
+  it('route lock: completions-only — no memory, mesh, or key-management routes', () => {
+    for (const r of MODEL_KEY_ALLOWED_ROUTES) {
+      expect(r.startsWith('/v1/')).toBe(true);
+    }
+    const joined = MODEL_KEY_ALLOWED_ROUTES.join(',');
+    expect(joined).toContain('/v1/chat/completions');
+    expect(joined).not.toContain('/v1/memory');
+    expect(joined).not.toContain('/a2a');
+    expect(joined).not.toContain('/key/');
+    expect(joined).not.toContain('/user/');
+    expect(joined).not.toContain('/team/');
+  });
+
+  it('env var name: delivered as GATEWAY_API_KEY', () => {
+    expect(MODEL_KEY_ENV_VAR).toBe('GATEWAY_API_KEY');
+  });
+
+  it('MINT: probe absent -> /user/new (idempotent) + /key/generate, exact payload', async () => {
+    route = [
+      // 1: GET /key/list (probe — alias absent)
+      (c) => {
+        expect(c.method).toBe('GET');
+        expect(c.url).toContain('/key/list?key_alias=model-wheeljack');
+        expect(c.url).toContain('return_full_object=true');
+        return respond(200, { keys: [] });
+      },
+      // 2: POST /user/new (duplicate wording = present — swallowed)
+      (c) => {
+        expect(c.method).toBe('POST');
+        expect(c.url).toContain('/user/new');
+        expect(c.body?.user_id).toBe('agent-wheeljack');
+        return respond(409, { detail: { error: 'User with id agent-wheeljack already exists' } });
+      },
+      // 3: POST /key/generate
+      (c) => {
+        expect(c.method).toBe('POST');
+        expect(c.url).toContain('/key/generate');
+        return respond(200, { key: 'sk-once-only' });
+      },
+    ];
+    const out = await provisionModelKey(ENV, 'wheeljack', false);
+    expect(out).toEqual({ alias: 'model-wheeljack', action: 'mint', key: 'sk-once-only' });
+    // call order: probe -> user -> generate; NO team surface for a model key
+    const strip = (u: string) => u.replace('http://gateway:4000', '');
+    expect(calls.map((c) => strip(c.url).split('?')[0])).toEqual([
+      '/key/list',
+      '/user/new',
+      '/key/generate',
+    ]);
+    expect(calls.some((c) => c.url.includes('/team/'))).toBe(false);
+    const gen = calls[2];
+    expect(gen.body).toEqual({
+      key_alias: 'model-wheeljack',
+      user_id: 'agent-wheeljack',
+      allowed_routes: [...MODEL_KEY_ALLOWED_ROUTES],
+      metadata: { purpose: 'agent-model', agent: 'wheeljack' },
+    });
+    expect(gen.body && Array.isArray(gen.body.allowed_routes)).toBe(true);
+    expect(Object.hasOwn(gen.body ?? {}, 'team_id')).toBe(false);
+  });
+
+  it('MINT probe: alias-present probe row matches the exact alias only', async () => {
+    route = [
+      // 1: GET /key/list — the row carries a DIFFERENT alias -> no hit
+      () => respond(200, { keys: [{ key_alias: 'model-wheels', token: 'other' }] }),
+      // 2: POST /user/new
+      () => respond(200, { user_id: 'agent-wheeljack' }),
+      // 3: POST /key/generate -> mint fired
+      () => respond(200, { key: 'sk-fresh' }),
+    ];
+    const out = await provisionModelKey(ENV, 'wheeljack', false);
+    expect(out.action).toBe('mint');
+    expect(calls.map((c) => c.url.replace('http://gateway:4000', '').split('?')[0])).toEqual([
+      '/key/list',
+      '/user/new',
+      '/key/generate',
+    ]);
+  });
+
+  it('OPEN: alias live + bundle carries the key -> nothing re-minted, no user/new', async () => {
+    route = [
+      () => respond(200, { keys: [{ key_alias: 'model-wheeljack', token: 'x' }] }),
+    ];
+    const out = await provisionModelKey(ENV, 'wheeljack', true);
+    expect(out).toEqual({ alias: 'model-wheeljack', action: 'open', key: null });
+    // the probe is the ONLY call — no user/new, no /key/generate
+    expect(calls.length).toBe(1);
+    expect(calls[0].url).toContain('/key/list');
+  });
+
+  it('OPEN is bundle-truth, not gateway-truth: the plaintext is never learned', async () => {
+    route = [() => respond(200, { keys: [{ key_alias: 'model-wheeljack' }] })];
+    const out = await provisionModelKey(ENV, 'wheeljack', true);
+    expect(out.key).toBeNull();
+  });
+
+  it('REFUSE: alias live + empty bundle -> ModelKeyAliasLiveError naming the recovery step', async () => {
+    route = [
+      () => respond(200, { keys: [{ key_alias: 'model-wheeljack' }] }),
+      () => respond(200, { key: 'sk-should-never-mint' }),
+    ];
+    let caught: unknown = null;
+    try {
+      await provisionModelKey(ENV, 'wheeljack', false);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(ModelKeyAliasLiveError);
+    const err = caught as ModelKeyAliasLiveError;
+    expect(err.alias).toBe('model-wheeljack');
+    expect(err.agentName).toBe('wheeljack');
+    expect(err.message).toContain('revoke the alias');
+    expect(err.message).toContain('LiteLLM');
+    // the route lock held: no generate went through on the refuse path
+    expect(calls.some((c) => c.url.includes('/key/generate'))).toBe(false);
+  });
+
+  it('a failing /key/list probe is a MintCallError (never a mint)', async () => {
+    route = [() => respond(500, { error: 'boom' })];
+    await expect(provisionModelKey(ENV, 'wheeljack', false)).rejects.toThrowError(
+      /key\/list for 'model-wheeljack' failed/,
+    );
+    expect(calls.some((c) => c.url.includes('/key/generate'))).toBe(false);
+  });
+
+  it('a non-200 /key/generate is a MintCallError with status + body', async () => {
+    route = [
+      () => respond(200, { keys: [] }),
+      () => respond(200, { user_id: 'agent-wheeljack' }),
+      () => respond(400, 'malformed alias'),
+    ];
+    let caught: unknown = null;
+    try {
+      await provisionModelKey(ENV, 'wheeljack', false);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(MintCallError);
+    const err = caught as MintCallError;
+    expect(err.status).toBe(400);
+    expect(err.body).toContain('malformed alias');
+  });
+
+  it('missing creator config refuses BEFORE any network call', async () => {
+    const env = {} as Record<string, string | undefined>;
+    await expect(provisionModelKey(env, 'wheeljack', false)).rejects.toThrowError(MintConfigError);
+    expect(calls.length).toBe(0);
+  });
+
+  it('the creator key never appears in thrown messages (REFUSE arm)', async () => {
+    route = [() => respond(200, { keys: [{ key_alias: 'model-wheeljack' }] })];
+    try {
+      await provisionModelKey(ENV, 'wheeljack', false);
+    } catch (e) {
+      expect(String(e)).not.toContain(ENV[CREATOR_KEY_ENV]);
+    }
   });
 });

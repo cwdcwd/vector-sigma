@@ -30,6 +30,9 @@ import {
   MintCallError,
   MEMORY_KEY_ENV_VARS,
   memoryKeyAlias,
+  provisionModelKey,
+  MODEL_KEY_ENV_VAR,
+  ModelKeyAliasLiveError,
 } from './gateway-mint.js';
 import {
   enrollAgent,
@@ -1247,6 +1250,143 @@ export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): v
             },
           ],
           keyOnce: `GATEWAY_MEMORY_SHARED_KEY=${minted.shared.key}\nGATEWAY_MEMORY_PRIVATE_KEY=${minted.private.key}`,
+        }),
+      );
+  });
+
+  // fleet-ops-1py.46: the model-key provisioning action. One click per
+  // device during onboarding: provisions (mints or verifies) the agent's
+  // MODEL gateway key — the credential the device serves completions with
+  // — with the same SCOPED key-creator key as the memory mint (its
+  // j7g.1-extended route lock covers /key/list + /user/new +
+  // /key/generate; the master key is never used). The decision table
+  // mirrors the mesh-enroll enroll: a live alias with the bundle already
+  // carrying GATEWAY_API_KEY opens (nothing re-minted, nothing changed);
+  // a live alias with an empty bundle REFUSES with the
+  // console-revocation recovery step. On mint, the key is upserted into
+  // config/agent.env as GATEWAY_API_KEY (the structured editor's
+  // gateway_api_key canonical) via the same rotate path the memory mint
+  // uses, shown ONCE (the keyOnce posture), and never stored in the
+  // registrar DB outside the bundle blob.
+  app.post('/admin/devices/:uuid/mint-model-key', async (request, reply) => {
+    const session = await requireSession(request);
+    if (!session) return redirectToLogin(reply);
+    if (!(await csrfGate(request, session))) return reply.status(403).type('text/html').send(csrfErrorPage());
+    const uuid = (request.params as { uuid: string }).uuid;
+    const loaded = await loadDevice(uuid);
+    if (!loaded) return reply.status(404).type('text/html').send(notFoundPage());
+
+    // Bundle truth BEFORE the decision: a non-empty GATEWAY_API_KEY line
+    // in the CURRENT config/agent.env flips MINT into OPEN/REFUSE. Read
+    // once here and reused for the merge below (the bundle cannot change
+    // between the read and the rotate — this handler is the only writer).
+    const current = await loadCurrentFileContents(uuid);
+    const agentEnvCurrent = current.get('config/agent.env') ?? '';
+    const existingLine = agentEnvCurrent
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .find((l) => l.startsWith(`${MODEL_KEY_ENV_VAR}=`));
+    const bundleCarriesKey =
+      existingLine !== undefined
+        ? existingLine.slice(MODEL_KEY_ENV_VAR.length + 1).trim() !== ''
+        : false;
+
+    let provisioned: Awaited<ReturnType<typeof provisionModelKey>>;
+    try {
+      provisioned = await provisionModelKey(process.env, loaded.device.agentName, bundleCarriesKey);
+    } catch (err) {
+      // Same error surface as the memory mint: config gap -> the
+      // pre-authorized manual fallback; REFUSE -> the recovery step
+      // (alias revocation, then re-run); gateway call failure -> status
+      // + body for triage. All rendered, none escalated to 500.
+      const message =
+        err instanceof MintConfigError
+          ? err.message
+          : err instanceof ModelKeyAliasLiveError
+            ? err.message
+            : err instanceof MintCallError
+              ? `${err.message} (HTTP ${err.status ?? '—'}: ${(err.body ?? '').slice(0, 300)})`
+              : 'Model key provisioning failed unexpectedly.';
+      return securityHeaders(reply)
+        .type('text/html')
+        .send(
+          html.deviceDetailPage({
+            ...loaded,
+            csrfToken: session.csrfToken,
+            messages: [{ kind: 'danger', text: message }],
+          }),
+        );
+    }
+
+    if (provisioned.action === 'open') {
+      // The bundle is the truth: no rotation, no gateway mutation —
+      // audited so the daily pass can see the no-op verification.
+      await audit(db, {
+        deviceId: uuid,
+        outcome: 'admin',
+        reason: 'model_key_open',
+        sourceIp: request.ip,
+        occurredAt: clock.now(),
+      });
+      return securityHeaders(reply)
+        .type('text/html')
+        .send(
+          html.deviceDetailPage({
+            ...loaded,
+            csrfToken: session.csrfToken,
+            messages: [
+              {
+                kind: 'ok',
+                text: `Model key already provisioned (${provisioned.alias} is live at the gateway) and the bundle carries it — nothing changed.`,
+              },
+            ],
+          }),
+        );
+    }
+
+    // Fresh mint: upsert GATEWAY_API_KEY into config/agent.env — the
+    // direct bundle merge the memory mint established (read the file,
+    // upsert the one KEY= line, rotateBundle the whole file; every other
+    // file survives via the keep set).
+    const kv = `${MODEL_KEY_ENV_VAR}=${provisioned.key ?? ''}`;
+    const lines = agentEnvCurrent.split(/\r?\n/).filter((l) => l.trim() !== '');
+    const idx = lines.findIndex((l) => l.startsWith(`${MODEL_KEY_ENV_VAR}=`));
+    if (idx === -1) lines.push(kv);
+    else lines[idx] = kv;
+    const nextAgentEnv = lines.join('\n') + (lines.length > 0 ? '\n' : '');
+
+    const keep = new Set<string>(
+      (loaded.blob?.files ?? []).map((f) => f.path).filter((p) => p !== 'config/agent.env'),
+    );
+    await rotateBundle(db, clock, uuid, {
+      kind: 'merge',
+      keep,
+      updates: new Map([['config/agent.env', nextAgentEnv]]),
+      additions: [],
+    }, { sourceIp: request.ip, reason: 'model_key_provisioned_console' });
+    await audit(db, {
+      deviceId: uuid,
+      outcome: 'admin',
+      reason: 'model_key_minted',
+      sourceIp: request.ip,
+      occurredAt: clock.now(),
+    });
+
+    const reloaded = await loadDevice(uuid);
+    if (!reloaded) return reply.status(404).type('text/html').send(notFoundPage());
+    return securityHeaders(reply)
+      .type('text/html')
+      .send(
+        html.deviceDetailPage({
+          ...reloaded,
+          csrfToken: session.csrfToken,
+          messages: [
+            {
+              kind: 'ok',
+              text: `Model key provisioned (${provisioned.alias}) and merged into the bundle — delivered on the next device sync.`,
+            },
+          ],
+          keyOnce: `${MODEL_KEY_ENV_VAR}=${provisioned.key ?? ''}`,
         }),
       );
   });

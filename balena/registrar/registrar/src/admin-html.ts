@@ -253,6 +253,7 @@ ${v.hasLogo ? `<p><img src="/admin/devices/${esc(d.balenaUuid)}/logo" alt="${esc
 ${toggleForm}
 <form method="post" action="/admin/devices/${esc(d.balenaUuid)}/regen-key" data-confirm="Regenerate the device key? The old key stops working immediately — the new one is shown ONCE."><input type="hidden" name="_csrf" value="${esc(v.csrfToken)}"><button type="submit">Regenerate device key</button></form>
 <form method="post" action="/admin/devices/${esc(d.balenaUuid)}/mint-memory-keys"><input type="hidden" name="_csrf" value="${esc(v.csrfToken)}"><button type="submit">Mint memory keys</button></form>
+<form method="post" action="/admin/devices/${esc(d.balenaUuid)}/mint-model-key"><input type="hidden" name="_csrf" value="${esc(v.csrfToken)}"><button type="submit">Mint model key</button></form>
 <form method="post" action="/admin/devices/${esc(d.balenaUuid)}/mesh-enroll"><input type="hidden" name="_csrf" value="${esc(v.csrfToken)}"><button type="submit">Enroll in A2A mesh</button></form>
 </div>`;
   return page(
