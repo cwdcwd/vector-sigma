@@ -467,7 +467,7 @@ upgrade is owner-gated and out of scope for this branch.
    umask 077
    export PGSERVICEFILE=/path/to/private/temporary/pg_service.conf
    test -f "$PGSERVICEFILE" && test "$(stat -c '%a' "$PGSERVICEFILE")" = 600
-   pg_dump -Fc --dbname='service=litellm-backup' \\
+   pg_dump -Fc --dbname='service=litellm-backup' \
      --file=litellm-before-upgrade.dump
    chmod 600 litellm-before-upgrade.dump
    pg_restore --list litellm-before-upgrade.dump > litellm-before-upgrade.list
