@@ -516,14 +516,15 @@ never key values, authorization headers, or prompt contents):
   introduced by LiteLLM #43635. Check only sanitized field presence/shape;
   never print or copy stored prompt/request bodies.
 - The automated non-production E2E regression (AC9c) enables prompt storage
-  only in its disposable database, submits synthetic credential canaries to an
-  explicitly configured model group (`ollama-cloud/glm-5.3`) served locally by
-  LiteLLM `mock_response` (HTTP 200; no upstream/provider call — the wildcard
-  group is not involved), and reads the stored spend row via
-  `/spend/logs/ui/{request_id}`. It asserts every canary is absent from the
-  stored row and the five credential-named fields contain
-  `REDACTED_BY_LITELLM`, then restores prompt storage to off. Never reuse real
-  credentials or run this probe against production.
+  only in its disposable runtime database, submits synthetic credential
+  canaries to the isolated LiteLLM runtime fixture pinned to the same 1.105.1
+  image digest as the gateway, using its explicit `runtime-spendlogs-test`
+  model whose only upstream is the local mock Ollama service (no external
+  provider traffic). It reads the stored spend row via
+  `/spend/logs/ui/{request_id}`, asserts every canary is absent from the row and
+  all five credential-named fields contain `REDACTED_BY_LITELLM`, then restores
+  prompt storage to off. Never reuse real credentials or run this probe against
+  production.
 - If anything consumes the authenticated `/api/usage` endpoint, make one
   one-time authenticated shape probe from the boundary where its credential
   already lives. Record only field names and non-sensitive types/counts,
