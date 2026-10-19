@@ -12,7 +12,7 @@
 //       -> the repo-relative paths the image reads from its build context
 //          (its Dockerfile + every COPY source), one per line — the exact
 //          input set the credential scan covers.
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -58,26 +58,63 @@ export function dockerInstructions(text) {
     .filter(Boolean);
 }
 
-/** Context-relative sources of every COPY/ADD that reads the build context. */
-export function copySources(text) {
+/**
+ * Every COPY/ADD that reads the build context: its context-relative sources
+ * and its --exclude patterns (which BuildKit resolves relative to each
+ * source; only plain path patterns are supported here).
+ */
+export function copyInstructions(text) {
   const out = [];
   for (const ins of dockerInstructions(text)) {
     if (!/^(COPY|ADD)\s/i.test(ins)) continue;
     const args = ins.split(/\s+/).slice(1);
     if (args.some((a) => a.startsWith('--from='))) continue; // stage copy
-    const paths = args.filter((a) => !a.startsWith('--')).slice(0, -1);
-    out.push(...paths.filter((p) => !/^https?:\/\//.test(p)));
+    const excludes = args.filter((a) => a.startsWith('--exclude=')).map((a) => a.slice('--exclude='.length));
+    for (const e of excludes) {
+      if (/[*?[\]]/.test(e)) throw new Error(`image-catalog: glob --exclude=${e} is not supported (use a plain path)`);
+    }
+    const sources = args.filter((a) => !a.startsWith('--')).slice(0, -1).filter((p) => !/^https?:\/\//.test(p));
+    out.push({ sources, excludes });
   }
   return out;
 }
 
-/** Repo-relative paths an image reads from its build context (Dockerfile first). */
+/** Context-relative sources of every COPY/ADD that reads the build context. */
+export function copySources(text) {
+  return copyInstructions(text).flatMap((c) => c.sources);
+}
+
+function listFiles(root, rel) {
+  const abs = path.join(root, rel);
+  if (!statSync(abs).isDirectory()) return [rel];
+  return readdirSync(abs).flatMap((n) => listFiles(root, path.posix.join(rel, n)));
+}
+
+/**
+ * Repo-relative paths an image reads from its build context (Dockerfile
+ * first). A directory COPYd with --exclude is expanded to its files minus
+ * the excluded paths, so the list is exactly what reaches the build.
+ */
 export function imageInputs(catalog, component, root = repoRoot) {
   const entry = catalog.components[component];
   if (!entry) throw new Error(`image-catalog: unknown component '${component}'`);
   const text = readFileSync(path.join(root, entry.dockerfile), 'utf8');
-  const rel = (p) => path.normalize(path.join(entry.context, p)).split(path.sep).join('/');
-  return [...new Set([entry.dockerfile, ...copySources(text).map(rel)])];
+  const rel = (p) => path.posix.normalize(path.posix.join(entry.context, p)).replace(/\/$/, '');
+  const inputs = [entry.dockerfile];
+  for (const { sources, excludes } of copyInstructions(text)) {
+    for (const src of sources) {
+      const base = rel(src);
+      if (excludes.length === 0) {
+        inputs.push(src.endsWith('/') ? `${base}/` : base);
+        continue;
+      }
+      const dropped = excludes.map((e) => path.posix.join(base, e));
+      inputs.push(
+        ...listFiles(root, base).filter((f) => !dropped.some((d) => f === d || f.startsWith(`${d}/`))),
+      );
+    }
+  }
+  return [...new Set(inputs)];
 }
 
 function arg(args, flag, fallback) {

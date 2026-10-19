@@ -6,9 +6,12 @@
 # image installs exactly what the workspace tests ran against. Same image
 # for the balena registrar fleet, the self-host compose (deploy/), and E2E.
 #
-# Shipped scope: registrar/tsconfig.image.json compiles the runtime service
-# only — the CI tooling in this workspace (OCI content gate, credential
-# scanner, GHCR promoter) is never part of the image.
+# Shipped scope: the runtime service only. The CI tooling that lives in
+# this workspace (credential scanner, OCI content gate, GHCR promoter) is
+# excluded at COPY time, so it is never even build input: the per-image
+# credential scan (scripts/image-catalog.mjs inputs) skips exactly these
+# paths, and registrar/test/image-build-config.test.ts proves no shipped
+# module imports them.
 
 # ---- build stage ------------------------------------------------------
 FROM node:22-bookworm-slim AS build
@@ -27,9 +30,9 @@ COPY shared/tsconfig.json shared/
 COPY shared/src/ shared/src/
 RUN npm run build -w @vector-sigma/shared
 
-COPY registrar/tsconfig.json registrar/tsconfig.image.json registrar/
-COPY registrar/src/ registrar/src/
-RUN npx -w @vector-sigma/registrar tsc -p tsconfig.image.json
+COPY registrar/tsconfig.json registrar/
+COPY --exclude=credential-scan --exclude=oci-gate --exclude=registry registrar/src/ registrar/src/
+RUN npm run build -w @vector-sigma/registrar
 
 # ---- runtime stage -----------------------------------------------------
 FROM node:22-bookworm-slim

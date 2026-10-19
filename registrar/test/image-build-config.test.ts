@@ -4,6 +4,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   componentsFor,
+  copyInstructions,
   copySources as copySourcesOf,
   dockerInstructions,
   imageInputs,
@@ -22,8 +23,8 @@ import {
  *     silently drop a file from an image);
  *   - dependencies install from the root lockfile (`npm ci`), never a
  *     lockfile-free `npm install`;
- *   - registrar/tsconfig.image.json excludes only modules the shipped
- *     server never imports;
+ *   - the registrar image's COPY --exclude list drops only modules the
+ *     shipped server never imports;
  *   - e5o.1: each Hermes image ships its OWN environment map;
  *   - no vendored copy creeps back under balena/.
  */
@@ -64,10 +65,18 @@ describe('single-source image builds', () => {
     },
   );
 
-  it('registrar/tsconfig.image.json excludes only modules the shipped server never imports', () => {
-    const cfg = read('registrar/tsconfig.image.json');
-    const excluded = [...cfg.matchAll(/"src\/([\w-]+)"/g)].map((m) => m[1]);
-    expect(excluded.sort()).toEqual(['credential-scan', 'oci-gate', 'registry']);
+  it('the registrar image COPY-excludes only modules the shipped server never imports', () => {
+    const srcCopy = copyInstructions(read('registrar/Dockerfile')).find((c: { sources: string[] }) =>
+      c.sources.includes('registrar/src/'),
+    );
+    const excluded: string[] = srcCopy.excludes;
+    expect([...excluded].sort()).toEqual(['credential-scan', 'oci-gate', 'registry']);
+    // ...and those paths are not build input (so the credential scan skips them).
+    const inputs = imageInputs(catalog, 'registrar', repoRoot);
+    for (const e of excluded) {
+      expect(inputs.some((f: string) => f.startsWith(`registrar/src/${e}`)), e).toBe(false);
+    }
+    expect(inputs).toContain('registrar/src/index.ts');
 
     const srcRoot = path.join(repoRoot, 'registrar/src');
     const offenders: string[] = [];

@@ -62,19 +62,11 @@ function expand(rel: string): string[] {
     .flatMap((n) => expand(path.posix.join(rel, n)));
 }
 const catalog = loadCatalog(repoRoot);
-// registrar/src modules the image build never compiles (tsconfig.image.json,
-// pinned by image-build-config.test.ts): build-stage input only, never in
-// the runtime image's dist/.
-const IMAGE_EXCLUDED = [...read('registrar/tsconfig.image.json').matchAll(/"(src\/[\w-]+)"/g)].map(
-  (m) => `registrar/${m[1]}/`,
-);
 const BAKED_INPUTS = [
   ...new Set(
     Object.keys(catalog.components).flatMap((c) => imageInputs(catalog, c, repoRoot).flatMap(expand)),
   ),
-]
-  .filter((f) => !IMAGE_EXCLUDED.some((d) => f.startsWith(d)))
-  .sort();
+].sort();
 
 /** A tailnet-qualified MagicDNS name: <host>.<tailnet>.ts.net. */
 const TS_NET_NAME = /[a-z0-9-]+\.[a-z0-9-]+\.ts\.net/i;
