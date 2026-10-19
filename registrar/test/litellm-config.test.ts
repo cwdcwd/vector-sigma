@@ -112,4 +112,16 @@ describe('Ollama Cloud native route configuration', () => {
     expect(devices).toBe(canonical);
   });
 
+  it('keeps the sensitive-text constraint stated in the docs and template', () => {
+    const canonical = readFileSync(path.join(repoRoot, 'docs/gateway-ops.md'), 'utf8');
+    expect(canonical).toContain('if any routed traffic may carry sensitive');
+    expect(canonical).toContain('map every tier only to self-hosted model groups');
+    expect(canonical).toContain('hosted ollama-cloud lanes');
+    expect(canonical).toContain('no self-hosted model');
+    const template = config.slice(config.indexOf('# auto_router template'), config.indexOf('\nrouter_settings:'));
+    expect(template).toContain('# Sensitive text: if routed traffic may carry sensitive free text, map every tier');
+    expect(template).toContain('# only to self-hosted model groups');
+    expect(template).toContain('# self-hosted model group, so this template must stay commented in shared defaults.');
+    expect(template.split('\n').every((line) => line === '' || line.startsWith('#'))).toBe(true);
+  });
 });

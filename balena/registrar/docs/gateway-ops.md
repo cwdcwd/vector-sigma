@@ -682,6 +682,13 @@ lane) and MEDIUM/COMPLEX/REASONING to `ollama-cloud/glm-5.3`; replace these with
 model groups that exist in your own deployment. `session_affinity: true` keeps a
 session on one model so it can retain that model's prompt cache.
 
+Sensitive text stays off hosted lanes: if any routed traffic may carry sensitive
+free text, map every tier only to self-hosted model groups (define those groups
+first, then opt in). The example tiers here are hosted ollama-cloud lanes, and
+the deployed config's model groups are hosted as well — no self-hosted model
+group is configured, so the template as shipped is not a sensitive-traffic
+route and must stay commented in shared defaults.
+
 The template presumes the 1.105.1 gateway upgrade (the version carried by the
 1py.17 / PR #73 stack); this behavior is 1.105.x code, not present in the pinned
 1.100.1. Before trusting it, opt in and smoke-test it on the upgraded gateway.
@@ -695,7 +702,9 @@ Two pitfalls are important:
    model, visible only in Prometheus fallback counters. Declaring deployment
    `model_info` limits did not help in the source fleet's 1.105.1 test because the
    global map lookup raised first. Smoke-test on the upgraded gateway rather than
-   treating that result as absolute. Related upstream issue: #23054. Client-side
+   treating that result as absolute. Topically related upstream discussion:
+   #23054 (closed as not planned; it covers unmapped-model metadata/routing
+   failures generally, not this compaction path). Client-side
    compression (§3.1) makes router compaction redundant.
 2. **`classification_rubric` is for the LLM-judge classifier.** The heuristic
    classifier silently ignores it.

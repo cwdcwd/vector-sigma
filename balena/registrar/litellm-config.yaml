@@ -117,6 +117,10 @@ model_list:
 # auto_router template (opt-in only; every line remains commented).
 # EXAMPLES only: replace these aliases with model groups configured by the operator.
 # SIMPLE uses the fleet's default flash lane; heavier tiers use glm-5.3 examples.
+# Sensitive text: if routed traffic may carry sensitive free text, map every tier
+# only to self-hosted model groups (define them first, then opt in). The example
+# aliases above are hosted ollama-cloud lanes; the shipped config has no
+# self-hosted model group, so this template must stay commented in shared defaults.
 # - model_name: auto_router/complexity_router
 #   litellm_params:
 #     model: auto_router/complexity_router
@@ -132,8 +136,9 @@ model_list:
 #       # raise uncaught ModelNotMappedError during model-map sizing; requests
 #       # then fall through to the next fallback (Prometheus fallback counters).
 #       # model_info limits did not help in a source-fleet 1.105.1 test; smoke-test
-#       # on the upgraded gateway. Related upstream #23054; client compression
-#       # (§3.1) makes router compaction redundant.
+#       # on the upgraded gateway. Topically related upstream #23054 (general
+#       # unmapped-model metadata/routing discussion, closed not planned). Client
+#       # compression (§3.1) makes router compaction redundant.
 #       # classification_rubric: <operator rubric>
 #       # classification_rubric is for the LLM-judge classifier; the heuristic
 #       # classifier silently ignores it.
