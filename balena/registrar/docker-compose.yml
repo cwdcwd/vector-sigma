@@ -231,12 +231,9 @@ services:
     volumes:
       - doltdata:/var/lib/dolt
     ports:
-      # Published to the device LAN: VS device bd clients reach the master
-      # over the LAN exactly like REGISTRAR_URL (owner ruling: devices run bd
-      # clients against it). Not reachable off-LAN: the balenaCloud public-URL
-      # feature tunnels device port 80 ONLY (f57.9). origin-fleet precedent: central
-      # Dolt :3326 serving every fleet client.
-      - "3326:3306"
+      # Loopback-only per gateway hardening: device queue clients must use
+      # the documented approved access path rather than an exposed DB port.
+      - "127.0.0.1:3326:3306"
     healthcheck:
       # Dolt's documented liveness query, AUTHENTICATED, with the client
       # flags in the right position: dolt's connection flags are GLOBAL flags

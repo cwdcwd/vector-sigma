@@ -139,11 +139,9 @@ services:
     volumes:
       - doltdata:/var/lib/dolt
     ports:
-      # Self-host: LAN queue access mirrors the balena posture (host 3326 ->
-      # container 3306). Operators wanting it loopback-only can drop the
-      # publish — devices then cannot bd-join, which defeats the queue
-      # contract; documented in scripts/vs-queue-bootstrap.md.
-      - "3326:3306"
+      # Loopback-only per gateway hardening. Compose-internal clients still
+      # use dolt:3306; remote clients need an explicitly secured access path.
+      - "127.0.0.1:3326:3306"
     healthcheck:
       # Same authenticated liveness probe as the balena side, with the
       # dolt client flags as GLOBAL flags BEFORE the sql subcommand (the
