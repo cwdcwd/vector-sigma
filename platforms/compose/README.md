@@ -6,7 +6,7 @@ any Docker host, pulling the same CI-built GHCR images the balena fleets run
 
 ```
 platforms/compose/
-├── compose.yaml        # postgres + litellm + registrar + dolt + scotty + primus + registrant-own
+├── compose.yaml        # RENDERED from stack/registrar.yaml — postgres + litellm + registrar + dolt + scotty + primus + registrant-own
 ├── .env.example        # self-host variables (copy to .env here, fill secrets)
 └── README.md
 ```

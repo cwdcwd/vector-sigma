@@ -18,7 +18,7 @@ Deployed fleet: `g_c_d/vector-sigma-master`.
 
 ```
 platforms/balena/registrar/
-├── docker-compose.yml        # registrar + postgres + gateway + queue + primus + tailscale (the serve edge)
+├── docker-compose.yml        # RENDERED from stack/registrar.yaml — registrar + postgres + gateway + queue + primus + tailscale
 ├── queue-seed/               # one-time initial beads for the fleet queue
 └── README.md
 ```
@@ -462,8 +462,9 @@ device's serve name. `extra_hosts` has no substitution path under the
 supervisor compose, so ONE LINE PER ENROLLED DEVICE IS THE
 MECHANISM: each newly enrolled device adds
 `- "<device>.tailb7207e.ts.net:<its tailnet IP>"` to the litellm
-service in `platforms/balena/registrar/docker-compose.yml`, then the master
-redeploys (a supervisor recreate of the litellm container; no full
+service's `x-balena` block in `stack/registrar.yaml`, re-rendered with
+`node scripts/render-stack.mjs` (CI fails if the committed compose is stale),
+then the master redeploys (a supervisor recreate of the litellm container; no full
 fleet pin cycle). The master's own name is pinned the same way. The
 pin test (`magicdns-flip.test.ts`) guards the set — a new enroll
 without its compose line is a red CI run, not a live round-trip
