@@ -53,8 +53,8 @@ const WORKFLOWS = [
 
 /** Image path -> repo source the bake COPYs from (the bytes the image carries). */
 const IMAGE_TO_SOURCE: Record<string, string> = {
-  '/usr/local/bin/postgres-wrapper.sh': 'balena/registrar/postgres-entrypoint.sh',
-  '/usr/local/bin/gate.sh': 'balena/devices/agent/gate.sh',
+  '/usr/local/bin/postgres-wrapper.sh': 'images/postgres/postgres-entrypoint.sh',
+  '/usr/local/bin/gate.sh': 'images/agent/gate.sh',
 };
 
 const appFor: Record<string, string> = {
@@ -196,8 +196,8 @@ describe('smoke assertions vs real bake sources (findings 4-5 classes)', () => {
   it('fail-loud needles exist in the sources the images bake', () => {
     expect(read('registrar/src/config.ts')).toContain('invalid registrar configuration');
     expect(read('registrant/src/config.ts')).toContain('invalid registrant configuration');
-    expect(read('balena/registrar/postgres-entrypoint.sh')).toContain('LITELLM_PG_PASSWORD is required');
-    expect(read('balena/registrar/litellm-entrypoint.sh')).toContain('LITELLM_PG_PASSWORD is required');
+    expect(read('images/postgres/postgres-entrypoint.sh')).toContain('LITELLM_PG_PASSWORD is required');
+    expect(read('images/litellm/litellm-entrypoint.sh')).toContain('LITELLM_PG_PASSWORD is required');
   });
 });
 

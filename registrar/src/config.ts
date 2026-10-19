@@ -10,11 +10,11 @@ const boolFromEnv = z
 // with the variable name and the fix path.
 const sessionSecret = z
   .string({
-    required_error: 'SESSION_SECRET is required — set it as a balena fleet/service variable on the registrar service (see balena/registrar/README.md)',
+    required_error: 'SESSION_SECRET is required — set it as a balena fleet/service variable on the registrar service (see platforms/balena/registrar/README.md)',
   })
   .min(
     16,
-    'SESSION_SECRET must be at least 16 characters — set a strong random value as a balena fleet/service variable on the registrar service (see balena/registrar/README.md)',
+    'SESSION_SECRET must be at least 16 characters — set a strong random value as a balena fleet/service variable on the registrar service (see platforms/balena/registrar/README.md)',
   );
 
 // DATABASE_URL is an optional whole-URL override (fleet-ops-f57.8):
@@ -22,7 +22,7 @@ const sessionSecret = z
 // to 'postgres' (the docker compose service name, deterministic within
 // the composition) — so the balena compose file carries every
 // structural value and the owner sets only two secrets
-// (POSTGRES_PASSWORD, SESSION_SECRET). The deploy/ self-host example
+// (POSTGRES_PASSWORD, SESSION_SECRET). The platforms/compose/ self-host
 // sets DATABASE_URL directly and is unaffected.
 const EnvSchema = z.object({
   DATABASE_URL: z.string().optional(),
@@ -67,7 +67,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   if (e.DATABASE_URL !== undefined) {
     if (e.DATABASE_URL.trim() === '') {
       throw new Error(
-        'invalid registrar configuration: DATABASE_URL is set but empty — set it to a full postgres:// URL, or unset it so the URL is built from POSTGRES_USER/POSTGRES_PASSWORD/POSTGRES_DB (balena fleet/service variables, see balena/registrar/README.md)',
+        'invalid registrar configuration: DATABASE_URL is set but empty — set it to a full postgres:// URL, or unset it so the URL is built from POSTGRES_USER/POSTGRES_PASSWORD/POSTGRES_DB (balena fleet/service variables, see platforms/balena/registrar/README.md)',
       );
     }
     databaseUrl = e.DATABASE_URL;
@@ -78,7 +78,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     if (e.POSTGRES_DB === undefined || e.POSTGRES_DB.trim() === '') missing.push('POSTGRES_DB');
     if (missing.length > 0) {
       throw new Error(
-        `invalid registrar configuration: DATABASE_URL is unset and required part(s) are missing: ${missing.join(', ')} — set each as a balena fleet/service variable (see balena/registrar/README.md)`,
+        `invalid registrar configuration: DATABASE_URL is unset and required part(s) are missing: ${missing.join(', ')} — set each as a balena fleet/service variable (see platforms/balena/registrar/README.md)`,
       );
     }
     databaseUrl = `postgres://${encodeURIComponent(e.POSTGRES_USER as string)}:${encodeURIComponent(

@@ -53,7 +53,7 @@ RUN mkdir -p /data/agent && chown -R node:node /data/agent
 # f57.13: CA shim — decodes VS_CA_CERT_B64 (the fleet variable carrying an
 # internal CA) into NODE_EXTRA_CA_CERTS before the registrant starts. A no-op
 # when no CA variables are set.
-COPY deploy/vs-entrypoint.sh /usr/local/bin/vs-entrypoint.sh
+COPY images/common/hooks/vs-entrypoint.sh /usr/local/bin/vs-entrypoint.sh
 RUN chmod 0755 /usr/local/bin/vs-entrypoint.sh
 
 USER node

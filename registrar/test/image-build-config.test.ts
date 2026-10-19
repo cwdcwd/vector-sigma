@@ -14,7 +14,7 @@ import {
 /**
  * Single-source image builds. Every first-party image builds from the REPO
  * ROOT context and COPYs the canonical sources (registrar/, registrant/,
- * shared/, deploy/, scripts/, docs/) — the balena app dirs no longer carry
+ * shared/, images/, docs/) — the platform dirs carry
  * vendored copies, so there is nothing to byte-pin. What this file guards
  * instead is the build configuration that replaced the copies:
  *
@@ -110,8 +110,8 @@ describe('single-source image builds', () => {
       copySources(rel)
         .filter((s) => s.startsWith('docs/'))
         .map((s) => s.slice('docs/'.length));
-    const devices = docsOf('balena/devices/Dockerfile.agent-hermes');
-    const primus = docsOf('balena/registrar/Dockerfile.hermes');
+    const devices = docsOf('images/agent/Dockerfile');
+    const primus = docsOf('images/hermes/Dockerfile');
 
     expect(devices).toContain('device-environment.md');
     expect(devices).toContain('queue-conventions.md');
@@ -129,23 +129,26 @@ describe('single-source image builds', () => {
     expect(deviceMap).toMatch(/NEVER run `bd init`/);
   });
 
-  it('balena/ carries no vendored copies of canonical sources', () => {
+  it('platforms/ carries no copies of image inputs', () => {
     const banned = [
-      'balena/registrar/registrar',
-      'balena/registrar/registrant-own',
-      'balena/devices/registrant',
-      'balena/registrar/docs',
-      'balena/devices/docs',
-      'balena/registrar/gateway-memory',
-      'balena/devices/agent/gateway-memory',
+      'platforms/balena/registrar/registrar',
+      'platforms/balena/registrar/registrant-own',
+      'platforms/balena/devices/registrant',
+      'platforms/balena/registrar/docs',
+      'platforms/balena/devices/docs',
+      'platforms/balena/registrar/gateway-memory',
+      'platforms/balena/devices/agent/gateway-memory',
     ];
     expect(banned.filter((p) => existsSync(path.join(repoRoot, p)))).toEqual([]);
 
-    // No file under balena/ may share a name with a canonical hook script.
-    const canonical = new Set([
-      ...readdirSync(path.join(repoRoot, 'deploy')).filter((n) => /\.(sh|py)$/.test(n)),
-      ...readdirSync(path.join(repoRoot, 'scripts')).filter((n) => /^vs-.*\.(sh|py)$/.test(n)),
-    ]);
+    // No file under platforms/ may share a name with a canonical image input:
+    // platforms/ holds deploy configuration only; everything an image bakes
+    // lives under images/ (images/common/ for inputs shared by several images).
+    const canonical = new Set(
+      ['images/common/hooks', 'images/common/bin'].flatMap((d) =>
+        readdirSync(path.join(repoRoot, d)).filter((n) => /\.(sh|py)$/.test(n)),
+      ),
+    );
     const dupes: string[] = [];
     const walk = (dir: string) => {
       for (const name of readdirSync(dir)) {
@@ -154,7 +157,7 @@ describe('single-source image builds', () => {
         else if (canonical.has(name)) dupes.push(path.relative(repoRoot, p));
       }
     };
-    walk(path.join(repoRoot, 'balena'));
-    expect(dupes, 'COPY these from deploy/ or scripts/ instead').toEqual([]);
+    walk(path.join(repoRoot, 'platforms'));
+    expect(dupes, 'COPY these from images/common/ instead').toEqual([]);
   });
 });

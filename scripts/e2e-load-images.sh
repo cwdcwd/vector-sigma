@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/e2e-load-images.sh — import the scanned amd64 OCI layouts into the
-# local docker daemon as vs-e2e/<component>:ci, the tags deploy/compose.e2e.yaml
-# runs (E2E_PREBUILT=1 deploy/e2e.sh --up). E2E then exercises the exact
+# local docker daemon as vs-e2e/<component>:ci, the tags test/e2e/compose.e2e.yaml
+# runs (E2E_PREBUILT=1 test/e2e/e2e.sh --up). E2E then exercises the exact
 # bytes the content gate scanned and the promote job publishes.
 #
 # Usage: scripts/e2e-load-images.sh <dir holding <component>-amd64.tar>
@@ -28,7 +28,7 @@ set -euo pipefail
 dir="${1:?usage: e2e-load-images.sh <layouts dir>}"
 command -v skopeo >/dev/null || { echo "e2e-load-images: skopeo not found (apt-get install skopeo)" >&2; exit 1; }
 catalog=" $(node scripts/image-catalog.mjs components | tr -d '[]"' | tr ',' ' ') "
-needed="$(docker compose --env-file deploy/.env.e2e -f deploy/compose.yaml -f deploy/compose.e2e.yaml \
+needed="$(docker compose --env-file test/e2e/.env.e2e -f platforms/compose/compose.yaml -f test/e2e/compose.e2e.yaml \
   config --images | sed -n 's#^vs-e2e/\(.*\):ci$#\1#p' | sort -u)"
 
 for component in $needed; do

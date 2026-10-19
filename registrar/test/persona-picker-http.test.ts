@@ -3,7 +3,7 @@ import { createTestEnv, seedAdminKey, seedDevice, type TestEnv } from './helpers
 
 /**
  * AC7b dry-run (fleet-ops-zbq.2): the persona-picker e2e assertions from
- * deploy/e2e.sh, executed against a REAL served editor page over HTTP
+ * test/e2e/e2e.sh, executed against a REAL served editor page over HTTP
  * (socket + cookies + CSRF), on the same app instance the e2e compose
  * stack builds. CI's compose job still runs the full stack; this proves
  * the AC's assertion logic and the page render without docker.

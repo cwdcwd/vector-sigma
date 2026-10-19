@@ -4,7 +4,7 @@
 # One source of truth: registrar/ + shared/ are compiled directly, and
 # dependencies come from the root package-lock.json (`npm ci`), so the
 # image installs exactly what the workspace tests ran against. Same image
-# for the balena registrar fleet, the self-host compose (deploy/), and E2E.
+# for the balena registrar fleet, the self-host compose (platforms/compose/), and E2E.
 #
 # Shipped scope: the runtime service only. The CI tooling that lives in
 # this workspace (credential scanner, OCI content gate, GHCR promoter) is

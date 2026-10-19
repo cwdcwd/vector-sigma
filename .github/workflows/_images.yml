@@ -186,10 +186,10 @@ jobs:
           scripts/e2e-load-images.sh "${{ runner.temp }}/layouts"
           rm -rf "${{ runner.temp }}/layouts"   # the rest (agent, tailscale) frees disk
       - name: Compose-simulated device E2E (prebuilt — no rebuild)
-        run: E2E_PREBUILT=1 deploy/e2e.sh --up
+        run: E2E_PREBUILT=1 test/e2e/e2e.sh --up
       - name: Teardown
         if: always()
-        run: deploy/e2e.sh --down
+        run: test/e2e/e2e.sh --down
 
   all-components-gate:
     name: All-components gate (scan + index + E2E, fail-closed)

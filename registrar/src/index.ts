@@ -19,7 +19,7 @@ async function main(): Promise<void> {
     // SKIPPED — say so loudly instead of booting half-configured in silence.
     console.warn(
       'MIGRATE_ON_START is not "true" — database migrations were skipped. ' +
-        'Set MIGRATE_ON_START=true as a balena fleet/service variable on the registrar service (see balena/registrar/README.md).',
+        'Set MIGRATE_ON_START=true as a balena fleet/service variable on the registrar service (see platforms/balena/registrar/README.md).',
     );
   }
 

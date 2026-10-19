@@ -1,5 +1,5 @@
 {
-  "$comment": "The one list of images vector-sigma builds. CI builds, scans, E2Es and promotes exactly these (scripts/image-catalog.mjs turns it into workflow matrices); balena releases and deploy/ consume the promoted GHCR digests. context is the docker build context relative to the repo root; dockerfile is relative to the repo root.",
+  "$comment": "The one list of images vector-sigma builds. CI builds, scans, E2Es and promotes exactly these (scripts/image-catalog.mjs turns it into workflow matrices); every platforms/ adapter consumes the promoted GHCR digests. context is the docker build context relative to the repo root; dockerfile is relative to the repo root.",
   "registry": "ghcr.io/cwdcwd/vector-sigma",
   "platforms": [
     { "platform": "linux/amd64", "arch_tag": "amd64", "runner": "ubuntu-latest" },
@@ -8,12 +8,12 @@
   "components": {
     "registrar": { "dockerfile": "registrar/Dockerfile", "context": ".", "fleets": ["registrar"] },
     "registrant": { "dockerfile": "registrant/Dockerfile", "context": ".", "fleets": ["registrar", "devices"] },
-    "hermes": { "dockerfile": "balena/registrar/Dockerfile.hermes", "context": ".", "fleets": ["registrar"] },
-    "scotty": { "dockerfile": "balena/registrar/Dockerfile.scotty", "context": "balena/registrar", "fleets": ["registrar"] },
-    "postgres": { "dockerfile": "balena/registrar/Dockerfile.postgres", "context": "balena/registrar", "fleets": ["registrar"] },
-    "litellm": { "dockerfile": "balena/registrar/Dockerfile.litellm", "context": "balena/registrar", "fleets": ["registrar"] },
-    "tailscale": { "dockerfile": "balena/registrar/Dockerfile.tailscale", "context": "balena/registrar", "fleets": ["registrar"] },
-    "agent": { "dockerfile": "balena/devices/Dockerfile.agent-hermes", "context": ".", "fleets": ["devices"] },
-    "tailscale-devices": { "dockerfile": "balena/devices/Dockerfile.tailscale", "context": "balena/devices", "fleets": ["devices"] }
+    "hermes": { "dockerfile": "images/hermes/Dockerfile", "context": ".", "fleets": ["registrar"] },
+    "scotty": { "dockerfile": "images/scotty/Dockerfile", "context": ".", "fleets": ["registrar"] },
+    "postgres": { "dockerfile": "images/postgres/Dockerfile", "context": ".", "fleets": ["registrar"] },
+    "litellm": { "dockerfile": "images/litellm/Dockerfile", "context": ".", "fleets": ["registrar"] },
+    "tailscale": { "dockerfile": "images/tailscale/Dockerfile", "context": ".", "fleets": ["registrar"] },
+    "agent": { "dockerfile": "images/agent/Dockerfile", "context": ".", "fleets": ["devices"] },
+    "tailscale-devices": { "dockerfile": "images/tailscale-devices/Dockerfile", "context": ".", "fleets": ["devices"] }
   }
 }

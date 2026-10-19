@@ -22,7 +22,7 @@ into the image.
 
 | Service | What it is | Where |
 |---|---|---|
-| `agent` | **You.** The device agent Hermes runtime, `HERMES_HOME=/data/agent`, built from `balena/devices/Dockerfile.agent-hermes` (pinned official Hermes image + bd 1.2.2 + the identity gate + the A2A wiring hook) | your container |
+| `agent` | **You.** The device agent Hermes runtime, `HERMES_HOME=/data/agent`, built from `images/agent/Dockerfile` (pinned official Hermes image + bd 1.2.2 + the identity gate + the A2A wiring hook) | your container |
 | `registrant` | Your identity delivery: clock gate → registrar fetch → 0600 bundle write → `ready.marker` → resident rotation watcher | shares the `agent-data` volume |
 | `tailscale` | The overlay service: joins your device to the VS tailnet so the master's endpoints are reachable from anywhere and your device is reachable from the tailnet | host network namespace — invisible to compose-internal DNS; carries no application role |
 
@@ -206,7 +206,7 @@ and share it with every VS agent:
 
 ## Rebuilding you
 
-Your image is `balena/devices/Dockerfile.agent-hermes`: the pinned
+Your image is `images/agent/Dockerfile`: the pinned
 official Hermes image (`nousresearch/hermes-agent:v2026.9.21` — the
 SAME tag as the master's primus image, the parity pin; do NOT bump
 independently) plus this lane's additions — bd 1.2.2 baked full

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const config = readFileSync(path.join(repoRoot, 'balena/registrar/litellm-config.yaml'), 'utf8');
+const config = readFileSync(path.join(repoRoot, 'images/litellm/litellm-config.yaml'), 'utf8');
 
 function explicitGroup(name: string): string {
   const start = config.indexOf(`  - model_name: ollama-cloud/${name}`);

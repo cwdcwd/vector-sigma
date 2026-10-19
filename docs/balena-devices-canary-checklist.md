@@ -6,10 +6,10 @@ For fleet/release policy context see [balena-architecture.md](balena-architectur
 
 ## 1. Before the tag
 
-- [ ] CI green on the PR that touched `balena/devices/` (`ci.yml` tests + `build-images.yml` validate: scan + E2E).
+- [ ] CI green on the PR that touched `platforms/balena/devices/` (`ci.yml` tests + `build-images.yml` validate: scan + E2E).
 - [ ] PR reviewed and approved; merged by the submitter (merge convention 2026-09-19).
 - [ ] `registrar/test/image-build-config.test.ts` green (unit-test job): every image's COPY inputs exist, and the devices image ships the WORKER environment map, never the master's.
-- [ ] `balena/devices/README.md` still matches the shipped compose shape.
+- [ ] `platforms/balena/devices/README.md` still matches the shipped compose shape.
 
 ## 2. Build the release
 

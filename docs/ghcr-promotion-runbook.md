@@ -30,7 +30,7 @@ Two consequences, both enforced in code rather than in review:
    scanned-and-passed child digests and validates it.
 3. `e2e` — loads every component's scanned amd64 tar as
    `vs-e2e/<component>:ci` (`scripts/e2e-load-images.sh`) and runs
-   `E2E_PREBUILT=1 deploy/e2e.sh --up` against them — the bytes about to be
+   `E2E_PREBUILT=1 test/e2e/e2e.sh --up` against them — the bytes about to be
    promoted, never a rebuild.
 4. `all-components-gate` — aggregate, fail-closed: fails if any component or
    platform job, or the E2E, did not succeed.

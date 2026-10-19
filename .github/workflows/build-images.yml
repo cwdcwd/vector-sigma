@@ -4,7 +4,7 @@ name: Build and publish private VS images
 # builds each images.json component once, credential-scans its inputs,
 # content-gates the OCI layouts, runs the compose E2E on the scanned amd64
 # bytes, and — on main, when publishing is enabled — promotes those exact
-# bytes to GHCR tagged with the commit SHA (the tag deploy/compose.yaml's
+# bytes to GHCR tagged with the commit SHA (the tag platforms/compose/compose.yaml's
 # VS_IMAGE_TAG pins).
 #
 # `images` (every event) is read-only. `publish` — the ONLY job holding
@@ -17,12 +17,12 @@ on:
     branches: [main]
     paths-ignore:
       - 'README.md'
-      - 'reports/**'
+      - 'docs/audits/**'
       - '.beads/**'
   pull_request:
     paths-ignore:
       - 'README.md'
-      - 'reports/**'
+      - 'docs/audits/**'
       - '.beads/**'
   workflow_dispatch:
     inputs:

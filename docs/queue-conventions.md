@@ -47,7 +47,7 @@ own, and a device agent reading the master's map is a regression
 
 - Pinned at **bd 1.2.2** (fleet convention `bd-version-pin`). Never
   `npm i -g beads@latest` — schema migration lockout risk.
-- Joining is config-only (see `scripts/vs-queue-bootstrap.md`). The one-time
+- Joining is config-only (see `docs/vs-queue-bootstrap.md`). The one-time
   `bd init --server` belongs to the first connector (coordinator/owner);
   the minted project_id is a fleet contract. **Never re-init.**
 - Peer clients silence bd auto-backup noise (`bd config set backup.enabled

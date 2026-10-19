@@ -117,7 +117,7 @@ function main(argv) {
   const args = argv ?? process.argv.slice(2);
   const repoOverride = argVal(args, '--repo', undefined);
   if (repoOverride) repoRoot = path.resolve(repoOverride);
-  const outPath = argVal(args, '--out', path.join(repoRoot, 'reports', 'credential-history-audit.txt'));
+  const outPath = argVal(args, '--out', path.join(repoRoot, 'docs', 'audits', 'credential-history-audit.txt'));
 
   const commits = listAllCommits();
   if (commits.length === 0) {
