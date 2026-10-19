@@ -123,5 +123,9 @@ router_settings:
     # - ollama-cloud/glm-5.3: ["ollama-cloud/glm-5.2", "gw-sonnet"]
 
 general_settings:
+  # The gateway may receive client IP forwarding from a front proxy. There is
+  # no in-compose proxy or source-IP allowlist in this deployment; do not trust
+  # XFF unless ingress is restricted to the intended proxy.
+  use_x_forwarded_for: true
   master_key: os.environ/LITELLM_MASTER_KEY
   database_url: os.environ/DATABASE_URL
