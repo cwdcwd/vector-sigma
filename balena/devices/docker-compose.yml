@@ -13,6 +13,14 @@
 # properties" (verified against the CLI's bundled ajv schema, v24.x).
 version: "2.4"
 #
+# Images: every VS-built service's `build:` block (context: ../.., the repo
+# root) is the INPUT to scripts/render-release-compose.mjs, which a
+# `devices-v*` release runs to swap each block for the CI-built GHCR image pinned
+# by digest (images.json; .github/workflows/_images.yml). `balena push` /
+# `balena deploy --build` against THIS file is NOT a supported path: the
+# balena CLI confines build contexts to the project dir and rejects ../..
+# Release only by pushing a `devices-v*` tag.
+#
 # No secrets in image layers, build args, or this file. The per-device
 # REGISTRAR_KEY is a device-scoped balena variable; BALENA_DEVICE_UUID is
 # injected by the platform automatically.

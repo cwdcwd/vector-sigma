@@ -62,7 +62,7 @@ patch never rebuilds or redeploys device apps, and vice versa.
 
 ## GitHub Actions
 
-Six workflows, `.github/workflows/`. Every image is an `images.json`
+Seven workflows, `.github/workflows/`. Every image is an `images.json`
 component (9 of them); one reusable pipeline builds them all:
 
 - **`_images.yml`** (reusable, `workflow_call`) — builds EVERY component x

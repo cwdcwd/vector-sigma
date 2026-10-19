@@ -26,13 +26,16 @@ describe('gateway proxy hardening contract', () => {
     expect(config.general_settings?.use_x_forwarded_for).toBe(true);
   });
 
-  it('documents liveness, proxy logging/trust, loopback ports, and syncs vendored copies', () => {
+  it('documents liveness, proxy logging/trust, loopback ports, and ships the doc in both Hermes images', () => {
     const canonical = read('docs/gateway-ops.md');
     expect(canonical).toContain('## Gateway liveness and proxy front (logs, real client IPs, loopback)');
     expect(canonical).toContain('GET /api/status');
     expect(canonical).toContain('X-Litellm-Api-Key delete');
     expect(canonical).toContain("outside the network's dynamic");
-    expect(read('balena/registrar/docs/gateway-ops.md')).toBe(canonical);
-    expect(read('balena/devices/docs/gateway-ops.md')).toBe(canonical);
+    // Single source: both images COPY docs/gateway-ops.md straight from the
+    // repo-root build context (no vendored copies to keep in sync).
+    for (const dockerfile of ['balena/registrar/Dockerfile.hermes', 'balena/devices/Dockerfile.agent-hermes']) {
+      expect(read(dockerfile), dockerfile).toMatch(/^\s+docs\/gateway-ops\.md \\$/m);
+    }
   });
 });

@@ -318,6 +318,23 @@ describe('publisher workflow graph: E2E runs the scanned bytes, never a rebuild'
     expect(teardown?.if).toBe('always()');
   });
 
+  // PR #87 review (kangbot): `docker load` reads type=oci layouts only on the
+  // containerd image store; the hosted runners' classic store fails with
+  // "open .../blobs/json: no such file or directory". The loader imports via
+  // skopeo (store-agnostic) and proves the imported layers are the layout's.
+  it('the loader imports with skopeo (never docker load) and verifies layer diff IDs', () => {
+    const code = read('scripts/e2e-load-images.sh')
+      .split('\n')
+      .filter((l) => !/^\s*#/.test(l))
+      .join('\n');
+    expect(code).toContain('skopeo copy');
+    expect(code).toContain('oci-archive:');
+    expect(code).toContain('docker-daemon:');
+    expect(code).not.toMatch(/docker load/);
+    expect(code).toContain('scripts/oci-layout-diffids.mjs');
+    expect(code).toContain('.RootFS.Layers');
+  });
+
   it('ci.yml no longer runs a separate source-built E2E', () => {
     expect(read('.github/workflows/ci.yml')).not.toContain('deploy/e2e.sh');
   });

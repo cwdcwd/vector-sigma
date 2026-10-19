@@ -38,6 +38,11 @@ child digest>` and `balena deploy` ships the rendered compose. The
 `build:` blocks here are that render's input (and the repo-root build
 recipe) — the balena builder never sees source.
 
+`balena push` (or `balena deploy --build`) against `docker-compose.yml` is
+**not a supported path**: the `build:` contexts point at the repo root
+(`../..`), which the balena CLI refuses — it confines build contexts to the
+project dir. Ship by pushing a `registrar-v*` tag.
+
 ## Runtime configuration
 
 Owner-set surface is **two secrets** (owner ruling, 2026-09-19:

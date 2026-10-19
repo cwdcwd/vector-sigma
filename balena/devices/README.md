@@ -41,6 +41,11 @@ A `devices-v*` tag runs that pipeline, then
 `docker-compose.yml` for the promoted arm64 child digest and `balena
 deploy` ships the rendered compose — the balena builder never sees source.
 
+`balena push` (or `balena deploy --build`) against `docker-compose.yml` is
+**not a supported path**: the `build:` contexts point at the repo root
+(`../..`), which the balena CLI refuses — it confines build contexts to the
+project dir. Ship by pushing a `devices-v*` tag.
+
 ## Runtime configuration
 
 No `${VAR}` substitution — balena compose performs **no variable
