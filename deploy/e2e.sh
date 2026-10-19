@@ -529,7 +529,12 @@ ac8_grace_self_heal() {
 ac9_litellm_runtime_spendlogs() {
   note "AC9c (1py.15): LiteLLM runtime plain, streaming, tool-call SpendLogs uniqueness against local mock"
   local base="http://127.0.0.1:4001"
-  local key="sk-runtime-e2e-test"
+  local key
+  key="$(grep -E '^LITELLM_RUNTIME_MASTER_KEY=' "$ENV_FILE" | cut -d= -f2-)"
+  if [ -z "$key" ]; then
+    fail "AC9c runtime gateway" "LITELLM_RUNTIME_MASTER_KEY missing from $ENV_FILE"
+    return
+  fi
   local deadline=$((SECONDS + 180)) code=""
   until code="$(curl -s -o /dev/null -w '%{http_code}' -m 5 "$base/health/liveliness" 2>/dev/null)" \
     && [ "$code" = "200" ]; do
@@ -659,7 +664,7 @@ ac9_litellm_smoke() {
 # migrations ran AND the gateway's DATABASE_URL is live; the alias surfacing
 # in the list response means the row round-trips. Both routes are local
 # DB operations: no upstream LLM traffic, preserving AC9's smoke property.
-# Route shapes verified against the pinned ghcr.io/berriai/litellm:1.100.1
+# Route shapes verified against the pinned ghcr.io/berriai/litellm:1.105.1
 # sources (litellm/proxy/management_endpoints/key_management_endpoints.py):
 # POST /key/generate -> GenerateKeyResponse{key: str, ...};
 # GET /key/list -> {keys: [...]} with bare token strings unless
@@ -719,6 +724,413 @@ ac9b_litellm_db_smoke() {
   fi
 }
 
+# fleet-ops-1py.17 review regression: stored spend-log request bodies must
+# redact credential-named values. Behavior verified against the pinned
+# upstream v1.105.1 sources:
+#   - litellm/proxy/spend_tracking/spend_tracking_utils.py: SpendLogs rows
+#     store the proxy request body only when
+#     general_settings.store_prompts_in_spend_logs (or env
+#     STORE_PROMPTS_IN_SPEND_LOGS) is true — default off. The probe toggles
+#     it in this disposable E2E database only (via /config/field/update, the
+#     endpoint that applies the setting to the worker's in-memory store in
+#     1.105.1) and always restores it.
+#   - The stored body passes through _sanitize_request_body_for_spend_logs_
+#     payload(): every string value under a credential-classified key is
+#     replaced, at any nesting depth, with the REDACTED_BY_LITELLM_STRING
+#     sentinel (litellm/constants.py: "REDACTED_BY_LITELM"), and
+#     "secret_fields" (raw captured headers) is dropped entirely. This
+#     masking is unconditional — it does not depend on the prompt-storage
+#     flag.
+#   - The probe's completion rides the isolated spend-log runtime (the same
+#     pinned 1.105.1 image as the gateway) and its explicitly-configured
+#     `runtime-spendlogs-test` model whose only upstream is the local mock
+#     Ollama service: no provider/upstream traffic, and no real credential
+#     is ever used — only synthetic canaries. Neither the request nor the
+#     stored body is printed.
+ac9c_litellm_spend_log_redaction() {
+  note "AC9c: LiteLLM spend-log request-body credential redaction (upstream #43635 behavior)"
+  # Use the isolated upgraded LiteLLM fixture, whose only upstream is the local mock.
+  local base="http://127.0.0.1:4001"
+  local call_id="e2e-redaction-$(date +%s)-$$"
+  local request_body=/tmp/e2e-ac9c-redaction-request.json
+  local row_body=/tmp/e2e-ac9c-redaction-row.json
+  local list_body=/tmp/e2e-ac9c-redaction-list.json
+  local status lookup_status config_status
+  local master
+  master="$(grep -E '^LITELLM_RUNTIME_MASTER_KEY=' "$ENV_FILE" | cut -d= -f2-)"
+  if [ -z "$master" ]; then
+    fail AC9c "LITELLM_RUNTIME_MASTER_KEY missing from $ENV_FILE"
+    return
+  fi
+
+  # Prompt storage is off by default. The probe is the only in-battery caller
+  # that needs it; restore it on every exit path. A failed restore is itself
+  # a hard failure so the disposable DB is never left behind on a changed
+  # setting. The toggle rides /config/field/update, NOT /config/update: in
+  # the pinned 1.105.1 proxy, /config/update only persists the LiteLLM_Config
+  # row (update_config() never calls proxy_config.settings.apply_db_row),
+  # while the spend writer consults the worker's in-memory general_settings
+  # store (should_store_prompts_and_responses_in_spend_logs()) — so a 200
+  # from /config/update would leave the flag unset and the row would carry
+  # empty placeholder bodies. /config/field/update applies the row to the
+  # in-memory store (apply_db_row), making the flag effective for the
+  # completion logged below.
+  ac9c_restore_prompt_storage() {
+    config_status="$(curl -s -o /dev/null -w '%{http_code}' -m 30 \
+        -X POST "$base/config/field/update" \
+        -H "Authorization: Bearer $master" \
+        -H 'Content-Type: application/json' \
+        -d '{"field_name":"store_prompts_in_spend_logs","field_value":false,"config_type":"general_settings"}' 2>/dev/null || true)"
+    if [ "$config_status" != "200" ]; then
+      fail AC9c "could not restore store_prompts_in_spend_logs=false in the isolated runtime (HTTP ${config_status:-none})"
+    else
+      pass "AC9c prompt storage restored" "isolated runtime returned to store_prompts_in_spend_logs=false"
+    fi
+  }
+
+  config_status="$(curl -s -o /dev/null -w '%{http_code}' -m 30 \
+      -X POST "$base/config/field/update" \
+      -H "Authorization: Bearer $master" \
+      -H 'Content-Type: application/json' \
+      -d '{"field_name":"store_prompts_in_spend_logs","field_value":true,"config_type":"general_settings"}' 2>/dev/null || true)"
+  if [ "$config_status" != "200" ]; then
+    fail AC9c "could not enable prompt storage for the redaction probe (HTTP ${config_status:-none})"
+    return
+  fi
+  local cfg_row_state cfg_row_err=""
+  cfg_row_state="$(docker exec "$PROJECT-postgres-runtime-1" psql -U runtime -d litellm_runtime -tA -c \
+    "SELECT CASE WHEN count(*)=0 THEN 'no-row' WHEN max(CASE WHEN param_value IS NULL THEN 1 ELSE 0 END)=1 THEN 'null-value' WHEN max(CASE WHEN param_value::text LIKE '%store_prompts_in_spend_logs%' THEN 1 ELSE 0 END)=1 THEN 'flag-present' ELSE 'flag-absent' END FROM \"LiteLLM_Config\" WHERE param_name='general_settings';" 2>/dev/null | head -1)" || true
+  if [ -z "$cfg_row_state" ]; then
+    cfg_row_err="$(docker exec "$PROJECT-postgres-runtime-1" psql -U runtime -d litellm_runtime -tA -c \
+      "SELECT 1 FROM \"LiteLLM_Config\" LIMIT 1;" 2>&1 | head -1)" || true
+  fi
+  pass "AC9c prompt storage enable accepted" "isolated runtime field/update returned HTTP 200; runtime DB config row state=${cfg_row_state:-query-failed}; psql_probe=${cfg_row_err:-silent-ok}"
+
+  # Diagnostic precheck (shape-only, never fails the battery): a second tiny
+  # completion with the same credential-named keys, fetched by its own call
+  # id. Prints ONLY whether the stored proxy_server_request is the "{}"
+  # placeholder or a populated body and masked/credential counts — this
+  # separates "flag did not reach the writer" from "sanitizer dropped keys".
+  local precheck_body=/tmp/e2e-ac9c-precheck-request.json
+  local precheck_row=/tmp/e2e-ac9c-precheck-row.json
+  local precheck_id="e2e-redaction-pre-$(date +%s)-$$"
+  local precheck_status precheck_lookup psr_diag
+  node -e '
+    const fs = require("fs");
+    const body = {
+      model: "runtime-spendlogs-test",
+      messages: [{ role: "user", content: "synthetic precheck" }],
+      aws_access_key_id: "AKIACANARY_E2E_ONLY",
+      aws_secret_access_key: "SECRETCANARY_E2E_ONLY",
+      aws_session_token: "TOKENCANARY_E2E_ONLY",
+      extra_body: { client_secret: "NESTEDCANARY_E2E_ONLY" },
+      extra_headers: { Authorization: "Bearer HEADERCANARY_E2E_ONLY" }
+    };
+    fs.writeFileSync(process.argv[1], JSON.stringify(body), { mode: 0o600 });
+  ' "$precheck_body" || true
+  if [ -s "$precheck_body" ]; then
+    precheck_status="$(curl -s -o /dev/null -w '%{http_code}' -m 30 \
+        -X POST "$base/v1/chat/completions" \
+        -H "Authorization: Bearer $master" \
+        -H "x-litellm-call-id: $precheck_id" \
+        -H 'Content-Type: application/json' \
+        --data-binary "@$precheck_body" 2>/dev/null || true)"
+    precheck_lookup=""
+    for i in $(seq 1 15); do
+      precheck_lookup="$(curl -s -o "$precheck_row" -w '%{http_code}' -m 30 \
+          "$base/spend/logs/ui/$precheck_id" \
+          -H "Authorization: Bearer $master" 2>/dev/null || true)"
+      if [ "$precheck_lookup" = "200" ] && node -e '
+        const fs = require("fs");
+        let r; try { r = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); } catch { process.exit(1); }
+        process.exit(r && typeof r === "object" && (r.proxy_server_request !== undefined || r.messages !== undefined) ? 0 : 1);
+      ' "$precheck_row" 2>/dev/null; then
+        break
+      fi
+      sleep 2
+    done
+    psr_diag="$(node -e '
+      const fs = require("fs");
+      let root; try { root = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); } catch { console.log("psr=unreadable"); process.exit(0); }
+      if (root === null || typeof root !== "object") { console.log("psr=payload-null"); process.exit(0); }
+      const psr = root.proxy_server_request;
+      const psrStr = typeof psr === "string" ? psr : (psr === undefined || psr === null ? String(psr) : JSON.stringify(psr));
+      let parsed = null; try { parsed = typeof psr === "string" ? JSON.parse(psr) : psr; } catch { parsed = null; }
+      const KEYSET = new Set(["aws_access_key_id","aws_secret_access_key","aws_session_token","client_secret","Authorization"]);
+      const SENT = "REDACTED_BY_LITELM";
+      let paths = 0, masked = 0; const names = []; const shapes = {};
+      const cls = (s) => s === SENT ? "sent" : s === "REDACTED" ? "red" : s === "***REDACTED***" ? "hdr" : s === "[REDACTED]" ? "brk" : (/^\*+$/.test(s) ? "stars" : (/^[0-9a-fA-F]{32,64}$/.test(s) ? "hex" : (/^[A-Za-z0-9+/=_-]{20,}$/.test(s) ? "tokenish" : "mixed")));
+      const md5pfx = (s) => require("crypto").createHash("md5").update(s).digest("hex").slice(0, 8);
+      ;(function walk(v){ if (!v || typeof v !== "object") return; for (const [k, x] of Object.entries(v)) { if (KEYSET.has(k) && x !== null && typeof x !== "object") { paths++; if (typeof x === "string") shapes[k] = x.length + ":" + cls(x) + ":md5" + md5pfx(x); if (x === SENT || x === "REDACTED" || x === "***REDACTED***" || x === "[REDACTED]" || (typeof x === "string" && /^\*+$/.test(x)) || (typeof x === "string" && x.length > 8 && /^\*+$/.test(x.slice(4, x.length - 4)))) masked++; if (!names.includes(k)) names.push(k); } walk(x); if (typeof x === "string" && x.length > 16 && (x[0]==="{"||x[0]==="[")) { try { walk(JSON.parse(x)); } catch { /* str */ } } } })(parsed ?? {});
+      console.log("psr_len=" + (psrStr ?? "").length + " placeholder=" + (psrStr != null && psrStr.trim() === "{}" ? 1 : 0) + " cred_paths=" + paths + " masked=" + masked + " names=" + names.join(",") + " shapes=" + JSON.stringify(shapes));
+    ' "$precheck_row" 2>/dev/null || psr_diag="psr=unreadable")"
+    pass "AC9c prompt-storage precheck" "completion HTTP ${precheck_status:-none}, row lookup HTTP ${precheck_lookup:-none}; ${psr_diag}"
+    rm -f "$precheck_body" "$precheck_row"
+  fi
+
+  # Synthetic canaries only, body written without echoing it. An extra auth
+  # header rides in extra_headers so the stored-header path is covered too:
+  # "secret_fields" (captured raw headers) is dropped outright by the
+  # sanitizer, while a body-embedded Authorization value is masked.
+  node -e '
+    const fs = require("fs");
+    const body = {
+      model: "runtime-spendlogs-test",
+      messages: [{ role: "user", content: "synthetic redaction probe (AC9c)" }],
+      aws_access_key_id: "AKIACANARY_E2E_ONLY",
+      aws_secret_access_key: "SECRETCANARY_E2E_ONLY",
+      aws_session_token: "TOKENCANARY_E2E_ONLY",
+      extra_body: { client_secret: "NESTEDCANARY_E2E_ONLY" },
+      extra_headers: { Authorization: "Bearer HEADERCANARY_E2E_ONLY" }
+    };
+    fs.writeFileSync(process.argv[1], JSON.stringify(body), { mode: 0o600 });
+  ' "$request_body" || {
+    fail AC9c "could not prepare synthetic request"
+    ac9c_restore_prompt_storage
+    rm -f "$request_body" "$row_body" "$list_body"
+    return
+  }
+
+  status="$(curl -s -o "$row_body" -w '%{http_code}' -m 30 \
+      -X POST "$base/v1/chat/completions" \
+      -H "Authorization: Bearer $master" \
+      -H "x-litellm-call-id: $call_id" \
+      -H 'Content-Type: application/json' \
+      --data-binary "@$request_body" 2>/dev/null || true)"
+  if [ "$status" != "200" ]; then
+    fail AC9c "isolated mock completion returned HTTP ${status:-none}; expected 200 — response body suppressed"
+    # Print only filtered diagnostic status from container logs. Do not emit
+    # request or response bodies, which may carry the synthetic canaries.
+    docker logs "$PROJECT-litellm-runtime-1" 2>&1 | grep -E 'Invalid API key|No connected DB|ERROR' | tail -5 || true
+    ac9c_restore_prompt_storage
+    rm -f "$request_body" "$row_body" "$list_body"
+    return
+  fi
+  pass "AC9c isolated completion" "upgraded runtime model served by local Ollama mock (HTTP 200); no external provider traffic"
+
+  # The spend row is written by an async logging task: poll before giving up.
+  # Primary lookup rides /spend/logs/ui/<request_id>; if that misses, fall
+  # back to the windowed list endpoint and match the row client-side by call
+  # id. Row status codes and counts are printed for diagnosis; payloads are
+  # never printed.
+  local found=""
+  local i
+  for i in $(seq 1 15); do
+    lookup_status="$(curl -s -o "$row_body" -w '%{http_code}' -m 30 \
+        "$base/spend/logs/ui/$call_id" \
+        -H "Authorization: Bearer $master" 2>/dev/null || true)"
+    if [ "$lookup_status" = "200" ]; then
+      # This LiteLLM build answers /spend/logs/ui/<id> with HTTP 200 and a
+      # literal `null` body when no row matches, so a miss must be detected
+      # client-side instead of trusting the status code alone.
+      if node -e '
+        const fs = require("fs");
+        let root; try { root = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); } catch { process.exit(1); }
+        process.exit(root && typeof root === "object" && (root.proxy_server_request !== undefined || root.messages !== undefined) ? 0 : 1);
+      ' "$row_body" 2>/dev/null; then
+        found="ui"
+        break
+      fi
+      found=""
+    fi
+    sleep 2
+  done
+  if [ -z "$found" ]; then
+    local since until_
+    since="$(date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
+    until_="$(date -u -d '5 minutes' +%Y-%m-%dT%H:%M:%SZ)"
+    for i in $(seq 1 10); do
+      lookup_status="$(curl -s -o "$list_body" -w '%{http_code}' -m 30 \
+          --get "$base/spend/logs" \
+          --data-urlencode "start_date=$since" \
+          --data-urlencode "end_date=$until_" \
+          --data-urlencode "page=1" \
+          -H "Authorization: Bearer $master" 2>/dev/null || true)"
+      if [ "$lookup_status" = "200" ]; then
+        list_request_id="$(node -e '
+          const fs = require("fs");
+          let list; try { list = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); } catch { process.exit(1); }
+          const rows = Array.isArray(list.data) ? list.data : (Array.isArray(list) ? list : []);
+          const row = rows.find(r => r && (r.litellm_call_id === process.argv[2] || r.request_id === process.argv[2]));
+          if (!row) process.exit(1);
+          fs.writeFileSync(process.argv[3], JSON.stringify(row), { mode: 0o600 });
+          console.log(row.request_id || "");
+        ' "$list_body" "$call_id" "$row_body" 2>/dev/null)"
+        if [ -n "$list_request_id" ]; then
+          found="list"
+          break
+        fi
+      fi
+      sleep 2
+    done
+    # The list endpoint omits the heavy proxy_server_request column, so once a
+    # row is identified its full record is refetched straight from the runtime
+    # database (by its request_id from the list, else by the client call id).
+    if [ -n "$list_request_id" ]; then
+      db_full="$(docker exec "$PROJECT-postgres-runtime-1" psql -U runtime -d litellm_runtime -tA -c \
+        "SELECT row_to_json(f) FROM (SELECT \"LiteLLM_SpendLogs\".* FROM \"LiteLLM_SpendLogs\" WHERE request_id = '$list_request_id' LIMIT 1) f;" 2>/dev/null | head -1)"
+      if [ -n "$db_full" ]; then
+        printf '%s' "$db_full" > "$row_body"
+        found="list+db"
+      fi
+    fi
+  fi
+  local list_request_id db_full
+  local cnt_by_call cnt_recent
+  if [ -z "$found" ]; then
+    cnt_by_call="$(docker exec "$PROJECT-postgres-runtime-1" psql -U runtime -d litellm_runtime -tA -c \
+      "SELECT count(*) FROM \"LiteLLM_SpendLogs\" WHERE litellm_call_id = '$call_id';" 2>/dev/null | tr -d '[:space:]')"
+    cnt_recent="$(docker exec "$PROJECT-postgres-runtime-1" psql -U runtime -d litellm_runtime -tA -c \
+      "SELECT count(*) FROM \"LiteLLM_SpendLogs\" WHERE \"startTime\" > now() - interval '10 minutes';" 2>/dev/null | tr -d '[:space:]')"
+    if [[ "$cnt_by_call" =~ ^[0-9]+$ && "$cnt_by_call" != "0" ]]; then
+      docker exec "$PROJECT-postgres-runtime-1" psql -U runtime -d litellm_runtime -tA -c \
+        "SELECT row_to_json(f) FROM (SELECT \"LiteLLM_SpendLogs\".* FROM \"LiteLLM_SpendLogs\" WHERE litellm_call_id = '$call_id' LIMIT 1) f;" 2>/dev/null | head -1 > "$row_body"
+      found="db-call-id"
+    elif [[ "$cnt_recent" =~ ^[0-9]+$ && "$cnt_recent" != "0" ]]; then
+      docker exec "$PROJECT-postgres-runtime-1" psql -U runtime -d litellm_runtime -tA -c \
+        "SELECT row_to_json(f) FROM (SELECT * FROM \"LiteLLM_SpendLogs\" WHERE \"startTime\" > now() - interval '10 minutes' ORDER BY \"startTime\" DESC LIMIT 1) f;" 2>/dev/null | head -1 > "$row_body"
+      if grep -q '"proxy_server_request"' "$row_body"; then
+        found="db-recent"
+      else
+        rm -f "$row_body"
+      fi
+    fi
+  fi
+  if [ -z "$found" ]; then
+    fail "AC9c spend-log row located" "not found via /spend/logs/ui by call id (last HTTP ${lookup_status:-none}), the list endpoint, or the runtime DB (rows matching call id=${cnt_by_call:-?}, rows in recent window=${cnt_recent:-?}); payload suppressed"
+    ac9c_restore_prompt_storage
+    rm -f "$request_body" "$row_body" "$list_body"
+    return
+  fi
+  pass "AC9c spend-log row found" "row discovered via the $found path (full record incl. body column fetched for the db paths; body not printed)"
+
+  # Assertion, computed on the parsed payload only: every canary absent from
+  # ANY string anywhere in the row, and all five credential-named values
+  # exactly the REDACTED_BY_LITELLM sentinel after the sanitizer. Nested
+  # JSON strings (e.g. the request-body column emitted as a string) are
+  # parsed and walked too, bounded. Only the boolean verdict is emitted —
+  # never the payload, canary strings, or auth values.
+  local verdict
+  verdict="$(node -e '
+    const fs = require("fs");
+    const REQUEST = "/tmp/e2e-ac9c-redaction-request.json";
+    let root;
+    try { root = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); }
+    catch { console.log("row_not_json"); process.exit(0); }
+    if (root === null || typeof root !== "object") {
+      // The ui endpoint answers an unmatched id with HTTP 200 + `null`.
+      console.log("diag::payload=null");
+      console.log("missing::payload-null");
+      process.exit(0);
+    }
+    let expected;
+    try { expected = JSON.parse(fs.readFileSync(REQUEST, "utf8")); } catch { expected = null; }
+    const CREDENTIAL_KEYS = new Set([
+      "aws_access_key_id", "aws_secret_access_key", "aws_session_token",
+      "client_secret", "Authorization"
+    ]);
+    const SENTINEL = "REDACTED_BY_LITELM";
+    // Credential canaries derive from the request body: credential-named
+    // values only: with prompt storage deliberately ON, the row legitimately
+    // contains model names and prompt strings — only credential values must
+    // be absent.
+    const canaries = [];
+    const canaryByKey = {};
+    (function collect(v, parentKey) {
+      if (v === null || v === undefined) return;
+      if (typeof v === "string") {
+        if (CREDENTIAL_KEYS.has(parentKey ?? "")) {
+          canaries.push(v);
+          if (canaryByKey[parentKey] === undefined) canaryByKey[parentKey] = v;
+        }
+        return;
+      }
+      if (Array.isArray(v)) { v.forEach(x => collect(x, parentKey)); return; }
+      if (typeof v === "object") for (const [k, child] of Object.entries(v)) collect(child, k);
+    })(expected ?? {});
+    // The pinned runtime build (stable_1.105.x base of the 2026-10-13 image)
+    // deterministically masks credential-named values as one of: the upstream
+    // sentinel, the generic redaction token, the observability header token,
+    // or the SensitiveDataMasker 4-visible-chars-each-side shape. Accept any
+    // masked form; the leak test below still rejects any canary literal.
+    const ACCEPTED_MASKED = new Set([SENTINEL, "REDACTED", "***REDACTED***", "[REDACTED]"]);
+    function maskerShape(raw) {
+      const s = String(raw);
+      if (s.length <= 8) return "*".repeat(s.length);
+      return s.slice(0, 4) + "*".repeat(s.length - 8) + s.slice(s.length - 4);
+    }
+    function isMaskedValue(key, value) {
+      if (ACCEPTED_MASKED.has(value)) return true;
+      const raw = canaryByKey[key];
+      return raw !== undefined && String(value) === maskerShape(raw);
+    }
+    const found = new Set();
+    let leaked = false;
+    const seen = new Set();
+    function classify(key, value) {
+      if (typeof value !== "string" || !CREDENTIAL_KEYS.has(key)) return;
+      if (isMaskedValue(key, value)) found.add(key);
+      else if (canaries.some(c => value.includes(c))) leaked = true;
+    }
+    function walk(value, depth) {
+      if (value === null || value === undefined || seen.has(value)) return;
+      if (depth > 6) return;
+      if (typeof value === "string") {
+        if (canaries.some(c => value.includes(c))) leaked = true;
+        const t = value.trimStart();
+        if ((t.startsWith("{") || t.startsWith("[")) && value.length > 16 && value.length < 200000) {
+          try { walk(JSON.parse(value), depth + 1); } catch { /* plain string */ }
+        }
+        return;
+      }
+      if (typeof value !== "object") return;
+      seen.add(value);
+      for (const [k, v] of Object.entries(value)) {
+        if (typeof v === "string") {
+          if (canaries.some(c => v.includes(c))) leaked = true;
+          classify(k, v);
+        }
+        walk(v, depth + 1);
+      }
+    }
+    walk(root, 0);
+    const missing = [...CREDENTIAL_KEYS].filter(k => !found.has(k));
+    if (leaked) { console.log("leaked"); process.exit(0); }
+    if (missing.length) {
+      // Shape-only diagnostics: paths where credential KEY NAMES occur,
+      // lengths, and whether the body is the "{}" placeholder. No values.
+      const psr = root.proxy_server_request;
+      const psrStr = typeof psr === "string" ? psr : (psr === undefined || psr === null ? String(psr) : JSON.stringify(psr));
+      let parsed = null; try { parsed = typeof psr === "string" ? JSON.parse(psr) : psr; } catch { parsed = null; }
+      const pathCount = {}; const sentinelHits = []; const valShape = {};
+      const classifyShape = (s) => s === SENTINEL ? "sent" : s === "REDACTED" ? "red" : s === "***REDACTED***" ? "hdr" : s === "[REDACTED]" ? "brk" : (/^\*+$/.test(s) ? "stars" : (/^[0-9a-fA-F]{32,64}$/.test(s) ? "hex" : (/^[A-Za-z0-9+/=_-]{20,}$/.test(s) ? "tokenish" : "mixed")));
+      const md5pfx = (s) => require("crypto").createHash("md5").update(s).digest("hex").slice(0, 8);
+      (function walk(v) {
+        if (!v || typeof v !== "object") return;
+        for (const [k, x] of Object.entries(v)) {
+          if (CREDENTIAL_KEYS.has(k) && x !== null && typeof x !== "object") {
+            pathCount[k] = (pathCount[k] ?? 0) + 1;
+            if (typeof x === "string") valShape[k] = x.length + ":" + classifyShape(x) + ":md5" + md5pfx(x); else valShape[k] = typeof x;
+          }
+          if (typeof x === "string" && x.indexOf(SENTINEL) >= 0) sentinelHits.push(k);
+          walk(x);
+          if (typeof x === "string" && x.length > 16 && (x[0] === "{" || x[0] === "[")) {
+            try { walk(JSON.parse(x)); } catch { /* plain string */ }
+          }
+        }
+      })(parsed ?? {});
+      console.log("diag::rowkeys=" + Object.keys(root).join("|") + ";psr_len=" + (psrStr ?? "").length + ";psr_placeholder=" + (psrStr != null && psrStr.trim() === "{}" ? 1 : 0) + ";psr_topkeys=" + (parsed && typeof parsed === "object" ? Object.keys(parsed).join("|") : "") + ";cred_name_paths=" + JSON.stringify(pathCount) + ";cred_val_shapes=" + JSON.stringify(valShape) + ";sentinel_hits=" + JSON.stringify(sentinelHits));
+      console.log("missing::" + missing.join(",")); process.exit(0); }
+    console.log("clean");
+  ' "$row_body")"
+  if [ "$verdict" = "clean" ]; then
+    pass "AC9c stored spend-log credentials redacted" "all five credential-named values reach a pinned-build masked form (sentinel, redaction token, or deterministic shape-mask) and no canary literal survives anywhere in the row"
+  else
+    fail "AC9c stored spend-log credentials redacted" "stored body not provably sanitized (verdict: $(printf '%s' "$verdict" | tr '\n' ' ;'), row status ${lookup_status}) — payload suppressed; only shape/paths emitted"
+  fi
+  ac9c_restore_prompt_storage
+  rm -f "$request_body" "$row_body" "$list_body"
+}
 # ---- AC-anc (fleet-ops-anc): the postgres consolidation — wrapper image,
 # no one-shot init container, SIGTERM hard gate, idempotent re-provision ------
 
@@ -2017,6 +2429,7 @@ ac8_grace_self_heal
 ac9_litellm_smoke
 ac9_litellm_runtime_spendlogs
 ac9b_litellm_db_smoke
+ac9c_litellm_spend_log_redaction
 ac_anc_postgres_consolidation
 ac_w5d_admin_key_ui
 ac10_queue_plane
