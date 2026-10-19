@@ -30,8 +30,9 @@
  *      ON (no `if: false`), because the thing those jobs were waiting for
  *      now exists.
  *
- * The publish graph lives once, in the reusable .github/workflows/_images.yml
- * (PIPELINE below); the release workflows call it and keep only their tail.
+ * Promotion lives once, in the reusable .github/workflows/_promote.yml
+ * (PROMOTE below), fed by .github/workflows/_images.yml (PIPELINE); the
+ * release workflows call both and keep only their tail.
  */
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -44,6 +45,7 @@ const repoRoot = path.resolve(here, '../..');
 const read = (rel: string): string => readFileSync(path.join(repoRoot, rel), 'utf8');
 
 const PIPELINE = '.github/workflows/_images.yml';
+const PROMOTE = '.github/workflows/_promote.yml';
 const RELEASE_WORKFLOWS = ['.github/workflows/release-registrar.yml', '.github/workflows/release-devices.yml'] as const;
 
 interface WfJob {
@@ -70,7 +72,12 @@ function needsList(job: WfJob): string[] {
 }
 
 describe('exact-byte promotion: no builder anywhere in the publish path', () => {
-  for (const wf of [PIPELINE]) {
+  for (const wf of [PROMOTE]) {
+    it(`${wf}: carries NO docker/build-push-action and no "push: true" anywhere`, () => {
+      expect(read(wf)).not.toContain('docker/build-push-action');
+      expect(read(wf)).not.toMatch(/push:\s*true/);
+    });
+
     it(`${wf}: promote contains NO docker/build-push-action and no "push: true"`, () => {
       const text = stepsText(loadWf(wf).jobs.promote);
       expect(text, `${wf} promote must not rebuild the image`).not.toContain('docker/build-push-action');
@@ -93,34 +100,37 @@ describe('exact-byte promotion: no builder anywhere in the publish path', () => 
       expect(text).toContain('actions/download-artifact');
     });
 
-    it(`${wf}: stage-and-scan publishes the layout tar it scanned (the bytes promote will push)`, () => {
-      const text = stepsText(loadWf(wf).jobs['stage-and-scan']);
-      expect(text).toContain('layout-${{ matrix.component }}-${{ matrix.arch_tag }}');
-    });
-
-    it(`${wf}: promote is still gated behind all-components-gate (the scan must still pass first)`, () => {
-      expect(needsList(loadWf(wf).jobs.promote)).toContain('all-components-gate');
-    });
   }
+
+  it(`${PIPELINE}: stage-and-scan publishes the layout tar it scanned (the bytes promote will push)`, () => {
+    const text = stepsText(loadWf(PIPELINE).jobs['stage-and-scan']);
+    expect(text).toContain('layout-${{ matrix.component }}-${{ matrix.arch_tag }}');
+  });
+
+  it('promotion is still gated behind the whole pipeline (scan, gate and E2E must pass first)', () => {
+    for (const wf of ['.github/workflows/build-images.yml', ...RELEASE_WORKFLOWS]) {
+      expect(needsList(loadWf(wf).jobs.publish), wf).toEqual(['images']);
+    }
+  });
 });
 
 describe('exact-byte promotion: one index-assembly path (promote-manifest retired)', () => {
-  for (const wf of [PIPELINE, ...RELEASE_WORKFLOWS]) {
+  for (const wf of [PIPELINE, PROMOTE, ...RELEASE_WORKFLOWS]) {
     it(`${wf}: there is no promote-manifest job left`, () => {
       expect(loadWf(wf).jobs['promote-manifest'], `${wf} must not keep a second buildx index-assembly path`).toBeUndefined();
     });
 
   }
 
-  it(`${PIPELINE}: the promoter script — not buildx — does the index assembly`, () => {
-    const text = stepsText(loadWf(PIPELINE).jobs.promote);
+  it(`${PROMOTE}: the promoter script — not buildx — does the index assembly`, () => {
+    const text = stepsText(loadWf(PROMOTE).jobs.promote);
     expect(text).toContain('scripts/ghcr-promote-run.mjs');
     expect(text).not.toContain('imagetools');
   });
 });
 
 describe('exact-byte promotion: verify-remote is credential-free and fail-closed', () => {
-  for (const wf of [PIPELINE]) {
+  for (const wf of [PROMOTE]) {
     it(`${wf}: verify-remote carries NO packages:write`, () => {
       const perms = loadWf(wf).jobs['verify-remote'].permissions;
       expect(perms?.packages, `${wf} verify-remote must not hold write scope`).not.toBe('write');
@@ -136,27 +146,17 @@ describe('exact-byte promotion: verify-remote is credential-free and fail-closed
 
 describe('exact-byte promotion: live publishing is behind an explicit owner switch', () => {
   // Merging a green PR pipeline must never, by itself, become a live GHCR
-  // write. The pipeline's promote runs only on publish: true, and every
-  // caller derives that input from a repo Actions variable that is unset in
-  // this repo: push-to-main with a green gate publishes nothing until the
-  // owner deliberately flips the switch. See docs/ghcr-promotion-runbook.md.
-  it(`${PIPELINE}: promote runs only when the caller passes publish: true`, () => {
-    expect(loadWf(PIPELINE).jobs.promote.if).toBe('inputs.publish');
-  });
-
+  // write. Every call to _promote.yml sits in a `publish` job gated on a
+  // repo Actions variable that is unset in this repo: push-to-main with a
+  // green gate publishes nothing until the owner deliberately flips the
+  // switch. See docs/ghcr-promotion-runbook.md.
   for (const wf of ['.github/workflows/build-images.yml', ...RELEASE_WORKFLOWS]) {
-    it(`${wf}: every pipeline call publishes only via vars.VS_GHCR_PUBLISH_ENABLED (or never)`, () => {
+    it(`${wf}: every _promote.yml call requires vars.VS_GHCR_PUBLISH_ENABLED`, () => {
       const calls = Object.values(loadWf(wf).jobs).filter(
-        (job) => (job as { uses?: string }).uses === './.github/workflows/_images.yml',
-      ) as Array<{ with?: { publish?: unknown } }>;
-      expect(calls.length).toBeGreaterThan(0);
-      for (const call of calls) {
-        const publish = call.with?.publish;
-        expect(
-          publish === false || String(publish).includes("vars.VS_GHCR_PUBLISH_ENABLED == 'true'"),
-          `${wf}: publish input must be false or the owner switch, got ${String(publish)}`,
-        ).toBe(true);
-      }
+        (job) => (job as { uses?: string }).uses === './.github/workflows/_promote.yml',
+      );
+      expect(calls.length).toBe(1);
+      expect(String(calls[0].if)).toContain("vars.VS_GHCR_PUBLISH_ENABLED == 'true'");
     });
   }
 });
@@ -164,8 +164,8 @@ describe('exact-byte promotion: live publishing is behind an explicit owner swit
 describe('exact-byte promotion: downstream jobs are switched back ON', () => {
   const DOWNSTREAM_JOBS = ['scan', 'smoke', 'render', 'deploy'] as const;
 
-  it(`${PIPELINE}: verify-remote is not switched off`, () => {
-    expect(loadWf(PIPELINE).jobs['verify-remote'].if).not.toBe(false);
+  it(`${PROMOTE}: verify-remote is not switched off`, () => {
+    expect(loadWf(PROMOTE).jobs['verify-remote'].if).toBeUndefined();
   });
 
   for (const wf of RELEASE_WORKFLOWS) {

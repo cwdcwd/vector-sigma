@@ -342,7 +342,7 @@ describe('ghcr-promote-run.mjs: CI invokes it with https (no scheme override)', 
     // Promote + verify live once in the shared pipeline; the releases run
     // the same script for the release-evidence ledger.
     for (const wf of [
-      '.github/workflows/_images.yml',
+      '.github/workflows/_promote.yml',
       '.github/workflows/release-registrar.yml',
       '.github/workflows/release-devices.yml',
     ]) {

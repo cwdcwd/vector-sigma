@@ -3,18 +3,20 @@
  *
  * Pins the structural shape Thanos's design (fleet-ops-1py.12) and
  * docs/ghcr-image-exposure-plan.md section B require of the publish path,
- * by parsing the real YAML. The graph lives ONCE, in the reusable
- * .github/workflows/_images.yml; build-images.yml, release-registrar.yml
- * and release-devices.yml call it. Pinned here:
+ * by parsing the real YAML. The graph lives ONCE, in two reusable
+ * workflows: .github/workflows/_images.yml (build/scan/E2E, read-only) and
+ * .github/workflows/_promote.yml (promote/verify). build-images.yml,
+ * release-registrar.yml and release-devices.yml call _images.yml from an
+ * `images` job and _promote.yml from a `publish` job that needs it. Pinned:
  *
- *   1. packages:write appears ONLY on the pipeline's promote job and on
- *      the caller jobs that invoke the pipeline to publish — never
- *      workflow-wide, never on the PR caller.
+ *   1. packages:write appears ONLY on _promote.yml's promote job and on
+ *      the callers' `publish` job — never workflow-wide, never reachable
+ *      from pull_request.
  *   2. cache-from: / cache-to: never appear in any publisher workflow.
  *   3. The aggregate all-components-gate `needs:` every stage/scan,
- *      index-assembly AND E2E job, and promote needs the gate.
- *   4. build-images.yml's pull_request caller cannot publish (publish:
- *      false, contents:read only).
+ *      index-assembly AND E2E job; every `publish` job needs `images`.
+ *   4. build-images.yml's publish job is structurally excluded from
+ *      pull_request and gated on the owner switch.
  *   5. stage-and-scan never carries docker/login-action (no GHCR auth
  *      before the gate) and builds to a local OCI layout.
  *   6. The pipeline builds EVERY images.json component (so its E2E runs
@@ -34,6 +36,7 @@ const read = (rel: string): string => readFileSync(path.join(repoRoot, rel), 'ut
 const catalog = loadCatalog(repoRoot);
 
 const PIPELINE = '.github/workflows/_images.yml';
+const PROMOTE = '.github/workflows/_promote.yml';
 const CALLERS = [
   '.github/workflows/build-images.yml',
   '.github/workflows/release-registrar.yml',
@@ -43,7 +46,7 @@ const RELEASES = [
   ['.github/workflows/release-registrar.yml', 'registrar'],
   ['.github/workflows/release-devices.yml', 'devices'],
 ] as const;
-const ALL_WORKFLOWS = [PIPELINE, ...CALLERS];
+const ALL_WORKFLOWS = [PIPELINE, PROMOTE, ...CALLERS];
 
 interface WfJob {
   name?: string;
@@ -76,14 +79,17 @@ function stepsText(job: WfJob): string {
 }
 
 const pipeline = loadWf(PIPELINE);
+const promoteWf = loadWf(PROMOTE);
 const isPipelineCall = (job: WfJob) => job.uses === './.github/workflows/_images.yml';
+const isPromoteCall = (job: WfJob) => job.uses === './.github/workflows/_promote.yml';
 
 describe('publisher workflows: every publisher runs the ONE shared pipeline', () => {
   for (const wf of CALLERS) {
-    it(`${wf}: calls _images.yml and carries no build/scan/promote job of its own`, () => {
+    it(`${wf}: an images job calls _images.yml, a publish job (needing it) calls _promote.yml`, () => {
       const doc = loadWf(wf);
-      const calls = Object.values(doc.jobs).filter(isPipelineCall);
-      expect(calls.length, `${wf} must call the shared pipeline`).toBeGreaterThan(0);
+      expect(isPipelineCall(doc.jobs.images), `${wf} images job must call _images.yml`).toBe(true);
+      expect(isPromoteCall(doc.jobs.publish), `${wf} publish job must call _promote.yml`).toBe(true);
+      expect(needsList(doc.jobs.publish)).toEqual(['images']);
       for (const forbidden of ['stage-and-scan', 'assemble-and-validate', 'all-components-gate', 'promote', 'verify-remote']) {
         expect(doc.jobs[forbidden], `${wf} must not define its own ${forbidden}`).toBeUndefined();
       }
@@ -91,13 +97,14 @@ describe('publisher workflows: every publisher runs the ONE shared pipeline', ()
     });
   }
 
-  it('the pipeline is a workflow_call workflow with publish/promote inputs', () => {
-    const on = pipeline.on as { workflow_call?: { inputs?: Record<string, { type?: string; default?: unknown }> } };
-    const inputs = on.workflow_call?.inputs ?? {};
-    expect(inputs.publish?.type).toBe('boolean');
-    expect(inputs.publish?.default).toBe(false);
+  it('both halves are workflow_call workflows; only _promote.yml takes promotion inputs', () => {
+    type Call = { workflow_call?: { inputs?: Record<string, { type?: string; default?: unknown }> } | null };
+    expect((pipeline.on as Call).workflow_call?.inputs ?? {}).toEqual({});
+    const inputs = (promoteWf.on as Call).workflow_call?.inputs ?? {};
     expect(inputs.promote_fleet?.default).toBe('all');
     expect(inputs.promote_only?.default).toBe('all');
+    expect(Object.keys(pipeline.jobs)).not.toContain('promote');
+    expect(Object.keys(pipeline.jobs)).not.toContain('verify-remote');
   });
 });
 
@@ -111,21 +118,24 @@ describe('publisher workflow graph: packages:write is scoped ONLY to promote', (
     });
   }
 
-  it(`${PIPELINE}: packages:write appears on the promote job only`, () => {
-    const writers = Object.entries(pipeline.jobs)
+  const writers = (doc: WfDoc) =>
+    Object.entries(doc.jobs)
       .filter(([, job]) => job.permissions?.packages === 'write')
       .map(([id]) => id);
-    expect(writers).toEqual(['promote']);
+
+  it(`${PIPELINE}: no job holds packages:write (build/scan/E2E is read-only)`, () => {
+    expect(writers(pipeline)).toEqual([]);
+  });
+
+  it(`${PROMOTE}: packages:write appears on the promote job only`, () => {
+    expect(writers(promoteWf)).toEqual(['promote']);
   });
 
   for (const wf of CALLERS) {
-    it(`${wf}: packages:write only on the pipeline call that may publish`, () => {
+    it(`${wf}: packages:write only on the publish job; the images job is contents:read`, () => {
       const doc = loadWf(wf);
-      for (const [jobId, job] of Object.entries(doc.jobs)) {
-        if (job.permissions?.packages !== 'write') continue;
-        expect(isPipelineCall(job), `${wf}: job "${jobId}" carries packages:write but is not the pipeline call`).toBe(true);
-        expect(job.with?.publish, `${wf}: "${jobId}" grants packages:write but never publishes`).not.toBe(false);
-      }
+      expect(writers(doc)).toEqual(['publish']);
+      expect(doc.jobs.images.permissions).toEqual({ contents: 'read' });
     });
   }
 });
@@ -159,34 +169,32 @@ describe('publisher workflow graph: aggregate gate covers every stage/scan, inde
     }
   });
 
-  it('promote is gated behind all-components-gate; verify-remote behind promote', () => {
-    expect(needsList(pipeline.jobs.promote)).toContain('all-components-gate');
-    expect(needsList(pipeline.jobs['verify-remote'])).toContain('promote');
+  it('promotion runs only after the whole pipeline: publish needs images; verify-remote needs promote', () => {
+    for (const wf of CALLERS) expect(needsList(loadWf(wf).jobs.publish), wf).toEqual(['images']);
+    expect(needsList(promoteWf.jobs.promote)).toContain('plan');
+    expect(needsList(promoteWf.jobs['verify-remote'])).toContain('promote');
   });
 });
 
 describe('publisher workflow graph: publishing is explicit (PR path cannot publish)', () => {
   const build = loadWf('.github/workflows/build-images.yml');
 
-  it('promote + verify-remote run only when the caller passes publish: true', () => {
-    expect(pipeline.jobs.promote.if).toBe('inputs.publish');
-    expect(pipeline.jobs['verify-remote'].if).toBe('inputs.publish');
+  it('build-images.yml: images runs on every event with contents:read only', () => {
+    expect(build.jobs.images.if).toBeUndefined();
+    expect(build.jobs.images.permissions).toEqual({ contents: 'read' });
   });
 
-  it('build-images.yml: the pull_request caller passes publish: false with contents:read only', () => {
-    const validate = build.jobs.validate;
-    expect(isPipelineCall(validate)).toBe(true);
-    expect(validate.if).toBe("github.event_name == 'pull_request'");
-    expect(validate.with?.publish).toBe(false);
-    expect(validate.permissions).toEqual({ contents: 'read' });
+  it('build-images.yml: publish is structurally excluded from pull_request and owner-gated', () => {
+    expect(build.jobs.publish.if).toBe(
+      "github.event_name != 'pull_request' && vars.VS_GHCR_PUBLISH_ENABLED == 'true'",
+    );
   });
 
-  it('build-images.yml: the publishing caller is structurally excluded from pull_request and owner-gated', () => {
-    const publish = build.jobs.publish;
-    expect(isPipelineCall(publish)).toBe(true);
-    expect(publish.if).toBe("github.event_name != 'pull_request'");
-    expect(String(publish.with?.publish)).toContain("vars.VS_GHCR_PUBLISH_ENABLED == 'true'");
-  });
+  for (const [wf] of RELEASES) {
+    it(`${wf}: publish is owner-gated`, () => {
+      expect(loadWf(wf).jobs.publish.if).toBe("vars.VS_GHCR_PUBLISH_ENABLED == 'true'");
+    });
+  }
 
   it('manual dispatch narrows PROMOTION to one component; the pipeline still builds + gates everything', () => {
     const dispatch = (build.on as { workflow_dispatch?: { inputs?: Record<string, { type?: string; default?: string; options?: string[] }> } })
@@ -202,8 +210,9 @@ describe('publisher workflow graph: publishing is explicit (PR path cannot publi
     expect(planText).toMatch(/image-catalog\.mjs matrix\)/);
     expect(planText).not.toMatch(/image-catalog\.mjs matrix --/);
     expect(JSON.stringify(pipeline.jobs['stage-and-scan'].strategy?.matrix)).toContain('needs.plan.outputs.matrix');
-    expect(JSON.stringify(pipeline.jobs.promote.strategy?.matrix)).toContain('needs.plan.outputs.promote');
-    expect(pipeline.jobs['verify-remote'].strategy?.matrix).toEqual(pipeline.jobs.promote.strategy?.matrix);
+    expect(stepsText(promoteWf.jobs.plan)).toContain('--only');
+    expect(JSON.stringify(promoteWf.jobs.promote.strategy?.matrix)).toContain('needs.plan.outputs.promote');
+    expect(promoteWf.jobs['verify-remote'].strategy?.matrix).toEqual(promoteWf.jobs.promote.strategy?.matrix);
   });
 
   it('stage-and-scan and assemble-and-validate run unconditionally (validate-only on PR)', () => {
@@ -212,11 +221,10 @@ describe('publisher workflow graph: publishing is explicit (PR path cannot publi
   });
 
   for (const [wf] of RELEASES) {
-    it(`${wf}: the release tail runs only after the pipeline, and only when publishing is enabled`, () => {
+    it(`${wf}: the release tail runs only after publish (skips with it)`, () => {
       const doc = loadWf(wf);
       for (const jobId of ['release-evidence', 'scan', 'smoke']) {
-        expect(needsList(doc.jobs[jobId])).toContain('images');
-        expect(doc.jobs[jobId].if).toBe("vars.VS_GHCR_PUBLISH_ENABLED == 'true'");
+        expect(needsList(doc.jobs[jobId])).toEqual(['publish']);
       }
     });
   }
@@ -261,9 +269,7 @@ describe('publisher workflow graph: component sets match the design (7/3, union 
 
   it('release-registrar promotes the 7 registrar-fleet components; release-devices the 3 devices ones', () => {
     for (const [wf, fleet] of RELEASES) {
-      const doc = loadWf(wf);
-      const call = Object.values(doc.jobs).find(isPipelineCall)!;
-      expect(call.with?.promote_fleet, wf).toBe(fleet);
+      expect(loadWf(wf).jobs.publish.with?.promote_fleet, wf).toBe(fleet);
     }
     expect(componentsFor(catalog, 'registrar').sort()).toEqual(
       ['hermes', 'litellm', 'postgres', 'registrant', 'registrar', 'scotty', 'tailscale'],

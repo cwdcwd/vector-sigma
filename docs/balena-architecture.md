@@ -69,9 +69,12 @@ component (9 of them); one reusable pipeline builds them all:
   amd64/arm64 on native runners (no QEMU) from its canonical Dockerfile,
   credential-scans its exact build inputs, content-gates each OCI layout,
   runs the compose-simulated device E2E (`deploy/e2e.sh`, prebuilt mode) on
-  the scanned amd64 bytes, then — only when the caller publishes — promotes
-  those exact bytes to `ghcr.io/cwdcwd/vector-sigma/<component>:<sha>` and
-  re-verifies every digest. Build once, test those bytes, ship those bytes.
+  the scanned amd64 bytes. Read-only: no job holds write scope.
+- **`_promote.yml`** (reusable) — called from a caller's `publish` job that
+  needs `images` and is gated on `VS_GHCR_PUBLISH_ENABLED` (never on a
+  PR): promotes those exact scanned bytes to
+  `ghcr.io/cwdcwd/vector-sigma/<component>:<sha>` and re-verifies every
+  digest. Build once, test those bytes, ship those bytes.
 - **`ci.yml`** — every PR: typecheck + unit tests across
   `shared/`, `registrar/`, `registrant/` (pg-mem in-process, no
   Postgres service needed).

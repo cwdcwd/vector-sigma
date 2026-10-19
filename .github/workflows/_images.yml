@@ -1,14 +1,16 @@
 name: Image pipeline (reusable)
 
-# The ONE build/scan/E2E/promote graph for every vector-sigma image. Called by
+# The ONE build/scan/E2E graph for every vector-sigma image. Called by
 # build-images.yml (PRs + main), release-registrar.yml and release-devices.yml
 # — each used to carry its own hand-copied matrix; images.json is now the only
-# component list (scripts/image-catalog.mjs turns it into matrices).
+# component list (scripts/image-catalog.mjs turns it into matrices). Holds NO
+# write scope: publishing is the separate _promote.yml, which callers invoke
+# from their own `publish` job only after this one succeeds.
 #
 # Build once, test those bytes, ship those bytes:
 #
 #   plan               — catalog -> build matrix (EVERY component, both
-#                        platforms) + the promote list for this caller.
+#                        platforms).
 #   stage-and-scan     — per component/platform: credential-only scan of the
 #                        image's exact build inputs (its Dockerfile + every
 #                        COPY source — not the whole repo-root context), then
@@ -25,31 +27,11 @@ name: Image pipeline (reusable)
 #                        call so the E2E always runs scanned bytes, whatever
 #                        subset the caller promotes.
 #   all-components-gate — aggregate, fail-closed: every stage/scan, index
-#                        and E2E job succeeded.
-#   promote            — ONLY job with packages:write; runs only when the
-#                        caller passes publish: true. Publishes the EXACT
-#                        scanned OCI-layout bytes (scripts/ghcr-promote-run.mjs
-#                        — no rebuild, no buildx), tagged with the commit SHA.
-#   verify-remote      — re-fetches every published digest anonymously and
-#                        fails closed on any byte difference.
+#                        and E2E job succeeded. The call fails unless it does.
 #
-# Callers download the promoted-<component> records (same workflow run) for
-# their release tail (trivy, smoke, render, balena deploy).
+# The scanned layouts + indexes stay as run artifacts for _promote.yml.
 on:
   workflow_call:
-    inputs:
-      publish:
-        description: Promote the scanned bytes to GHCR after every gate passes
-        type: boolean
-        default: false
-      promote_fleet:
-        description: Fleet whose components are promoted (all | registrar | devices)
-        type: string
-        default: all
-      promote_only:
-        description: Narrow promotion to one component (all = the whole fleet)
-        type: string
-        default: all
 
 permissions:
   contents: read
@@ -63,22 +45,17 @@ jobs:
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       components: ${{ steps.plan.outputs.components }}
-      promote: ${{ steps.plan.outputs.promote }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - id: plan
-        env:
-          PROMOTE_FLEET: ${{ inputs.promote_fleet }}
-          PROMOTE_ONLY: ${{ inputs.promote_only }}
         run: |
           set -euo pipefail
           {
             echo "matrix=$(node scripts/image-catalog.mjs matrix)"
             echo "components=$(node scripts/image-catalog.mjs components)"
-            echo "promote=$(node scripts/image-catalog.mjs components --fleet "$PROMOTE_FLEET" --only "$PROMOTE_ONLY")"
           } | tee -a "$GITHUB_OUTPUT"
 
   stage-and-scan:
@@ -232,100 +209,3 @@ jobs:
             fi
           done
           echo "all-components-gate: every stage/scan, index-assembly and E2E job passed"
-
-  # ---------------------------------------------------------------------
-  # promote + verify-remote run ONLY when the caller passes publish: true
-  # (build-images.yml never does on pull_request). Only promote carries
-  # packages:write. fleet-ops-r3v: no rebuild — the exact scanned tars are
-  # pushed through scripts/ghcr-promote-run.mjs (in-repo OCI Distribution
-  # client); every blob/manifest is read back before any release tag is
-  # applied. The GITHUB_TOKEN reaches the client only via GHCR_TOKEN.
-  # ---------------------------------------------------------------------
-  promote:
-    name: Promote ${{ matrix.component }} (GHCR write, exact scanned bytes)
-    if: inputs.publish
-    needs: [plan, all-components-gate]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    strategy:
-      fail-fast: false
-      matrix:
-        component: ${{ fromJSON(needs.plan.outputs.promote) }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Install gate runtime deps
-        run: npm ci
-      - name: Build (typecheck) so the registry promoter dist/ exists
-        run: npm run build
-      - name: Download validated local index
-        uses: actions/download-artifact@v4
-        with:
-          name: index-${{ matrix.component }}
-          path: ${{ runner.temp }}
-      - name: Download the exact scanned OCI layouts (amd64 + arm64)
-        uses: actions/download-artifact@v4
-        with:
-          pattern: layout-${{ matrix.component }}-*
-          path: ${{ runner.temp }}/layouts
-          merge-multiple: true
-      - name: Promote the exact scanned bytes to GHCR (no rebuild, no buildx)
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GHCR_ACTOR: ${{ github.actor }}
-        run: |
-          set -euo pipefail
-          node scripts/ghcr-promote-run.mjs promote \
-            --registry ghcr.io \
-            --repository "${{ github.repository }}/${{ matrix.component }}" \
-            --tag "${GITHUB_SHA}" \
-            --layout "linux/amd64=${{ runner.temp }}/layouts/${{ matrix.component }}-amd64.tar" \
-            --layout "linux/arm64=${{ runner.temp }}/layouts/${{ matrix.component }}-arm64.tar" \
-            --token-env GHCR_TOKEN \
-            --actor "${GHCR_ACTOR}" \
-            --record "${{ runner.temp }}/promoted-${{ matrix.component }}.json"
-      - name: Upload the promotion record (index + per-arch digests)
-        uses: actions/upload-artifact@v4
-        with:
-          name: promoted-${{ matrix.component }}
-          path: ${{ runner.temp }}/promoted-${{ matrix.component }}.json
-          retention-days: 1
-
-  verify-remote:
-    name: Verify remote digests (${{ matrix.component }})
-    if: inputs.publish
-    needs: [plan, promote]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        component: ${{ fromJSON(needs.plan.outputs.promote) }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Install gate runtime deps
-        run: npm ci
-      - name: Build (typecheck) so the registry verifier dist/ exists
-        run: npm run build
-      - name: Download the promotion record
-        uses: actions/download-artifact@v4
-        with:
-          name: promoted-${{ matrix.component }}
-          path: ${{ runner.temp }}
-      # Anonymous re-read: no packages:write and no credential, so the
-      # proof that the published bytes are intact does not depend on the
-      # writer's token.
-      - name: Re-fetch by digest and compare (fails closed on any mismatch)
-        run: |
-          set -euo pipefail
-          node scripts/ghcr-promote-run.mjs verify \
-            --registry ghcr.io \
-            --record "${{ runner.temp }}/promoted-${{ matrix.component }}.json"

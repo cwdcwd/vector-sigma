@@ -7,13 +7,11 @@ name: Build and publish private VS images
 # bytes to GHCR tagged with the commit SHA (the tag deploy/compose.yaml's
 # VS_IMAGE_TAG pins).
 #
-# PR events run the `validate` caller: build + scan + E2E only, with
-# contents:read — no promote job can run (publish: false, and the token
-# carries no packages:write).
-#
-# owner go-ahead: publishing is gated on the repo variable
-# VS_GHCR_PUBLISH_ENABLED (docs/ghcr-promotion-runbook.md). Unset, a main
-# push still builds, scans and E2Es; promote/verify skip.
+# `images` (every event) is read-only. `publish` — the ONLY job holding
+# packages:write — calls _promote.yml after `images` succeeds, never on
+# pull_request (structurally excluded), and only when the owner switch
+# VS_GHCR_PUBLISH_ENABLED is set (docs/ghcr-promotion-runbook.md). Unset, a
+# main push still builds, scans and E2Es; nothing is written.
 on:
   push:
     branches: [main]
@@ -49,22 +47,19 @@ permissions:
   contents: read
 
 jobs:
-  validate:
-    name: Validate images (PR)
-    if: github.event_name == 'pull_request'
+  images:
+    name: Build, scan, E2E
     uses: ./.github/workflows/_images.yml
     permissions:
       contents: read
-    with:
-      publish: false
 
   publish:
-    name: Build, scan, E2E, publish
-    if: github.event_name != 'pull_request'
-    uses: ./.github/workflows/_images.yml
+    name: Publish to GHCR
+    if: github.event_name != 'pull_request' && vars.VS_GHCR_PUBLISH_ENABLED == 'true'
+    needs: images
+    uses: ./.github/workflows/_promote.yml
     permissions:
       contents: read
       packages: write
     with:
-      publish: ${{ vars.VS_GHCR_PUBLISH_ENABLED == 'true' }}
       promote_only: ${{ inputs.component || 'all' }}
