@@ -476,3 +476,37 @@ Context limits in `/v1/models` are configuration-dependent: LiteLLM needs
 confirm SpendLogs row counts increase per successful request. Prometheus
 request counters provide a fallback comparison if SpendLogs rows appear
 missing; the compose end-to-end smoke remains a CI check.
+
+## Ollama authoritative billing (/api/usage)
+
+LiteLLM's per-model costs provide an estimate, not Ollama's authoritative bill.
+The GLM model pricing verified on 2026-10-17 at [ollama.com/pricing](https://ollama.com/pricing)
+(per million tokens) is:
+
+| Model | Input | Cached input | Output |
+|---|---:|---:|---:|
+| glm-5.3 | $1.40 | $0.26 | $4.40 |
+| glm-5.2 | $1.40 | $0.26 | $4.40 |
+
+The two rows are identical. LiteLLM's corresponding per-token values are
+`input_cost_per_token: 0.0000014`, `cache_read_input_token_cost: 0.00000026`,
+and `output_cost_per_token: 0.0000044`. These are the explicit groups' configured
+prices; wildcard pass-through models are dynamic and have no `model_info`, so
+LiteLLM budgeting treats their cost as $0. That limitation is accepted, not a
+representation of their actual bill.
+
+For the authoritative bill, call `GET https://ollama.com/api/usage` with the
+same Bearer key (`OLLAMA_CLOUD_API_KEY`). The observed response shape, as observed
+with an authenticated call on 2026-10-16: top-level `range` (`"7d"`), `scope`
+(`"self"` — the calling key only), `granularity` (`"day"`), `from`/`until`, a
+`totals` object, and `buckets[]` per UTC day, each with `request_count`,
+`usage_usd`, `input_tokens`, `cached_input_tokens`, and `output_tokens` (the
+current day carries `"partial": true`). Unauthenticated calls return 401.
+
+This endpoint is undocumented upstream and may change; consumers must fail soft.
+Re-probe once with the real key before anything consumes it; that re-probe is a
+4.5-runbook step, and the cross-link into the upgrade runbook lands when the doc
+lanes merge. Run the request inside the gateway container where the key lives so
+the key never leaves that boundary. LiteLLM budgets are approximate (id-based
+accounting and the wildcard $0 gap); Ollama's `/api/usage` endpoint is the
+authoritative bill.
