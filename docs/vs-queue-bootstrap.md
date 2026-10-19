@@ -16,7 +16,8 @@ scotty   scotty v0.3.0 cc55734 + 8ea patch + bd 1.2.2 + bd-readonly wrapper,
 ```
 
 Both balena (`platforms/balena/registrar/docker-compose.yml`) and self-host
-(`platforms/compose/compose.yaml`) run byte-identical shapes.
+(`platforms/compose/compose.yaml`) are rendered from one spec,
+`stack/registrar.yaml`, so they run the same shape.
 
 ## ⚠️ THE LANDMINE: `bd init --server` is a ONE-TIME, ONE-CLIENT act
 

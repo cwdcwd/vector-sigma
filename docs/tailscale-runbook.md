@@ -353,8 +353,10 @@ traffic — the master's own MagicDNS name and each enrolled device's
 serve name. Its container DNS chain has no ts.net route (the lrb
 canary verdict class — accept-dns cannot reach the host dnsmasq
 chain from tailscaled's mount namespace), so EVERY enrolled device
-needs a static pin line on the litellm service in
-`platforms/balena/registrar/docker-compose.yml`:
+needs a static pin line on the litellm service's `x-balena` block in
+`stack/registrar.yaml` (rendered into
+`platforms/balena/registrar/docker-compose.yml` by
+`node scripts/render-stack.mjs`):
 
 ```
 extra_hosts:
@@ -364,7 +366,7 @@ extra_hosts:
 
 `extra_hosts` has no `${VAR}` substitution under the supervisor
 compose, so ONE LINE PER ENROLLED DEVICE IS THE MECHANISM: each new
-enroll = one compose line (the device's tailnet IP; `tailscale
+enroll = one spec line, re-rendered (the device's tailnet IP; `tailscale
 status` on the device host names it) + a master redeploy. This is
 the N-devices scaling cost, documented at the compose site and in
 the README's enroll section; the pin test

@@ -1,6 +1,6 @@
 # platforms/ — where Vector Sigma runs
 
-Vector Sigma is split into two layers:
+Vector Sigma is split into three layers:
 
 - **What runs** is platform-neutral: the images listed in
   [`images.json`](../images.json), built from `registrar/`, `registrant/` and
@@ -8,6 +8,13 @@ Vector Sigma is split into two layers:
   those exact bytes and promotes them to GHCR by digest
   (`.github/workflows/_images.yml`). No image knows which platform it is on;
   everything platform-specific arrives as environment and delivered bundles.
+- **What runs together** is a stack: [`stack/registrar.yaml`](../stack/registrar.yaml)
+  defines the registrar stack once. `scripts/render-stack.mjs` renders it
+  into each compose-shaped adapter (`platforms/compose/compose.yaml`,
+  `platforms/balena/registrar/docker-compose.yml`); the spec's `x-compose` /
+  `x-balena` blocks are the only places they differ, and CI fails if a
+  rendered file is stale. A new compose-shaped platform is a new renderer
+  target; a non-compose one (AgentCore) reads the same spec.
 - **How it runs** is a platform adapter, one directory per deploy target
   under `platforms/`. An adapter owns only deployment configuration: which
   images run together, their wiring, volumes, network edge and how secrets

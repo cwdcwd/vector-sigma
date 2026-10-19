@@ -47,6 +47,8 @@ shared/       # bundle-contract types shared by both ends
 images/       # every other image: one dir per images.json component;
               #   images/common/ = boot hooks, CLIs, plugin baked into several images
 images.json   # THE image list: CI builds, scans, E2Es and promotes exactly these
+stack/        # THE stack definitions (which images run together, how wired);
+              #   rendered into each platform by scripts/render-stack.mjs
 platforms/    # where those images run — one adapter per deploy target
   balena/     #   registrar + devices fleet apps (live)
   compose/    #   plain Docker Compose on any host (self-host)
