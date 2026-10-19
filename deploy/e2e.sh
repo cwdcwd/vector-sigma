@@ -799,7 +799,7 @@ ac9c_litellm_spend_log_redaction() {
   fi
   local cfg_row_state cfg_row_err=""
   cfg_row_state="$(docker exec "$PROJECT-postgres-runtime-1" psql -U runtime -d litellm_runtime -tA -c \
-    "SELECT CASE WHEN count(*)=0 THEN 'no-row' WHEN param_value IS NULL THEN 'null-value' WHEN param_value::text LIKE '%store_prompts_in_spend_logs%' THEN 'flag-present' ELSE 'flag-absent' END FROM \"LiteLLM_Config\" WHERE param_name='general_settings';" 2>/dev/null | head -1)" || true
+    "SELECT CASE WHEN count(*)=0 THEN 'no-row' WHEN max(CASE WHEN param_value IS NULL THEN 1 ELSE 0 END)=1 THEN 'null-value' WHEN max(CASE WHEN param_value::text LIKE '%store_prompts_in_spend_logs%' THEN 1 ELSE 0 END)=1 THEN 'flag-present' ELSE 'flag-absent' END FROM \"LiteLLM_Config\" WHERE param_name='general_settings';" 2>/dev/null | head -1)" || true
   if [ -z "$cfg_row_state" ]; then
     cfg_row_err="$(docker exec "$PROJECT-postgres-runtime-1" psql -U runtime -d litellm_runtime -tA -c \
       "SELECT 1 FROM \"LiteLLM_Config\" LIMIT 1;" 2>&1 | head -1)" || true
@@ -860,7 +860,8 @@ ac9c_litellm_spend_log_redaction() {
       const SENT = "REDACTED_BY_LITELLM";
       let paths = 0, masked = 0; const names = []; const shapes = {};
       const cls = (s) => s === SENT ? "sent" : s === "REDACTED" ? "red" : s === "***REDACTED***" ? "hdr" : s === "[REDACTED]" ? "brk" : (/^\*+$/.test(s) ? "stars" : (/^[0-9a-fA-F]{32,64}$/.test(s) ? "hex" : (/^[A-Za-z0-9+/=_-]{20,}$/.test(s) ? "tokenish" : "mixed")));
-      ;(function walk(v){ if (!v || typeof v !== "object") return; for (const [k, x] of Object.entries(v)) { if (KEYSET.has(k) && x !== null && typeof x !== "object") { paths++; if (typeof x === "string") shapes[k] = x.length + ":" + cls(x); if (x === SENT || x === "REDACTED" || x === "***REDACTED***" || x === "[REDACTED]" || (typeof x === "string" && /^\*+$/.test(x)) || (typeof x === "string" && x.length > 8 && /^\*+$/.test(x.slice(4, x.length - 4)))) masked++; if (!names.includes(k)) names.push(k); } walk(x); if (typeof x === "string" && x.length > 16 && (x[0]==="{"||x[0]==="[")) { try { walk(JSON.parse(x)); } catch { /* str */ } } } })(parsed ?? {});
+      const md5pfx = (s) => require("crypto").createHash("md5").update(s).digest("hex").slice(0, 8);
+      ;(function walk(v){ if (!v || typeof v !== "object") return; for (const [k, x] of Object.entries(v)) { if (KEYSET.has(k) && x !== null && typeof x !== "object") { paths++; if (typeof x === "string") shapes[k] = x.length + ":" + cls(x) + ":md5" + md5pfx(x); if (x === SENT || x === "REDACTED" || x === "***REDACTED***" || x === "[REDACTED]" || (typeof x === "string" && /^\*+$/.test(x)) || (typeof x === "string" && x.length > 8 && /^\*+$/.test(x.slice(4, x.length - 4)))) masked++; if (!names.includes(k)) names.push(k); } walk(x); if (typeof x === "string" && x.length > 16 && (x[0]==="{"||x[0]==="[")) { try { walk(JSON.parse(x)); } catch { /* str */ } } } })(parsed ?? {});
       console.log("psr_len=" + (psrStr ?? "").length + " placeholder=" + (psrStr != null && psrStr.trim() === "{}" ? 1 : 0) + " cred_paths=" + paths + " masked=" + masked + " names=" + names.join(",") + " shapes=" + JSON.stringify(shapes));
     ' "$precheck_row" 2>/dev/null || psr_diag="psr=unreadable")"
     pass "AC9c prompt-storage precheck" "completion HTTP ${precheck_status:-none}, row lookup HTTP ${precheck_lookup:-none}; ${psr_diag}"
@@ -1103,12 +1104,13 @@ ac9c_litellm_spend_log_redaction() {
       let parsed = null; try { parsed = typeof psr === "string" ? JSON.parse(psr) : psr; } catch { parsed = null; }
       const pathCount = {}; const sentinelHits = []; const valShape = {};
       const classifyShape = (s) => s === SENTINEL ? "sent" : s === "REDACTED" ? "red" : s === "***REDACTED***" ? "hdr" : s === "[REDACTED]" ? "brk" : (/^\*+$/.test(s) ? "stars" : (/^[0-9a-fA-F]{32,64}$/.test(s) ? "hex" : (/^[A-Za-z0-9+/=_-]{20,}$/.test(s) ? "tokenish" : "mixed")));
+      const md5pfx = (s) => require("crypto").createHash("md5").update(s).digest("hex").slice(0, 8);
       (function walk(v) {
         if (!v || typeof v !== "object") return;
         for (const [k, x] of Object.entries(v)) {
           if (CREDENTIAL_KEYS.has(k) && x !== null && typeof x !== "object") {
             pathCount[k] = (pathCount[k] ?? 0) + 1;
-            if (typeof x === "string") valShape[k] = x.length + ":" + classifyShape(x); else valShape[k] = typeof x;
+            if (typeof x === "string") valShape[k] = x.length + ":" + classifyShape(x) + ":md5" + md5pfx(x); else valShape[k] = typeof x;
           }
           if (typeof x === "string" && x.indexOf(SENTINEL) >= 0) sentinelHits.push(k);
           walk(x);
