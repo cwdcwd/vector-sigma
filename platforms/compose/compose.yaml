@@ -37,8 +37,11 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      # Probe the role we actually create: pg_isready against the default
-      # role prints "role does not exist" FATAL noise every 5s.
+      # Probe the role + database we actually create: pg_isready against the
+      # defaults prints "role does not exist" FATAL noise every 5s. On balena
+      # the shell expands these at probe time from the service environment;
+      # compose interpolates them from .env (single-$ ${VAR} works in both
+      # dialects — never $$, see compose-dialect.test.ts).
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 3s
@@ -70,15 +73,23 @@ services:
     # (E2E seed, registrant-own) keeps using http://registrar:3000.
     ports:
       - "127.0.0.1:3000:3000"
+    # Starts after postgres. Compose waits for it to be healthy; balena's
+    # supervisor honours start order only (its builder rejects conditions)
+    # and the registrar's own DB connect retries cover the gap.
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
+      # Readiness, not just liveness: /healthz answers once the registrar
+      # serves. Exec form (no shell, no $) so it is identical in both compose
+      # dialects. ~2 minutes of failures (24 x 5s) before unhealthy covers a
+      # slow MIGRATE_ON_START on first boot.
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 5s
       timeout: 3s
       retries: 24
       start_period: 5s
-    depends_on:
-      postgres:
-        condition: service_healthy
+    stop_grace_period: 60s
     restart: unless-stopped
 
   # f57.12 (consolidated fleet-ops-anc, 2026-09-29): the VS fleet's own
@@ -105,6 +116,9 @@ services:
     # PROXY_BASE_URL stays unset: cards advertise from the request Host.
     ports:
       - "127.0.0.1:4000:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
       # Process liveness (the litellm image ships no curl/wget).
       test: ["CMD-SHELL", "kill -0 1"]
@@ -112,9 +126,7 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
-    depends_on:
-      postgres:
-        condition: service_healthy
+    stop_grace_period: 60s
     restart: unless-stopped
 
   # ── f57.15: the VS fleet's own queue plane (dolt + scotty) ────────────────
@@ -146,6 +158,7 @@ services:
       timeout: 5s
       retries: 30
       start_period: 30s
+    stop_grace_period: 60s
     restart: unless-stopped
 
   scotty:
@@ -174,6 +187,7 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+    stop_grace_period: 60s
     restart: unless-stopped
 
   # ── f57.14: primus — the VS coordinator Hermes, self-bootstrapped ─────────
@@ -209,6 +223,7 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+    stop_grace_period: 60s
     restart: unless-stopped
 
   # f57.14: the master's OWN registrant (the same image every device runs).
@@ -233,6 +248,7 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+    stop_grace_period: 30s
     restart: unless-stopped
 
 # Volumes: pgdata (postgres), doltdata (f57.15: the VS queue's Dolt state),

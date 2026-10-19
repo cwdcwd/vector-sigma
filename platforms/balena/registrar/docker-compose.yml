@@ -53,9 +53,12 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      # Probe the role we actually create: pg_isready against the default
-      # role prints "role does not exist" FATAL noise every 5s.
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      # Probe the role + database we actually create: pg_isready against the
+      # defaults prints "role does not exist" FATAL noise every 5s. On balena
+      # the shell expands these at probe time from the service environment;
+      # compose interpolates them from .env (single-$ ${VAR} works in both
+      # dialects — never $$, see compose-dialect.test.ts).
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 3s
       retries: 24
@@ -83,11 +86,21 @@ services:
     # (E2E seed, registrant-own) keeps using http://registrar:3000.
     ports:
       - "127.0.0.1:3000:3000"
+    # Starts after postgres. Compose waits for it to be healthy; balena's
+    # supervisor honours start order only (its builder rejects conditions)
+    # and the registrar's own DB connect retries cover the gap.
+    depends_on:
+      - postgres
     healthcheck:
-      test: ["CMD-SHELL", "kill -0 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
+      # Readiness, not just liveness: /healthz answers once the registrar
+      # serves. Exec form (no shell, no $) so it is identical in both compose
+      # dialects. ~2 minutes of failures (24 x 5s) before unhealthy covers a
+      # slow MIGRATE_ON_START on first boot.
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 5s
     stop_grace_period: 60s
     stop_signal: SIGTERM
     restart: always
@@ -115,12 +128,16 @@ services:
     # PROXY_BASE_URL stays unset: cards advertise from the request Host.
     ports:
       - "127.0.0.1:4000:4000"
+    depends_on:
+      - postgres
     healthcheck:
       # Process liveness (the litellm image ships no curl/wget).
       test: ["CMD-SHELL", "kill -0 1"]
       interval: 30s
       timeout: 5s
       retries: 3
+      start_period: 30s
+    stop_grace_period: 60s
     # lfk (the live AC3 Defect A fix): static hosts pins for the A2A
     # proxy's dial role. The proxy follows a registered agent's origin
     # card and dials the ADVERTISED url — the master's own MagicDNS name
@@ -137,7 +154,6 @@ services:
     extra_hosts:
       - "vector-sigma.tailb7207e.ts.net:100.124.197.78"
       - "optimus-prime.tailb7207e.ts.net:100.99.56.18"
-    stop_grace_period: 60s
     stop_signal: SIGTERM
     restart: always
 
@@ -237,13 +253,13 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+    stop_grace_period: 60s
     # j7g phase 1b (fleet-ops-lrb): static hosts pin for the master's OWN
     # MagicDNS FQDN — primus's GATEWAY_URL / A2A_PUBLIC_URL point there and
     # the container DNS chain has no ts.net route. Same literal pair as
     # the devices compose pins (docs/tailscale-runbook.md).
     extra_hosts:
       - "vector-sigma.tailb7207e.ts.net:100.124.197.78"
-    stop_grace_period: 60s
     stop_signal: SIGTERM
     restart: always
 

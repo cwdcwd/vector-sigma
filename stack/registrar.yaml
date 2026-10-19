@@ -107,9 +107,12 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      # Probe the role we actually create: pg_isready against the default
-      # role prints "role does not exist" FATAL noise every 5s.
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      # Probe the role + database we actually create: pg_isready against the
+      # defaults prints "role does not exist" FATAL noise every 5s. On balena
+      # the shell expands these at probe time from the service environment;
+      # compose interpolates them from .env (single-$ ${VAR} works in both
+      # dialects — never $$, see compose-dialect.test.ts).
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 3s
       retries: 24
@@ -119,8 +122,6 @@ services:
         # Self-host names its own role + database (.env).
         POSTGRES_USER: ${POSTGRES_USER:?set in platforms/compose/.env}
         POSTGRES_DB: ${POSTGRES_DB:?set in platforms/compose/.env}
-      healthcheck:
-        test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
 
   registrar:
     x-component: registrar
@@ -133,11 +134,23 @@ services:
     # (E2E seed, registrant-own) keeps using http://registrar:3000.
     ports:
       - "127.0.0.1:3000:3000"
+    # Starts after postgres. Compose waits for it to be healthy; balena's
+    # supervisor honours start order only (its builder rejects conditions)
+    # and the registrar's own DB connect retries cover the gap.
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "kill -0 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
+      # Readiness, not just liveness: /healthz answers once the registrar
+      # serves. Exec form (no shell, no $) so it is identical in both compose
+      # dialects. ~2 minutes of failures (24 x 5s) before unhealthy covers a
+      # slow MIGRATE_ON_START on first boot.
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 5s
+    stop_grace_period: 60s
     x-compose:
       environment:
         DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
@@ -153,15 +166,6 @@ services:
         # has no cascade, so both are explicit.
         GATEWAY_KEY_MINT_BASE_URL: http://litellm:4000
         LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?set in platforms/compose/.env}
-      depends_on:
-        postgres:
-          condition: service_healthy
-      healthcheck:
-        test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
-        interval: 5s
-        timeout: 3s
-        retries: 24
-        start_period: 5s
     x-balena:
       environment:
         # Structural (fleet-ops-f57.8): the registrar builds DATABASE_URL
@@ -171,7 +175,6 @@ services:
         POSTGRES_USER: vsigma
         POSTGRES_DB: vsigma
         DB_HOST: postgres
-      stop_grace_period: 60s
 
   # f57.12 (consolidated fleet-ops-anc, 2026-09-29): the VS fleet's own
   # LiteLLM gateway — models front door + virtual keys + the /a2a/* mesh for
@@ -198,20 +201,20 @@ services:
     # PROXY_BASE_URL stays unset: cards advertise from the request Host.
     ports:
       - "127.0.0.1:4000:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
       # Process liveness (the litellm image ships no curl/wget).
       test: ["CMD-SHELL", "kill -0 1"]
       interval: 30s
       timeout: 5s
       retries: 3
+      start_period: 30s
+    stop_grace_period: 60s
     x-compose:
       environment:
         OLLAMA_CLOUD_API_BASE: ${OLLAMA_CLOUD_API_BASE:-https://ollama.com/v1}
-      depends_on:
-        postgres:
-          condition: service_healthy
-      healthcheck:
-        start_period: 30s
     x-balena:
       # lfk (the live AC3 Defect A fix): static hosts pins for the A2A
       # proxy's dial role. The proxy follows a registered agent's origin
@@ -229,7 +232,6 @@ services:
       extra_hosts:
         - "vector-sigma.tailb7207e.ts.net:100.124.197.78"
         - "optimus-prime.tailb7207e.ts.net:100.99.56.18"
-      stop_grace_period: 60s
 
   # ── f57.15: the VS fleet's own queue plane (dolt + scotty) ────────────────
   # Mirrors the origin fleet's central-Dolt + Scotty stack (central Dolt
@@ -271,8 +273,7 @@ services:
         # config-time interpolation would bake the secret into
         # `docker inspect` output.
         test: ["CMD-SHELL", "dolt --host 127.0.0.1 --port 3306 --no-tls -u vs -p \"$$DOLT_PASSWORD\" sql -q 'select current_timestamp();'"]
-    x-balena:
-      stop_grace_period: 60s
+    stop_grace_period: 60s
 
   scotty:
     x-component: scotty
@@ -303,8 +304,7 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
-    x-balena:
-      stop_grace_period: 60s
+    stop_grace_period: 60s
 
   # ── f57.14: primus — the VS coordinator Hermes, self-bootstrapped ─────────
   # The dogfood proof: the master's own agent bootstraps through the SAME
@@ -344,6 +344,7 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+    stop_grace_period: 60s
     x-balena:
       # j7g phase 1b (fleet-ops-lrb): static hosts pin for the master's OWN
       # MagicDNS FQDN — primus's GATEWAY_URL / A2A_PUBLIC_URL point there and
@@ -351,7 +352,6 @@ services:
       # the devices compose pins (docs/tailscale-runbook.md).
       extra_hosts:
         - "vector-sigma.tailb7207e.ts.net:100.124.197.78"
-      stop_grace_period: 60s
 
   # f57.14: the master's OWN registrant (the same image every device runs).
   # Polls the compose-internal registrar and applies the primus bundle to
@@ -378,8 +378,7 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-    x-balena:
-      stop_grace_period: 30s
+    stop_grace_period: 30s
 
   # ── j7g (6c2 + lnf): the tailscale overlay + serve edge (balena only) ────
   # One private overlay across the master and devices fleets; NO subnet
