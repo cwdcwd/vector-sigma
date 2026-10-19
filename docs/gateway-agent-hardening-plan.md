@@ -70,7 +70,7 @@ the listing is non-empty but unhelpful: the `openai/*` pass-through expands to O
 catalog (names the agents can't meaningfully use; those rows may carry cost-map metadata), and the
 `ollama-cloud/glm-*` alias groups declare no `model_info` context limits, so their `/v1/models` rows
 can omit `max_input_tokens`. This is configuration-dependent, not version-dependent: LiteLLM fills
-`max_input_tokens` from the cost map or router-configured limits on both 1.100.1 and 1.105.1 — an
+`max_input_tokens` from the cost map or router-configured limits on the previous and target releases — an
 Ollama alias absent from the cost map needs `model_info.max_input_tokens` declared to expose it.
 
 Related pitfall for operators who customise keys: LiteLLM's "all models" grant is the special value
@@ -83,7 +83,7 @@ version. Optionally prefer explicit group grants (or `all-proxy-models`) over `"
 check that the grant does not change which pass-through model names a key may call.
 
 ### 1.4 Gateway image is pinned to an old release
-**Today:** `FROM ghcr.io/berriai/litellm:1.100.1`.
+**Change in this lane:** pin `FROM ghcr.io/berriai/litellm:1.105.1`.
 
 **Fix:** move to the current stable (1.105.1 at time of writing). Notable: request-body
 credentials are kept out of stored spend-log requests (#43635), decisions/System One routes are
@@ -117,7 +117,7 @@ update it alongside the new groups so it doesn't break silently.
 
 ### 2.2 Optional auto-router template
 *Presumes the 1.4 upgrade: the complexity router's context compaction and the `ModelNotMappedError`
-behaviour below are 1.105.x code, not present in the pinned 1.100.1.*
+behaviour below are 1.105.x code, not present in the previous release.
 
 Offer a commented `auto_router/complexity_router` group (tiers SIMPLE/MEDIUM/COMPLEX/REASONING
 mapped to whatever providers the operator configures), with `session_affinity: true` so a

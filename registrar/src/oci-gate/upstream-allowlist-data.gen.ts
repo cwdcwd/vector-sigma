@@ -178,6 +178,27 @@ export const UPSTREAM_IMAGE_ALLOWLIST: readonly UpstreamFileEntry[] = [
     markers: ["        url = httpx.URL(\"https://[::ffff:192.168.0.1]\")","        assert url.host == \"::ffff:192.168.0.1\"","        assert url.raw_host == b\"::ffff:192.168.0.1\"","            #   NO_PROXY=example.com,::1,localhost,192.168.0.0/16","        url = httpx2.URL(\"https://[::ffff:192.168.0.1]\")"],
     markerFn: null,
     occurrences: [{ literal: "192.168.0.1" }, { literal: "192.168.0.0" }],
+    // 1py.17 (2026-10-18): LiteLLM 1.105.1's stock image ships httpx2 2.13.0 in
+    // its python3.13 venv; its _urls.py bytes changed vs the 2.5.x files pinned
+    // above (the NO_PROXY /192.168.0.0/16 doc comment this entry's 4th marker
+    // cites is GONE upstream — this file now carries only the 192.168.0.1
+    // occurrence, which stays covered by the closed-set pin below). The new
+    // sha256 pin is byte-verified TWO ways from the exact upstream artifacts:
+    // (1) extracted from the berriai/litellm 1.105.1 linux/amd64 (base image,
+    //     venv layer (blob sha256:a1223e0a956d28413262390b446c608fe5332da46a45573ea687d19e79c1be74,
+    //     the layer both CI scan jobs rejected on, 2026-10-17T07:36);
+    // (2) extracted from the official PyPI wheel httpx2-2.13.0-py3-none-any.whl
+    //     (files.pythonhosted wheel-level sha256 fc12720cedf72faa...; the
+    //     wheel's httpx2/_urls.py hashes BYTE-IDENTICAL to the image's file).
+    // The image's _utils.py is BYTE-IDENTICAL to the already-pinned hermes-venv
+    // 2.5.x file above (three-way with the 2.13.0 PyPI wheel, sha bddcd8b2...) —
+    // only the /app/.venv path was missing from the pin map.
+    // GATE CONTRACT (markdown-it 1py.14 round-7b precedent): these pins are valid
+    // ONLY for the exact byte set of the pinned base image. The Dockerfile
+    // pins the base to the registry index digest FROM@sha256:b7b9e2c3... so the
+    // bytes cannot silently drift; ANY digest bump requires re-deriving these
+    // pins from the new layer's exact bytes, verified against the matching
+    // upstream PyPI artifact, BEFORE the bump lands.
   },
   {
     name: "pip-psutil",
@@ -1851,6 +1872,8 @@ export const UPSTREAM_IMAGE_ALLOWLIST: readonly UpstreamFileEntry[] = [
     match: "site-packages/httpx2",
     fileSha256: null,
     fileSha256s: {
+      "app/.venv/lib/python3.13/site-packages/httpx2/_urls.py": "d9fc06bca6d76d9e099738c51de8b6af245b5c6c2e6c5e386c3e8d46d4001756",
+      "app/.venv/lib/python3.13/site-packages/httpx2/_utils.py": "bddcd8b2244004f0c3619ba2ac7ed6c592e8075aa9c046c81ac58016fb7d8787",
       "opt/hermes/.venv/lib/python3.13/site-packages/httpx2/_urls.py": "dca525888042280cb8f3dafa540ecde0bc03adf596756e363139eedee5b552b6",
       "opt/hermes/.venv/lib/python3.13/site-packages/httpx2/_utils.py": "bddcd8b2244004f0c3619ba2ac7ed6c592e8075aa9c046c81ac58016fb7d8787",
     },
@@ -3013,4 +3036,103 @@ export const UPSTREAM_IMAGE_ALLOWLIST: readonly UpstreamFileEntry[] = [
     fileSha256: "a48ca6d0c454ce35236af8945f71b43eb25f1733272390e6adfeb8a3bdd805e3",
     occurrences: [{ literal: "192.168.1.1" }],
   },
+  {
+    name: "pip-litellm-own-package-secrets",
+    patterns: ["generic_api_key_assignment", "aws_access_key_id"],
+    matchKind: 'prefix',
+    match: "site-packages/litellm",
+    fileSha256: null,
+    fileSha256s: {
+      "app/.venv/lib/python3.13/site-packages/litellm/integrations/SlackAlerting/slack_alerting.py": "bd4b25bba53fde0702f36f2512fff12c53f05a5ed06cd4c95cedccea1024eb64",
+      "app/.venv/lib/python3.13/site-packages/litellm/main.py": "fa6f2710604c000760ae2eca486c1f5b47b95d5d5f4923ab5115ed40ca992e1c",
+      "app/.venv/lib/python3.13/site-packages/litellm/policy_templates_backup.json": "bbc8cb88253ef690787ea0ddef032e943274e5cf8ef5e4476028ffe97c00752e",
+      "app/.venv/lib/python3.13/site-packages/litellm/proxy/_experimental/mcp_server/byok_oauth_endpoints.py": "622422127462ff44d5af850c79ccbee16a37cf1fab0b663a2a5cb1de3255bce5",
+      "app/.venv/lib/python3.13/site-packages/litellm/proxy/_experimental/out/_next/static/chunks/0iv7jb6y4ocy_.js": "90be476d86bde828035f9c0d506fca79ef7b0ff4a61be3811e7315d9a70144a3",
+      "app/.venv/lib/python3.13/site-packages/litellm/proxy/_experimental/out/_next/static/chunks/25gosr767ie-e.js": "af298cc4f7e77aec1d4b1ec2b73112df90c4be0a587e3668dcc396397e53348f",
+      "app/.venv/lib/python3.13/site-packages/litellm/proxy/_experimental/out/_next/static/chunks/2obylm-jikxma.js": "8d55cd5fe045bb4df278cb71183f81c6eb2eea3bd88237f16037ebe8f9380525",
+      "app/.venv/lib/python3.13/site-packages/litellm/proxy/auth/auth_exception_handler.py": "5705032670e449e081a6e93eaff1c686ce2eef695ed5bc80d9df1986d4cb0bb3",
+      "app/.venv/lib/python3.13/site-packages/litellm/proxy/management_endpoints/key_management_endpoints.py": "c9c644c2a93e20ef9d850454ddb4b23bf1db4823b66be415b9a13a5da045b4de",
+      "app/.venv/lib/python3.13/site-packages/litellm/proxy/spend_tracking/spend_management_endpoints.py": "51c744fee2849ca238f34233521bef867055f4a014351fef6e72bb04cc14f062",
+      "app/.venv/lib/python3.13/site-packages/litellm/utils.py": "b8780e244b32bfe709fff7ba4dfedb1141ca0fbe6443ce0d1626e4e714da37f8",
+    },
+    markers: [],
+    markerFn: null,
+    occurrences: [{ literal: "AKIAIOSFODNN7EXAMPLE" }, { literal: "apiKey:\"your_api_key\"" }, { literal: "api_key=\"byok_session_cookie\"" }, { literal: "api_key=\"my-fake-api-key\"" }, { literal: "api_key=\"my-secret-key\"" }, { literal: "api_key=\"your_api_key\"" }, { literal: "api_key='d5345c0ecc68ae6295c69f91926b2bd379e25481a40c34b5884d157a9f65d8fa'" }, { literal: "token=\"__team_scope_auth_check__\"" }, { literal: "token=\"failed-to-connect-to-db\"" }],
+    // pip-litellm-own-package-secrets: placeholder API-key assignments in litellm docs/UI chunks.
+    // 1py.17 (2026-10-18): LiteLLM 1.105.1 stock image — digest pinned in Dockerfile.litellm;
+    // pinned in Dockerfile.litellm) ships these upstream package files with topology/secret-shape
+    // DOC-SAMPLE literals. Every pin below was byte-verified TWO ways from exact upstream
+    // artifacts: litellm package files == github.com/BerriAI/litellm tag v1.105.1 raw files;
+    // the four proxy/_experimental/out/_next/static/chunks/*.js build outputs == the digest-
+    // verified PyPI wheel litellm-1.105.1-cp310-abi3-manylinux_2_28_x86_64.whl; the smithy_core
+    // file == the PyPI wheel smithy_core-0.8.1-py3-none-any.whl. All findings enumerated via the
+    // real gate modules (scanLayersForSecretsAndTopology + filterExcusedFindings) over the
+    // a1223e0a venv layer locally — the 17 unexcused findings this entry closes are the COMPLETE
+    // set for that layer, not just the first rejection.
+    // GATE CONTRACT (markdown-it 1py.14 round-7b precedent): these pins are valid ONLY for the
+    // exact byte set of the pinned base image. ANY Dockerfile digest bump requires re-deriving
+    // these pins from the new layer bytes, verified against the matching upstream artifacts,
+    // BEFORE the bump lands. Bytes changing at a pinned path fail closed (no markers fallback).
+  },
+  {
+    name: "pip-litellm-own-package-rfc1918",
+    patterns: ["rfc1918_private_ip"],
+    matchKind: 'prefix',
+    match: "site-packages/litellm",
+    fileSha256: null,
+    fileSha256s: {
+      "app/.venv/lib/python3.13/site-packages/litellm/llms/ollama/completion/transformation.py": "0eae69054056c61db62747734647b6bfc2f8ca53bbd9c940bc8cffe11244ea28",
+      "app/.venv/lib/python3.13/site-packages/litellm/llms/vertex_ai/common_utils.py": "d5ae520555f678f51fa14f51f23365897a89c5ed4f52e7c9b736299851f25ffc",
+      "app/.venv/lib/python3.13/site-packages/litellm/proxy/_experimental/out/_next/static/chunks/1etef47tue5fx.js": "090162fc17d95d44daf10c4be75d258831150154f78cee0f7791fb21faf0ae27",
+      "app/.venv/lib/python3.13/site-packages/litellm/proxy/_types.py": "2ef3c788ab6267bd3ba8bcaf336712cba9f67d49256bdfeb0a516c5de1525500",
+      "app/.venv/lib/python3.13/site-packages/litellm/proxy/auth/ip_address_utils.py": "1f6226e380b89502f90a9fa9e92ac4da94c7086ab3b7091ae60f8847d0d8283c",
+    },
+    markers: [],
+    markerFn: null,
+    occurrences: [{ literal: "10.0.0.0" }, { literal: "10.10.11.249" }, { literal: "10.96.32.8" }, { literal: "172.16.0.0" }, { literal: "192.168.0.0" }],
+    // pip-litellm-own-package-rfc1918: doc-CIDR/example IPs in litellm sources (Ollama example host, Vertex k8s service ip, regex docs, ip_address_utils CIDR docs).
+    // 1py.17 (2026-10-18): LiteLLM 1.105.1 stock image — digest pinned in Dockerfile.litellm;
+    // pinned in Dockerfile.litellm) ships these upstream package files with topology/secret-shape
+    // DOC-SAMPLE literals. Every pin below was byte-verified TWO ways from exact upstream
+    // artifacts: litellm package files == github.com/BerriAI/litellm tag v1.105.1 raw files;
+    // the four proxy/_experimental/out/_next/static/chunks/*.js build outputs == the digest-
+    // verified PyPI wheel litellm-1.105.1-cp310-abi3-manylinux_2_28_x86_64.whl; the smithy_core
+    // file == the PyPI wheel smithy_core-0.8.1-py3-none-any.whl. All findings enumerated via the
+    // real gate modules (scanLayersForSecretsAndTopology + filterExcusedFindings) over the
+    // a1223e0a venv layer locally — the 17 unexcused findings this entry closes are the COMPLETE
+    // set for that layer, not just the first rejection.
+    // GATE CONTRACT (markdown-it 1py.14 round-7b precedent): these pins are valid ONLY for the
+    // exact byte set of the pinned base image. ANY Dockerfile digest bump requires re-deriving
+    // these pins from the new layer bytes, verified against the matching upstream artifacts,
+    // BEFORE the bump lands. Bytes changing at a pinned path fail closed (no markers fallback).
+  },
+  {
+    name: "pip-smithy-core-rfc1918",
+    patterns: ["rfc1918_private_ip"],
+    matchKind: 'suffix',
+    match: "site-packages/smithy_core/rfc3986.py",
+    fileSha256: null,
+    fileSha256s: {
+      "app/.venv/lib/python3.13/site-packages/smithy_core/rfc3986.py": "2677a3af17e18b19d4f2ed73c365a55f983b1406fd460bcd67a0026f02e2531b",
+    },
+    markers: [],
+    markerFn: null,
+    occurrences: [{ literal: "192.168.255.255" }],
+    // pip-smithy-core-rfc1918: smithy_core 0.8.1 rfc3986.py doc example of an RFC1918 broadcast address.
+    // 1py.17 (2026-10-18): LiteLLM 1.105.1 stock image — digest pinned in Dockerfile.litellm;
+    // pinned in Dockerfile.litellm) ships these upstream package files with topology/secret-shape
+    // DOC-SAMPLE literals. Every pin below was byte-verified TWO ways from exact upstream
+    // artifacts: litellm package files == github.com/BerriAI/litellm tag v1.105.1 raw files;
+    // the four proxy/_experimental/out/_next/static/chunks/*.js build outputs == the digest-
+    // verified PyPI wheel litellm-1.105.1-cp310-abi3-manylinux_2_28_x86_64.whl; the smithy_core
+    // file == the PyPI wheel smithy_core-0.8.1-py3-none-any.whl. All findings enumerated via the
+    // real gate modules (scanLayersForSecretsAndTopology + filterExcusedFindings) over the
+    // a1223e0a venv layer locally — the 17 unexcused findings this entry closes are the COMPLETE
+    // set for that layer, not just the first rejection.
+    // GATE CONTRACT (markdown-it 1py.14 round-7b precedent): these pins are valid ONLY for the
+    // exact byte set of the pinned base image. ANY Dockerfile digest bump requires re-deriving
+    // these pins from the new layer bytes, verified against the matching upstream artifacts,
+    // BEFORE the bump lands. Bytes changing at a pinned path fail closed (no markers fallback).
+  }
+
 ]

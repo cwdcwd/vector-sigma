@@ -119,6 +119,15 @@ jobs:
           name: descriptor-${{ matrix.component }}-${{ matrix.arch_tag }}
           path: ${{ runner.temp }}/${{ matrix.component }}-${{ matrix.arch_tag }}.descriptor.json
           retention-days: 1
+      # The layout tar itself, not just its descriptor: promote publishes
+      # THESE bytes (fleet-ops-r3v) — the cryptographic link between what
+      # was scanned and what is published.
+      - name: Upload the scanned OCI layout (the exact bytes to be promoted)
+        uses: actions/upload-artifact@v4
+        with:
+          name: layout-${{ matrix.component }}-${{ matrix.arch_tag }}
+          path: ${{ runner.temp }}/${{ matrix.component }}-${{ matrix.arch_tag }}.tar
+          retention-days: 1
 
   assemble-and-validate:
     name: Assemble + validate local index (${{ matrix.component }})
@@ -180,20 +189,23 @@ jobs:
           echo "all-components-gate: every stage/scan and index-assembly job passed"
 
   # -----------------------------------------------------------------------
-  # Promotion stage (PR #61 review round 1, finding #4 — THE MOST SERIOUS
-  # finding, identical fix as release-registrar.yml): the promote job
-  # previously ran a SECOND `docker buildx build --push` on a fresh
-  # runner and never consumed the OCI tar / local index the stage-and-
-  # scan job already built and scanned — structurally bypassing the
-  # scan-then-promote gate. FIX APPLIED: rebuild-and-push removed; promote
-  # is a no-op placeholder and every downstream job that depends on real
-  # published GHCR bytes is structurally gated off (`if: false`) until a
-  # real exact-byte GHCR promoter is built AND proven against live GHCR in
-  # a separately authorized slice (this session's hard constraints forbid
-  # any GHCR auth/write, so that proof cannot happen here).
+  # -----------------------------------------------------------------------
+  # Promotion stage (fleet-ops-r3v — completes PR #61 review finding #4,
+  # identical fix as release-registrar.yml): promote pushes the EXACT
+  # scanned OCI-layout bytes via scripts/ghcr-promote-run.mjs (an in-repo
+  # OCI Distribution v2 client — no buildx, no rebuild, no second build
+  # context), re-reads every blob and manifest before applying any release
+  # tag, and assembles+pushes the multi-arch index from ONLY the
+  # scanned-and-passed child digests. A failure at any point leaves the
+  # registry with no advertised release.
+  #
+  # NO docker/login-action: the GITHUB_TOKEN reaches the client only
+  # through the GHCR_TOKEN environment variable and is exchanged for a
+  # scoped bearer token; never a URL, log line, or error message.
   # -----------------------------------------------------------------------
   promote:
-    name: Promote ${{ matrix.component }} (exact-byte import — DEFERRED, no push yet)
+    name: Promote ${{ matrix.component }} (GHCR write, exact scanned bytes)
+    if: vars.VS_GHCR_PUBLISH_ENABLED == 'true'
     needs: all-components-gate
     runs-on: ubuntu-latest
     permissions:
@@ -204,137 +216,134 @@ jobs:
       matrix:
         component: [agent, registrant, tailscale-devices]
     steps:
-      - name: Download validated local index (the exact scanned-and-passed bytes)
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install gate runtime deps
+        run: npm ci
+      - name: Build (typecheck) so the registry promoter dist/ exists
+        run: npm run build
+      - name: Download validated local index
         uses: actions/download-artifact@v4
         with:
           name: index-${{ matrix.component }}
           path: ${{ runner.temp }}
-      - name: Promote placeholder — NO rebuild, NO push (finding #4 safe fallback)
+      - name: Download the exact scanned OCI layouts (amd64 + arm64)
+        uses: actions/download-artifact@v4
+        with:
+          pattern: layout-${{ matrix.component }}-*
+          path: ${{ runner.temp }}/layouts
+          merge-multiple: true
+      - name: Promote the exact scanned bytes to GHCR (no rebuild, no buildx)
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_ACTOR: ${{ github.actor }}
         run: |
           set -euo pipefail
-          echo "PROMOTE PLACEHOLDER: real exact-byte import/push of the" \
-               "locally scanned+validated OCI layout for ${{ matrix.component }} is" \
-               "deferred to the authorized GHCR PoC slice (fleet-ops-1py.12 risk" \
-               "#4: GHCR API/auth/media-type/index acceptance for an exact-byte" \
-               "regctl/skopeo import is unproven and requires a separately" \
-               "authorized live-registry test). This slice removes the SECOND" \
-               "buildx build+push that defeated the scan-then-promote gate" \
-               "(PR #61 review finding #4) — it performs NO registry write of" \
-               "any kind, rebuilt or otherwise."
-          cat "${{ runner.temp }}/${{ matrix.component }}-index.json"
+          node scripts/ghcr-promote-run.mjs promote \
+            --registry ghcr.io \
+            --repository "${{ env.REGISTRY_NS }}/${{ matrix.component }}" \
+            --tag "${GITHUB_SHA}" \
+            --layout "linux/amd64=${{ runner.temp }}/layouts/${{ matrix.component }}-amd64.tar" \
+            --layout "linux/arm64=${{ runner.temp }}/layouts/${{ matrix.component }}-arm64.tar" \
+            --token-env GHCR_TOKEN \
+            --actor "${GHCR_ACTOR}" \
+            --record "${{ runner.temp }}/promoted-${{ matrix.component }}.json"
+      - name: Upload the promotion record (index + per-arch digests)
+        uses: actions/upload-artifact@v4
+        with:
+          name: promoted-${{ matrix.component }}
+          path: ${{ runner.temp }}/promoted-${{ matrix.component }}.json
+          retention-days: 1
 
-  promote-manifest:
-    name: Assemble multi-arch manifest (${{ matrix.component }}) — DEFERRED, no real images to assemble
-    if: false  # see the promote job's comment block above: gated off until the exact-byte GHCR PoC lands
+  # promote-manifest is GONE (fleet-ops-r3v): its `docker buildx imagetools
+  # create` was a second, independent index-assembly path. The promoter now
+  # assembles and pushes the index itself, from ONLY the scanned-and-passed
+  # child descriptors. One assembly path, one source of truth.
+
+  verify-remote:
+    name: Verify remote digests (${{ matrix.component }})
     needs: promote
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
-    strategy:
-      fail-fast: false
-      matrix:
-        component: [agent, registrant, tailscale-devices]
-    steps:
-      - uses: docker/setup-buildx-action@v3
-      - name: Log into GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Assemble and inspect immutable multi-arch manifest
-        id: assemble
-        env:
-          IMAGE: ghcr.io/${{ env.REGISTRY_NS }}/${{ matrix.component }}
-        run: |
-          set -euo pipefail
-          docker buildx imagetools create \
-            --tag "$IMAGE:${GITHUB_SHA}" \
-            "$IMAGE:${GITHUB_SHA}-amd64" \
-            "$IMAGE:${GITHUB_SHA}-arm64"
-          docker buildx imagetools inspect "$IMAGE:${GITHUB_SHA}"
-          # Record the index digest THIS job itself just assembled — the
-          # locally-validated reference verify-remote compares the
-          # later re-fetched remote index against (PR #61 review finding
-          # #5: "also verify the published index, not just one child
-          # manifest").
-          index_digest=$(docker buildx imagetools inspect "$IMAGE:${GITHUB_SHA}" --raw | sha256sum | awk '{print "sha256:"$1}')
-          echo "recorded index digest: $index_digest"
-          mkdir -p "${{ runner.temp }}/promoted-index"
-          printf '{"component":"%s","index_digest":"%s"}' "${{ matrix.component }}" "$index_digest" \
-            > "${{ runner.temp }}/promoted-index/${{ matrix.component }}-index.json"
-      - name: Upload recorded index-digest record
-        uses: actions/upload-artifact@v4
-        with:
-          name: promoted-index-${{ matrix.component }}
-          path: ${{ runner.temp }}/promoted-index/${{ matrix.component }}-index.json
-          retention-days: 1
-
-  verify-remote:
-    name: Verify remote digests (${{ matrix.component }}) — DEFERRED, nothing published yet
-    if: false  # see the promote job's comment block above: gated off until the exact-byte GHCR PoC lands
-    needs: promote-manifest
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: read
     strategy:
       fail-fast: false
       matrix:
         component: [agent, registrant, tailscale-devices]
     steps:
       - uses: actions/checkout@v4
-      - name: Log into GitHub Container Registry (read-only)
-        uses: docker/login-action@v3
+      - uses: actions/setup-node@v4
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Download pushed-digest records
+          node-version: 22
+      - name: Install gate runtime deps
+        run: npm ci
+      - name: Build (typecheck) so the registry verifier dist/ exists
+        run: npm run build
+      - name: Download the promotion record
         uses: actions/download-artifact@v4
         with:
-          pattern: promoted-${{ matrix.component }}-*
-          path: ${{ runner.temp }}/promoted
-          merge-multiple: true
-      - name: Download recorded index-digest record
-        uses: actions/download-artifact@v4
-        with:
-          name: promoted-index-${{ matrix.component }}
-          path: ${{ runner.temp }}/promoted-index
-      - name: Re-fetch each arch tag + the published index by digest and FAIL on any mismatch
-        env:
-          IMAGE: ghcr.io/${{ env.REGISTRY_NS }}/${{ matrix.component }}
+          name: promoted-${{ matrix.component }}
+          path: ${{ runner.temp }}
+      # Anonymous re-read (public package): the proof that the published
+      # bytes are intact does not depend on the writer's token. The verifier
+      # re-fetches the published index AND every child BY DIGEST and
+      # recomputes SHA-256 over the served bytes — trusting neither the
+      # registry's Docker-Content-Digest header nor its own promote-time
+      # return value.
+      - name: Re-fetch by digest and compare (fails closed on any mismatch)
         run: |
           set -euo pipefail
-          for arch in amd64 arm64; do
-            recorded=$(node -e "console.log(require('${{ runner.temp }}/promoted/${{ matrix.component }}-${arch}.json').digest)")
-            remote=$(docker buildx imagetools inspect "$IMAGE:${GITHUB_SHA}-${arch}" --raw | sha256sum | awk '{print "sha256:"$1}')
-            # The pushed per-arch TAG resolves to a manifest whose
-            # Docker-Content-Digest the registry assigns at push time
-            # (steps.build.outputs.digest); re-pulling by that same tag
-            # and recomputing the digest of the raw manifest bytes must
-            # match, or promotion silently mutated/retargeted the ref.
-            # PR #61 review finding #5: this comparison is now EXPLICIT
-            # and fail-closed via the dedicated script — the previous
-            # step only PRINTED both values and never compared them.
-            node scripts/verify-remote-digest.mjs \
-              --label "${{ matrix.component }}/${arch}" \
-              --recorded "$recorded" --remote "$remote"
-          done
-          # Also verify the PUBLISHED INDEX digest against the one
-          # promote-manifest locally assembled+recorded in this same
-          # run — not just the per-arch child manifests.
-          recorded_index=$(node -e "console.log(require('${{ runner.temp }}/promoted-index/${{ matrix.component }}-index.json').index_digest)")
-          remote_index=$(docker buildx imagetools inspect "$IMAGE:${GITHUB_SHA}" --raw | sha256sum | awk '{print "sha256:"$1}')
-          node scripts/verify-remote-digest.mjs \
-            --label "${{ matrix.component }}/index" \
-            --recorded "$recorded_index" --remote "$remote_index" \
-            --recorded-index "$recorded_index" --remote-index "$remote_index"
+          node scripts/ghcr-promote-run.mjs verify \
+            --registry ghcr.io \
+            --record "${{ runner.temp }}/promoted-${{ matrix.component }}.json"
 
+  # r3v: ONE deterministic rollback ledger for the whole run — collated from
+  # the verified promotion records only (no registry I/O, no credentials).
+  # This is the artifact the rollback runbook cites: exact index + per-arch
+  # digests per component, re-renderable without resolving any mutable tag.
+  release-evidence:
+    name: Release-evidence ledger (rollback)
+    needs: verify-remote
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install gate runtime deps
+        run: npm ci --silent
+      - name: Build (typecheck) so the ledger validator dist/ exists
+        run: npm run build --silent
+      - name: Download every promotion record
+        uses: actions/download-artifact@v4
+        with:
+          pattern: promoted-*
+          path: ${{ runner.temp }}/records
+          merge-multiple: true
+      - name: Collate the release-evidence ledger
+        run: |
+          set -euo pipefail
+          node scripts/ghcr-promote-run.mjs ledger \
+            --out release-evidence/release-evidence.json \
+            --commit "${GITHUB_SHA}" \
+            --ref "${GITHUB_REF_NAME}" \
+            --run-id "${GITHUB_RUN_ID}" \
+            --actor "${GITHUB_ACTOR}" \
+            --component agent="${RUNNER_TEMP}/records/promoted-agent.json" \
+            --component registrant="${RUNNER_TEMP}/records/promoted-registrant.json" \
+            --component tailscale-devices="${RUNNER_TEMP}/records/promoted-tailscale-devices.json"
+      - name: Upload the release-evidence ledger (rollback artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-evidence
+          path: release-evidence/release-evidence.json
+          retention-days: 90
   scan:
-    name: Vulnerability gate (trivy CRITICAL,HIGH) — DEFERRED, nothing published yet
-    if: false  # see the promote job's comment block above: gated off until the exact-byte GHCR PoC lands
+    name: Vulnerability gate (trivy CRITICAL,HIGH)
     needs: verify-remote
     runs-on: ubuntu-latest
     permissions:
@@ -351,10 +360,38 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Scan ${{ matrix.component }}:${{ github.sha }}
+      - name: Download promotion records (r3v digest handoff)
+        uses: actions/download-artifact@v4
+        with:
+          name: promoted-${{ matrix.component }}
+          path: ${{ runner.temp }}/records
+      - name: Resolve the promoted child digests from the record
+        run: |
+          set -euo pipefail
+          RECORD="${{ runner.temp }}/records/promoted-${{ matrix.component }}.json"
+          DIGESTS="$(node -e '
+          const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));
+          const d=(p)=>(r.perPlatform||[]).find(x=>x&&x.platform===p)?.digest;
+          const ok=(s)=>typeof s==="string"&&/^sha256:[0-9a-f]{64}$/.test(s);
+          const amd=d("linux/amd64"), arm=d("linux/arm64");
+          if(!ok(amd)||!ok(arm)) throw new Error("promoted record lacks verified amd64/arm64 child digests");
+          console.log(amd+" "+arm);
+          ' "$RECORD")"
+          printf 'AMD64_DIGEST=%s\nARM64_DIGEST=%s\n' "${DIGESTS%% *}" "${DIGESTS##* }" >> "$GITHUB_ENV"
+      - name: Scan the PROMOTED amd64 child bytes
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: ghcr.io/${{ env.REGISTRY_NS }}/${{ matrix.component }}:${{ github.sha }}
+          image-ref: ghcr.io/${{ env.REGISTRY_NS }}/${{ matrix.component }}@${{ env.AMD64_DIGEST }}
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+          skip-setup-trivy: false
+      - name: Scan the PROMOTED arm64 child bytes
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ghcr.io/${{ env.REGISTRY_NS }}/${{ matrix.component }}@${{ env.ARM64_DIGEST }}
           format: table
           exit-code: "1"
           ignore-unfixed: true
@@ -363,8 +400,7 @@ jobs:
           skip-setup-trivy: false
 
   smoke:
-    name: Release image smoke gate — DEFERRED, nothing published yet
-    if: false  # see the promote job's comment block above: gated off until the exact-byte GHCR PoC lands
+    name: Release image smoke gate
     needs: verify-remote
     runs-on: ubuntu-latest
     permissions:
@@ -378,12 +414,17 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Boot-path smoke (devices app components)
-        run: scripts/release-smoke.sh cwdcwd/vector-sigma ${{ github.sha }} devices
+      - name: Download promotion records (r3v digest handoff)
+        uses: actions/download-artifact@v4
+        with:
+          pattern: promoted-*
+          path: ${{ runner.temp }}/records
+          merge-multiple: true
+      - name: Boot-path smoke (devices app components; digest-pinned to promotion records)
+        run: scripts/release-smoke.sh cwdcwd/vector-sigma "${GITHUB_SHA}" devices "${RUNNER_TEMP}/records"
 
   render:
-    name: Render digest-pinned compose — DEFERRED, nothing published yet
-    if: false  # see the promote job's comment block above: gated off until the exact-byte GHCR PoC lands
+    name: Render digest-pinned compose
     needs: [smoke, scan]
     runs-on: ubuntu-latest
     permissions:
@@ -402,7 +443,13 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Render balena/registrar digest-pinned compose
+      - name: Download promotion records (r3v digest handoff)
+        uses: actions/download-artifact@v4
+        with:
+          pattern: promoted-*
+          path: ${{ runner.temp }}/records
+          merge-multiple: true
+      - name: Render balena digest-pinned compose pinned FROM the promotion records
         run: |
           set -euo pipefail
           node scripts/render-release-compose.mjs \
@@ -410,6 +457,7 @@ jobs:
             --registry-owner cwdcwd \
             --repo vector-sigma \
             --sha "$GITHUB_SHA" \
+            --records-dir "${RUNNER_TEMP}/records" \
             --out release/devices
           echo "=== rendered compose ==="
           cat release/devices/docker-compose.yml
@@ -423,8 +471,7 @@ jobs:
           retention-days: 30
 
   deploy:
-    name: balena deploy (prebuilts -> balenaCloud registry) — DEFERRED, nothing published yet
-    if: false  # see the promote job's comment block above: gated off until the exact-byte GHCR PoC lands
+    name: balena deploy (prebuilts -> balenaCloud registry)
     needs: render
     runs-on: ubuntu-latest
     permissions:

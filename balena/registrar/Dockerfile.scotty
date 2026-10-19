@@ -98,6 +98,13 @@ RUN arch="$(uname -m)" \
 # unpinned/drifted tree.
 FROM node:26.4.0-alpine AS eleventy
 WORKDIR /eleventy
+# markdown-it (pulled in transitively by eleventy) ships source maps containing
+# a stock RFC1918 example literal. This stage installs without a lockfile, so
+# the floating transitive version silently changes bytes: markdown-it@14.3.3
+# (published 2026-10-16) tripped the fail-closed OCI content gate on both
+# architectures (PR #62 CI run). Pin the newest release whose map bytes are
+# already pinned in registrar/src/oci-gate/upstream-allowlist-data.gen.ts
+# (14.3.0/14.3.1/14.3.2) so the gate's exact-artifact SHA check passes.
 RUN npm install --no-save @11ty/eleventy@3.1.6 markdown-it@14.3.2
 
 # ── Builder: scotty npm ci + build (upstream shape, 8ea-patched tree) ─────────

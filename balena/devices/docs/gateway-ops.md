@@ -405,6 +405,171 @@ machine-auth trigger instantly; revoking the `key-creator` alias at
 the gateway kills all minting (the registrar refuses with the
 not-configured fallback on the next call). Both are owner actions.
 
+## The model-key plane (fleet-ops-1py.46)
+
+Every device's LLM serving credential — the `GATEWAY_API_KEY` line of
+`config/agent.env` — can be provisioned by the registrar console
+instead of a hand-mint (device page → Actions → **Mint model key**).
+Alias scheme: `model-<agent>` (deterministic, same sanitization as the
+memory scheme). Minted by the same scoped key-creator key as the memory
+keys — its j7g.1 route lock already covers the whole surface (`/key/list`
+probe, `/user/new`, `/key/generate`) — and route-locked at mint time to
+the completions surface only: `/v1/chat/completions`, `/v1/completions`,
+`/v1/responses`, `/v1/embeddings`, `/v1/models` (bare + `/*` pairs). A
+model key serves the agent's model calls and nothing else — no key
+management, no mesh, no memory routes. The minted value reaches the
+device through the bundle plane (0600) and is never shown in the console
+(the no-secret-output rule: registrar UI output renders no key values).
+
+**Decision table (mirrors the mesh-enroll enroll):** MINT when the alias
+is absent (the agent's `agent-<name>` user row is ensured idempotently
+first); OPEN — nothing re-minted, nothing changed — when the alias is
+live and the device bundle already carries a key (the bundle is the
+truth); REFUSE when the alias is live but the bundle carries nothing:
+the plaintext is unrecoverable, so the message names the recovery step
+(revoke the alias in the LiteLLM console, re-run the mint). Never
+re-mint over a live alias.
+
+**Daily pass addition (the model leg):** `GET /key/list` for each
+`model-<agent>` alias → present, `allowed_routes` completions-only. A
+missing alias means the key was deleted at the gateway — re-run the
+console action to mint fresh (the bundle without a live alias is inert;
+delivery needs the provision step again).
+
+**Inventory audit addition:** flag any `model-*` alias whose agent row
+is absent from the registrar, and any key carrying a completions route
+whose alias does NOT match the `model-` scheme — both are drift
+signals, same posture as the memory and mesh audits.
+## Gateway upgrade & rollback (LiteLLM 1.x)
+
+This procedure covers the stock LiteLLM image and its PostgreSQL state. It is
+for a controlled staging upgrade, not an instruction to mutate production.
+The non-production verification for this change is the CI end-to-end job,
+which boots the rebuilt gateway image on the pull request. A live production
+upgrade is owner-gated and out of scope for this branch.
+
+### Before the upgrade: backup and rollback anchor
+
+1. Confirm the currently serving image reference and record its immutable local
+   image ID/digest. Tag that exact image in the available image store as a
+   rollback anchor **before** building or swapping anything (for example,
+   `docker tag <current-image-id> litellm:rollback-<change-id>`). Do not rely on
+   a moving upstream tag as the rollback copy.
+2. Provision a temporary PostgreSQL service file through the approved secret
+   manager into a private directory. Its `[litellm-backup]` entry must contain
+   the database host, port, database, user, and password; do not place the
+   password in a command, shell variable, URI, shell history, or this runbook.
+   Set the file owner to the operator and mode to `0600`; verify the mode
+   without printing the file. Use libpq's service-file authentication so the
+   password is read from that protected file, not exposed in `pg_dump`'s argv:
+
+   ```bash
+   umask 077
+   export PGSERVICEFILE=/path/to/private/temporary/pg_service.conf
+   test -f "$PGSERVICEFILE" && test "$(stat -c '%a' "$PGSERVICEFILE")" = 600
+   pg_dump -Fc --dbname='service=litellm-backup' \
+     --file=litellm-before-upgrade.dump
+   chmod 600 litellm-before-upgrade.dump
+   pg_restore --list litellm-before-upgrade.dump > litellm-before-upgrade.list
+   ```
+
+   Keep the service file in the private directory with the dump, never print or
+   attach it, and remove it after the backup is verified and the database
+   client no longer needs it. Do not pass `DATABASE_URL` to `pg_dump`: URI
+   credentials can appear in process arguments. The dump remains sensitive;
+   keep it access-restricted (mode `0600`) in approved encrypted storage.
+
+   Require `pg_dump` and `pg_restore --list` to exit successfully and confirm
+   the listing contains the expected LiteLLM schema objects before proceeding.
+   The dump is sensitive: it can contain stored prompts and other request data.
+   Keep it access-restricted (mode `0600`), in approved encrypted storage, and
+   delete the working copy once the upgrade is trusted and the backup-retention
+   policy permits. Never attach it to a ticket or commit it.
+3. Record the current image reference, database backup location, and a
+   successful pre-upgrade health/model baseline without recording credentials
+   or prompt bodies. Confirm the previous image can be recreated before the
+   maintenance window.
+
+### Build and swap
+
+1. Build the new image from the reviewed Dockerfile while the existing gateway
+   container continues serving. Keep the image stock; do not patch LiteLLM.
+   Confirm the built image identifies the intended version before the swap.
+2. Stop/recreate the gateway service with the new image using the deployment's
+   normal owner-controlled rollout mechanism. Preserve the PostgreSQL volume;
+   do not remove or reinitialize it.
+3. Wait for startup and database migrations to finish. Read health and startup
+   logs until the service is ready and there are no migration errors. Do not
+   start verification traffic while migrations are still running.
+4. If a config-key compatibility question cannot be settled from repo-local
+   evidence, explicitly verify it at this first staged boot: inspect startup
+   logs and the live router for the existing `model_list` entries and their
+   `model_name` / `litellm_params` (`model`, `api_base`, `api_key`),
+   `router_settings.fallbacks`, and `general_settings` (`master_key`,
+   `database_url`). Confirm environment-variable resolution and both configured
+   fallback directions. These keys are deliberately not changed by this
+   upgrade; do not guess at renames or deprecations.
+
+### Verification battery
+
+After readiness, run and record results (status, model/group alias, and timings;
+never key values, authorization headers, or prompt contents):
+
+- Health endpoint responds successfully and reports the gateway ready.
+- Make one minimal model call through every configured tier/group, including
+  each explicit model and configured fallback direction; prove a real upstream
+  completion, not merely that `/v1/models` lists it.
+- Complete one MCP round-trip using the normal non-production test client.
+- Complete one A2A send and receive between the test peers.
+- Exercise a disposable virtual key with a small budget: confirm an allowed
+  call succeeds and the expected budget state/limit is visible; remove or let
+  the throwaway key expire afterward.
+- Verify spend logging is still produced and inspect the recorded request
+  fields for credential redaction, specifically the request-body redaction
+  introduced by LiteLLM #43635. Check only sanitized field presence/shape;
+  never print or copy stored prompt/request bodies.
+- The automated non-production E2E regression (AC9c) enables prompt storage
+  only in its disposable runtime database, submits synthetic credential
+  canaries to the isolated LiteLLM runtime fixture pinned to the same 1.105.1
+  image digest as the gateway, using its explicit `runtime-spendlogs-test`
+  model whose only upstream is the local mock Ollama service (no external
+  provider traffic). It reads the stored spend row via
+  `/spend/logs/ui/{request_id}`, asserts every canary is absent from the row and
+  all five credential-named fields contain `REDACTED_BY_LITELLM`, then restores
+  prompt storage to off. Never reuse real credentials or run this probe against
+  production.
+- If anything consumes the authenticated `/api/usage` endpoint, make one
+  one-time authenticated shape probe from the boundary where its credential
+  already lives. Record only field names and non-sensitive types/counts,
+  compare with the consumer's expectations, and fail soft if the upstream
+  shape differs. Do not expose the credential or response contents containing
+  sensitive usage details.
+
+Non-production verification for this branch is CI e2e booting the rebuilt
+gateway on the PR. The battery above is the staged/live operator checklist;
+ it does not authorize production rollout. Live production upgrade requires
+ explicit owner approval and is outside this branch.
+
+### Rollback
+
+1. If verification fails, restore the rollback anchor by retagging the saved
+   old image to the deployment's expected image reference, then recreate the
+   gateway service with that image. Example: `docker tag
+   litellm:rollback-<change-id> <deployment-image-reference>` followed by the
+   normal service recreate. Keep PostgreSQL and its volume intact initially.
+2. The newer LiteLLM may have migrated the schema. First attempt to run the old
+   image against the migrated schema and verify health. Restore the database
+   dump **only if the old version cannot run on the migrated schema**; a dump
+   restore is a destructive rollback of database state accumulated since the
+   backup and requires owner approval. If needed, stop writes, preserve the
+   failed post-upgrade database for diagnosis, restore the pre-upgrade dump to
+   the intended database, and verify with the old image before reopening
+   traffic.
+3. Repeat the health, one model call per configured tier, MCP, A2A, and
+   budget-key checks. Retain the protected dump only under the approved
+   retention policy, then securely remove working copies once the rollback or
+   upgrade is trusted.
+
 ## Evidence discipline
 
 Whatever lands on the work-tracking thread: aliases, hash prefixes,
