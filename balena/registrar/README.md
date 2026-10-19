@@ -382,7 +382,8 @@ action (device page → Actions) with the same scoped key-creator key —
 alias `model-<agent>`, route-locked to completions only
 (`/v1/chat/completions`, `/v1/completions`, `/v1/responses`,
 `/v1/embeddings`, `/v1/models`). Delivery rides the bundle plane; the
-plaintext is shown once. The decision table mirrors the mesh enroll:
+console shows only a SHA-256 fingerprint, never the plaintext. The device
+receives it in `config/agent.env`. The decision table mirrors the mesh enroll:
 MINT a fresh key when the alias is absent; OPEN (nothing re-minted)
 when the alias is live and the bundle already carries the key; REFUSE
 when the alias is live but the bundle is empty — revoke the alias in
