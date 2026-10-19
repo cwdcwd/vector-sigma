@@ -799,7 +799,7 @@ ac9c_litellm_spend_log_redaction() {
   fi
   local cfg_row_state
   cfg_row_state="$(docker exec "$PROJECT-postgres-runtime-1" psql -U runtime -d litellm_runtime -tA -c \
-    "SELECT CASE WHEN count(*)=0 THEN 'no-row' WHEN param_value IS NULL THEN 'null-value' WHEN param_value::text LIKE '%store_prompts_in_spend_logs%' THEN 'flag-present' ELSE 'flag-absent' END FROM LiteLLM_Config WHERE param_name='general_settings';" 2>/dev/null | head -1)"
+    "SELECT CASE WHEN count(*)=0 THEN 'no-row' WHEN param_value IS NULL THEN 'null-value' WHEN param_value::text LIKE '%store_prompts_in_spend_logs%' THEN 'flag-present' ELSE 'flag-absent' END FROM \"LiteLLM_Config\" WHERE param_name='general_settings';" 2>/dev/null | head -1)" || true
   pass "AC9c prompt storage enable accepted" "isolated runtime field/update returned HTTP 200; runtime DB config row state=${cfg_row_state:-query-failed}"
 
   # Diagnostic precheck (shape-only, never fails the battery): a second tiny
