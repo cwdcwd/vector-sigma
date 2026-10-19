@@ -660,7 +660,7 @@ input rates drive typical cost.
 then terminal `deepseek-v4.1-flash`. The background lane and heavy reasoning
 lane stand alone; wildcard pass-through is never a fallback target. All
 fallback targets are explicit model groups. The fallback map is declared in
-`router_settings.fallbacks` in `balena/registrar/litellm-config.yaml`.
+`router_settings.fallbacks` in `images/litellm/litellm-config.yaml`.
 
 Context limits are configured only when verified: `glm-5.3-flash` is declared
 at 1,000,000 tokens. No repository source verifies a limit for
@@ -805,10 +805,13 @@ Keep gateway plain-HTTP and database host publishes loopback-only. Compose
 internal service-to-service access remains unchanged. E2E uses the deploy
 compose base (its overlay adds no gateway/database publish) and host probes
 continue to use loopback. The Dolt host publish is loopback-only now; remote
-queue clients cannot reach host port 3326 directly and require a separately
-secured access path.
+queue clients cannot reach host port 3326 directly. On the balena master the
+secured path is the tailnet: the serve edge forwards the tailnet :3326 as raw
+TCP to the loopback publish (`images/tailscale/serve-config.json`), reachable
+only by ACL-admitted tailnet peers (`tag:vs-agent`, the owner). Self-host
+operators front the loopback publish with their own secured path.
 
 | Port | File | Before | After |
 |---|---|---|---|
-| LiteLLM HTTP 4000 | `balena/registrar/docker-compose.yml`; `deploy/compose.yaml` | `127.0.0.1:4000:4000` | `127.0.0.1:4000:4000` (already loopback) |
-| Dolt database 3306 (host 3326) | `balena/registrar/docker-compose.yml`; `deploy/compose.yaml` | `3326:3306` | `127.0.0.1:3326:3306` |
+| LiteLLM HTTP 4000 | `platforms/balena/registrar/docker-compose.yml`; `platforms/compose/compose.yaml` | `127.0.0.1:4000:4000` | `127.0.0.1:4000:4000` (already loopback) |
+| Dolt database 3306 (host 3326) | `platforms/balena/registrar/docker-compose.yml`; `platforms/compose/compose.yaml` | `3326:3306` | `127.0.0.1:3326:3306` |

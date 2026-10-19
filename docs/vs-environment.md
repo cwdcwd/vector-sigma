@@ -24,7 +24,7 @@ application role; its endpoints belong to the tailnet, see
 | `registrar` | The identity registrar: device rows, bundles, the admin console | `http://registrar:3000` (compose-internal); devices reach the master's MagicDNS name (`<master>.<tailnet>.ts.net`, the serve edge fronts the loopback publish — lnf, phase 2) |
 | `postgres` | The registrar's database (`vsigma`/`vsigma`) | compose-internal only; you never talk to it directly |
 | `litellm` | The VS fleet's own LiteLLM gateway — your model front door, virtual keys, the `/a2a/*` mesh | `http://litellm:4000` (compose-internal); `https://<master>.<tailnet>.ts.net:8443` (the serve edge fronts the loopback publish) |
-| `dolt` | The VS queue's Dolt SQL server — database `vs_ops`, user `vs` | `dolt:3306` compose-internal (your join config); devices reach `<master-LAN-IP>:3326` |
+| `dolt` | The VS queue's Dolt SQL server — database `vs_ops`, user `vs` | `dolt:3306` compose-internal (your join config); devices reach `<master>.<tailnet>.ts.net:3326` (the serve edge's tailnet TCP forward to the loopback publish) |
 | `scotty` | The queue's read-only dashboard UI | `https://<master>.<tailnet>.ts.net:8444` (the serve edge fronts the loopback publish; the ACL is the lock — lnf) |
 | `hermes` | **You.** The VS coordinator Hermes runtime, `HERMES_HOME=/data/primus` | — |
 | `registrant-own` | Your identity delivery: polls the registrar, applies your bundle to the shared `primus-data` volume, watches for rotations | polls `http://registrar:3000` (compose-internal) |
@@ -40,7 +40,7 @@ application role; its endpoints belong to the tailnet, see
   URL the bundle already carries.
 - **The queue** — `dolt:3306`, database `vs_ops`, user `vs`. Your bd
   join config (below) points here. VS DEVICES join the same database
-  over the LAN at `<master-LAN-IP>:3326`.
+  over the tailnet at `<master>.<tailnet>.ts.net:3326` (never the LAN).
 - **`scotty`** — the dashboard view of your queue, read-only by design
   (writes go through bd — yours).
 - **`REGISTRAR_URL`** — `http://registrar:3000` compose-internal
@@ -177,12 +177,12 @@ and share it with every VS agent:
   overwriting theirs.
 - The full discipline (key naming, what never belongs in the store —
   no secrets, nothing high-frequency) is
-  [memory-conventions.md](memory-conventions.md), vendored next to this
+  [memory-conventions.md](memory-conventions.md), baked next to this
   map.
 
 ## Rebuilding you
 
-Your image is `balena/registrar/Dockerfile.hermes`: the pinned official
+Your image is `images/hermes/Dockerfile`: the pinned official
 Hermes image (`nousresearch/hermes-agent:v2026.9.21`) plus this lane's
 additions — bd 1.2.2 baked full read-write (you are the queue CURATOR;
 the scotty dashboard's read-only wrapper posture does not apply to you),

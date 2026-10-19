@@ -181,15 +181,15 @@ case "$APP" in
       "grep -c 'CREATE ROLE litellm LOGIN' /usr/local/bin/postgres-wrapper.sh" "1"
 
     # registrar: built output + fail-loud config path reachable
-    expect_file  "registrar dist" "$(IMG registrar)" /app/dist/index.js
-    expect_file  "registrar drizzle" "$(IMG registrar)" /app/drizzle/0000_yielding_morlun.sql
+    expect_file  "registrar dist" "$(IMG registrar)" /app/registrar/dist/index.js
+    expect_file  "registrar drizzle" "$(IMG registrar)" /app/registrar/drizzle/0000_yielding_morlun.sql
     # Fail-loud proof: importing the config module is NOT enough — loadConfig
     # is exported, never invoked at module scope (review finding 4 on PR #59),
     # so a healthy image would import cleanly and print nothing. Invoke the
     # function itself: an env-barren container fails loadConfig() exactly as
     # the real boot does (index.ts calls it inside main()).
     expect_grep  "registrar fail-loud config" "$(IMG registrar)" \
-      "node -e 'try{require(\"/app/dist/config.js\").loadConfig()}catch(e){console.log(e.message)}' 2>&1 | head -2" "invalid registrar configuration"
+      "node -e 'try{require(\"/app/registrar/dist/config.js\").loadConfig()}catch(e){console.log(e.message)}' 2>&1 | head -2" "invalid registrar configuration"
 
     # litellm: config + entrypoint shim baked
     expect_file  "litellm config baked"   "$(IMG litellm)" /app/config.yaml
@@ -217,7 +217,7 @@ case "$APP" in
     expect_file  "registrant entrypoint" "$(IMG registrant)" /usr/local/bin/vs-entrypoint.sh
     expect_file  "registrant build-epoch" "$(IMG registrant)" /app/build-epoch
     expect_grep  "registrant fail-loud config" "$(IMG registrant)" \
-      "node /app/dist/index.js 2>&1 | head -3" "invalid registrant configuration"
+      "node /app/registrant/dist/index.js 2>&1 | head -3" "invalid registrant configuration"
 
     # tailscale (master bake): literal MagicDNS serve config
     expect_file  "master tailscale serve config" "$(IMG tailscale)" /serve-config.json
@@ -256,7 +256,7 @@ case "$APP" in
     expect_file  "registrant entrypoint" "$(IMG registrant)" /usr/local/bin/vs-entrypoint.sh
     expect_file  "registrant build-epoch" "$(IMG registrant)" /app/build-epoch
     expect_grep  "registrant fail-loud config" "$(IMG registrant)" \
-      "node /app/dist/index.js 2>&1 | head -3" "invalid registrant configuration"
+      "node /app/registrant/dist/index.js 2>&1 | head -3" "invalid registrant configuration"
 
     # tailscale (devices bake): the ${TS_CERT_DOMAIN} placeholder config
     expect_file  "devices tailscale serve config" "$(IMG tailscale-devices)" /serve-config.json

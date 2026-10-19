@@ -29,6 +29,10 @@
  *   5. Every job that depends on real published GHCR bytes is switched back
  *      ON (no `if: false`), because the thing those jobs were waiting for
  *      now exists.
+ *
+ * Promotion lives once, in the reusable .github/workflows/_promote.yml
+ * (PROMOTE below), fed by .github/workflows/_images.yml (PIPELINE); the
+ * release workflows call both and keep only their tail.
  */
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -40,6 +44,8 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '../..');
 const read = (rel: string): string => readFileSync(path.join(repoRoot, rel), 'utf8');
 
+const PIPELINE = '.github/workflows/_images.yml';
+const PROMOTE = '.github/workflows/_promote.yml';
 const RELEASE_WORKFLOWS = ['.github/workflows/release-registrar.yml', '.github/workflows/release-devices.yml'] as const;
 
 interface WfJob {
@@ -66,7 +72,12 @@ function needsList(job: WfJob): string[] {
 }
 
 describe('exact-byte promotion: no builder anywhere in the publish path', () => {
-  for (const wf of RELEASE_WORKFLOWS) {
+  for (const wf of [PROMOTE]) {
+    it(`${wf}: carries NO docker/build-push-action and no "push: true" anywhere`, () => {
+      expect(read(wf)).not.toContain('docker/build-push-action');
+      expect(read(wf)).not.toMatch(/push:\s*true/);
+    });
+
     it(`${wf}: promote contains NO docker/build-push-action and no "push: true"`, () => {
       const text = stepsText(loadWf(wf).jobs.promote);
       expect(text, `${wf} promote must not rebuild the image`).not.toContain('docker/build-push-action');
@@ -89,33 +100,37 @@ describe('exact-byte promotion: no builder anywhere in the publish path', () => 
       expect(text).toContain('actions/download-artifact');
     });
 
-    it(`${wf}: stage-and-scan publishes the layout tar it scanned (the bytes promote will push)`, () => {
-      const text = stepsText(loadWf(wf).jobs['stage-and-scan']);
-      expect(text).toContain('layout-${{ matrix.component }}-${{ matrix.arch_tag }}');
-    });
-
-    it(`${wf}: promote is still gated behind all-components-gate (the scan must still pass first)`, () => {
-      expect(needsList(loadWf(wf).jobs.promote)).toContain('all-components-gate');
-    });
   }
+
+  it(`${PIPELINE}: stage-and-scan publishes the layout tar it scanned (the bytes promote will push)`, () => {
+    const text = stepsText(loadWf(PIPELINE).jobs['stage-and-scan']);
+    expect(text).toContain('layout-${{ matrix.component }}-${{ matrix.arch_tag }}');
+  });
+
+  it('promotion is still gated behind the whole pipeline (scan, gate and E2E must pass first)', () => {
+    for (const wf of ['.github/workflows/build-images.yml', ...RELEASE_WORKFLOWS]) {
+      expect(needsList(loadWf(wf).jobs.publish), wf).toEqual(['images']);
+    }
+  });
 });
 
 describe('exact-byte promotion: one index-assembly path (promote-manifest retired)', () => {
-  for (const wf of RELEASE_WORKFLOWS) {
+  for (const wf of [PIPELINE, PROMOTE, ...RELEASE_WORKFLOWS]) {
     it(`${wf}: there is no promote-manifest job left`, () => {
       expect(loadWf(wf).jobs['promote-manifest'], `${wf} must not keep a second buildx index-assembly path`).toBeUndefined();
     });
 
-    it(`${wf}: the promoter script — not buildx — does the index assembly`, () => {
-      const text = stepsText(loadWf(wf).jobs.promote);
-      expect(text).toContain('scripts/ghcr-promote-run.mjs');
-      expect(text).not.toContain('imagetools');
-    });
   }
+
+  it(`${PROMOTE}: the promoter script — not buildx — does the index assembly`, () => {
+    const text = stepsText(loadWf(PROMOTE).jobs.promote);
+    expect(text).toContain('scripts/ghcr-promote-run.mjs');
+    expect(text).not.toContain('imagetools');
+  });
 });
 
 describe('exact-byte promotion: verify-remote is credential-free and fail-closed', () => {
-  for (const wf of RELEASE_WORKFLOWS) {
+  for (const wf of [PROMOTE]) {
     it(`${wf}: verify-remote carries NO packages:write`, () => {
       const perms = loadWf(wf).jobs['verify-remote'].permissions;
       expect(perms?.packages, `${wf} verify-remote must not hold write scope`).not.toBe('write');
@@ -131,25 +146,27 @@ describe('exact-byte promotion: verify-remote is credential-free and fail-closed
 
 describe('exact-byte promotion: live publishing is behind an explicit owner switch', () => {
   // Merging a green PR pipeline must never, by itself, become a live GHCR
-  // write. The promote job is therefore gated on a repo Actions variable
-  // that is unset in this repo: promote (and everything needing it) skips,
-  // so push-to-main with a green gate publishes nothing until the owner
-  // deliberately flips the switch. See docs/ghcr-promotion-runbook.md.
-  const ALL_WORKFLOWS = ['.github/workflows/build-images.yml', ...RELEASE_WORKFLOWS] as const;
-
-  for (const wf of ALL_WORKFLOWS) {
-    it(`${wf}: promote requires vars.VS_GHCR_PUBLISH_ENABLED`, () => {
-      const jobIf = loadWf(wf).jobs.promote.if;
-      expect(typeof jobIf, `${wf} promote must carry an if: guard`).toBe('string');
-      expect(jobIf, `${wf} promote must be gated on the owner switch`).toContain(
-        "vars.VS_GHCR_PUBLISH_ENABLED == 'true'",
+  // write. Every call to _promote.yml sits in a `publish` job gated on a
+  // repo Actions variable that is unset in this repo: push-to-main with a
+  // green gate publishes nothing until the owner deliberately flips the
+  // switch. See docs/ghcr-promotion-runbook.md.
+  for (const wf of ['.github/workflows/build-images.yml', ...RELEASE_WORKFLOWS]) {
+    it(`${wf}: every _promote.yml call requires vars.VS_GHCR_PUBLISH_ENABLED`, () => {
+      const calls = Object.values(loadWf(wf).jobs).filter(
+        (job) => (job as { uses?: string }).uses === './.github/workflows/_promote.yml',
       );
+      expect(calls.length).toBe(1);
+      expect(String(calls[0].if)).toContain("vars.VS_GHCR_PUBLISH_ENABLED == 'true'");
     });
   }
 });
 
 describe('exact-byte promotion: downstream jobs are switched back ON', () => {
-  const DOWNSTREAM_JOBS = ['verify-remote', 'scan', 'smoke', 'render', 'deploy'] as const;
+  const DOWNSTREAM_JOBS = ['scan', 'smoke', 'render', 'deploy'] as const;
+
+  it(`${PROMOTE}: verify-remote is not switched off`, () => {
+    expect(loadWf(PROMOTE).jobs['verify-remote'].if).toBeUndefined();
+  });
 
   for (const wf of RELEASE_WORKFLOWS) {
     for (const jobId of DOWNSTREAM_JOBS) {

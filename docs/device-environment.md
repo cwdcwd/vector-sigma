@@ -4,7 +4,7 @@ You are a Vector Sigma device agent — a queue WORKER — running in the
 `agent` container of a balenaOS device on the devices fleet. You are
 NOT the fleet coordinator: that role (primus) runs on the master
 device, and its environment map is a different document
-(`vs-environment.md`, vendored into the MASTER image only). This
+(`vs-environment.md`, baked into the MASTER image only). This
 document is YOUR map: what surrounds you, the endpoints you use, and
 the contracts you run under. It is baked into your image at
 `/opt/vs/docs/device-environment.md` (beside the queue conventions at
@@ -22,7 +22,7 @@ into the image.
 
 | Service | What it is | Where |
 |---|---|---|
-| `agent` | **You.** The device agent Hermes runtime, `HERMES_HOME=/data/agent`, built from `balena/devices/Dockerfile.agent-hermes` (pinned official Hermes image + bd 1.2.2 + the identity gate + the A2A wiring hook) | your container |
+| `agent` | **You.** The device agent Hermes runtime, `HERMES_HOME=/data/agent`, built from `images/agent/Dockerfile` (pinned official Hermes image + bd 1.2.2 + the identity gate + the A2A wiring hook) | your container |
 | `registrant` | Your identity delivery: clock gate → registrar fetch → 0600 bundle write → `ready.marker` → resident rotation watcher | shares the `agent-data` volume |
 | `tailscale` | The overlay service: joins your device to the VS tailnet so the master's endpoints are reachable from anywhere and your device is reachable from the tailnet | host network namespace — invisible to compose-internal DNS; carries no application role |
 
@@ -42,10 +42,10 @@ their LAN/tailnet addresses, below.
   your environment on every boot. The bundle is the contract —
   never hardcode a URL the bundle already carries.
 - **The queue** — the VS queue's Dolt server lives on the MASTER
-  device: database `vs_ops`, user `vs`. Devices reach it at the
-  master's LAN endpoint `<master-LAN-IP>:3326` (or the master's
-  tailnet hostname, per the runbook) — NEVER the compose-internal
-  `dolt:3306`. The exact host/port for your deployment arrive in your
+  device: database `vs_ops`, user `vs`. Devices reach it over the
+  TAILNET at `<master>.<tailnet>.ts.net:3326` — the master's serve edge forwards that
+  port (raw TCP) to Dolt's loopback-only publish. It is NOT on the
+  LAN, and NEVER the compose-internal `dolt:3306`. The exact host/port for your deployment arrive in your
   bundle's `extra_env` (the `BEADS_*` keys in `config/agent.env`,
   merged into your environment by the wiring hook).
 - **`REGISTRAR_URL`** — the registrar's TLS endpoint; the registrant
@@ -201,12 +201,12 @@ and share it with every VS agent:
   overwriting theirs.
 - The full discipline (key naming, what never belongs in the store —
   no secrets, nothing high-frequency) is
-  [memory-conventions.md](memory-conventions.md), vendored next to this
+  [memory-conventions.md](memory-conventions.md), baked next to this
   map.
 
 ## Rebuilding you
 
-Your image is `balena/devices/Dockerfile.agent-hermes`: the pinned
+Your image is `images/agent/Dockerfile`: the pinned
 official Hermes image (`nousresearch/hermes-agent:v2026.9.21` — the
 SAME tag as the master's primus image, the parity pin; do NOT bump
 independently) plus this lane's additions — bd 1.2.2 baked full
@@ -215,7 +215,7 @@ scotty `bd-readonly` wrapper), the identity gate as ENTRYPOINT, the
 A2A wiring hook, and these docs — the DEVICE map
 (`device-environment.md` + `queue-conventions.md`), never the master's
 `vs-environment.md` (the wrong-map regression is CI-fatal in
-`registrant/test/vendored-drift.test.ts`). A `devices-v*` release
+`registrar/test/image-build-config.test.ts`). A `devices-v*` release
 rebuilds you end-to-end with zero manual steps: the registrant
 re-delivers your bundle, the hook re-derives your mesh env, and this
 map is baked fresh from the repo.

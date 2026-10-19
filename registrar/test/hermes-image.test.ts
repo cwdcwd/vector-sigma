@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
  * Primus image contract guard (fleet-ops-b1r, owner ruling 2026-09-29:
  * "get these things into the codebase" — bake, don't runtime-install).
  *
- * The hermes service builds balena/registrar/Dockerfile.hermes — the
+ * The hermes service builds images/hermes/Dockerfile — the
  * pinned official Hermes image plus bd 1.2.2 (full read-write — primus
  * is the queue CURATOR), the config-only queue join, the environment
  * docs, and the 03-vs-queue-join boot hook. This guard pins:
@@ -23,8 +23,8 @@ import { describe, expect, it } from 'vitest';
  *   5. the queue join carries the CANONICAL project_id (the fleet
  *      contract, never regenerated) and the compose-service dolt host
  *      + port 3306 — the join the boot hook seeds at first boot.
- *   6. the docs are vendored byte-exact into the app dir (docs/ at the
- *      repo root is the source of truth — the vendored-drift pattern)
+ *   6. the docs are COPYd straight from docs/ (repo-root build context —
+ *      the only copy)
  *      and baked at /opt/vs/docs.
  *   7. the boot hook exists, is fail-soft, first-boot-only, and is
  *      wired as a cont-init script AFTER stage2 (the with-contenv
@@ -49,17 +49,18 @@ function stripComments(raw: string): string {
     .join('\n');
 }
 
-const appDir = path.join(repoRoot, 'balena/registrar');
-const dockerfile = readFileSync(path.join(appDir, 'Dockerfile.hermes'), 'utf8');
+const appDir = path.join(repoRoot, 'platforms/balena/registrar');
+const imageDir = path.join(repoRoot, 'images/hermes');
+const dockerfile = readFileSync(path.join(imageDir, 'Dockerfile'), 'utf8');
 const dockerfileCode = stripComments(dockerfile);
 const balenaCompose = stripComments(
-  readFileSync(path.join(repoRoot, 'balena/registrar/docker-compose.yml'), 'utf8'),
+  readFileSync(path.join(repoRoot, 'platforms/balena/registrar/docker-compose.yml'), 'utf8'),
 );
 const deployCompose = stripComments(
-  readFileSync(path.join(repoRoot, 'deploy/compose.yaml'), 'utf8'),
+  readFileSync(path.join(repoRoot, 'platforms/compose/compose.yaml'), 'utf8'),
 );
 const e2eOverlay = stripComments(
-  readFileSync(path.join(repoRoot, 'deploy/compose.e2e.yaml'), 'utf8'),
+  readFileSync(path.join(repoRoot, 'test/e2e/compose.e2e.yaml'), 'utf8'),
 );
 
 /** Extract a top-level service block (2-space indent) from a compose. */
@@ -69,8 +70,8 @@ function serviceBlock(code: string, name: string): string {
 }
 
 describe('primus image contract (fleet-ops-b1r)', () => {
-  it('Dockerfile.hermes exists and carries the pinned official base', () => {
-    expect(existsSync(path.join(appDir, 'Dockerfile.hermes'))).toBe(true);
+  it('images/hermes/Dockerfile exists and carries the pinned official base', () => {
+    expect(existsSync(path.join(imageDir, 'Dockerfile'))).toBe(true);
     expect(dockerfile).toMatch(
       /FROM nousresearch\/hermes-agent:v2026\.9\.21/,
     );
@@ -102,32 +103,30 @@ describe('primus image contract (fleet-ops-b1r)', () => {
 
   it('bakes the queue join config with the canonical project contract', () => {
     const meta = JSON.parse(
-      readFileSync(path.join(appDir, 'queue-join/.beads/metadata.json'), 'utf8'),
+      readFileSync(path.join(repoRoot, 'images/common/queue-join/.beads/metadata.json'), 'utf8'),
     ) as Record<string, unknown>;
     expect(meta.project_id).toBe('bcde5891-5482-4eb0-a223-8533504832d6');
     expect(meta.dolt_server_host).toBe('dolt');
     expect(meta.dolt_server_port).toBe(3306);
     expect(meta.dolt_server_user).toBe('vs');
     expect(meta.dolt_database).toBe('vs_ops');
-    expect(dockerfileCode).toMatch(/COPY queue-join \/opt\/vs\/queue-join/);
+    expect(dockerfileCode).toMatch(/COPY images\/common\/queue-join \/opt\/vs\/queue-join/);
   });
 
-  it('bakes the vendored docs (queue-conventions + vs-environment) at /opt/vs/docs', () => {
-    expect(dockerfileCode).toMatch(/COPY docs \/opt\/vs\/docs/);
-    expect(existsSync(path.join(appDir, 'docs/queue-conventions.md'))).toBe(true);
-    expect(existsSync(path.join(appDir, 'docs/vs-environment.md'))).toBe(true);
-    // Vendored byte-exact vs the repo-root docs (the source of truth).
+  it('bakes its docs (queue-conventions + vs-environment) at /opt/vs/docs, straight from docs/', () => {
+    // Repo-root build context: the COPY reads the canonical docs/ files.
+    const docsCopy = /COPY ((?:docs\/[\w.-]+\s*\\?\s*)+)\/opt\/vs\/docs\//.exec(dockerfileCode);
+    expect(docsCopy, 'docs COPY to /opt/vs/docs/ not found').not.toBeNull();
     for (const doc of ['queue-conventions.md', 'vs-environment.md']) {
-      const a = readFileSync(path.join(repoRoot, 'docs', doc), 'utf8');
-      const b = readFileSync(path.join(appDir, 'docs', doc), 'utf8');
-      expect(a === b, `vendored docs/${doc} drifted from docs/${doc}`).toBe(true);
+      expect(docsCopy![1]).toContain(`docs/${doc}`);
+      expect(existsSync(path.join(repoRoot, 'docs', doc))).toBe(true);
     }
   });
 
   it('wires the boot hook as a cont-init script after stage2, with-contenv shape', () => {
-    expect(dockerfileCode).toMatch(/COPY vs-queue-join\.sh \/etc\/cont-init\.d\/03-vs-queue-join/);
+    expect(dockerfileCode).toMatch(/COPY images\/hermes\/vs-queue-join\.sh \/etc\/cont-init\.d\/03-vs-queue-join/);
     expect(dockerfileCode).toMatch(/chmod 0755 \/etc\/cont-init\.d\/03-vs-queue-join/);
-    const hook = readFileSync(path.join(appDir, 'vs-queue-join.sh'), 'utf8');
+    const hook = readFileSync(path.join(imageDir, 'vs-queue-join.sh'), 'utf8');
     // The upstream image's own hook shape: /init scrubs env; with-contenv
     // rehydrates HERMES_HOME. A plain #!/bin/sh would default /opt/data.
     expect(hook).toMatch(/^#!\/command\/with-contenv sh/);
@@ -145,9 +144,9 @@ describe('primus image contract (fleet-ops-b1r)', () => {
   });
 
   it('j7g.1: the A2A mesh wiring hook is baked as cont-init 04- (primus is a mesh member)', () => {
-    expect(dockerfileCode).toMatch(/COPY vs-a2a-wiring\.sh \/etc\/cont-init\.d\/04-vs-a2a-wiring/);
+    expect(dockerfileCode).toMatch(/COPY images\/common\/hooks\/vs-a2a-wiring\.sh \/etc\/cont-init\.d\/04-vs-a2a-wiring/);
     expect(dockerfileCode).toMatch(/chmod 0755 \/etc\/cont-init\.d\/04-vs-a2a-wiring/);
-    const wiring = readFileSync(path.join(appDir, 'vs-a2a-wiring.sh'), 'utf8');
+    const wiring = readFileSync(path.join(repoRoot, 'images/common/hooks/vs-a2a-wiring.sh'), 'utf8');
     expect(wiring).toMatch(/^#!\/command\/with-contenv sh/);
     // The CODE contract: bundle files -> runtime env + managed config.yaml.
     expect(wiring).toMatch(/A2A_PEER_TOKENS/);
@@ -161,19 +160,32 @@ describe('primus image contract (fleet-ops-b1r)', () => {
     expect(wiringCode).not.toMatch(/exit [1-9]/);
   });
 
-  it('both composes build the same Dockerfile.hermes (one artifact, no twin drift)', () => {
+  it('every compose runs the ONE hermes image (images.json component, no twin drift)', () => {
+    const catalog = JSON.parse(readFileSync(path.join(repoRoot, 'images.json'), 'utf8'));
+    expect(catalog.components.hermes).toMatchObject({
+      dockerfile: 'images/hermes/Dockerfile',
+      context: '.',
+    });
     const balenaBlock = serviceBlock(balenaCompose, 'hermes');
     const deployBlock = serviceBlock(deployCompose, 'hermes');
+    const e2eBlock = serviceBlock(e2eOverlay, 'hermes');
     expect(balenaBlock, 'balena compose hermes block not found').not.toBe('');
     expect(deployBlock, 'deploy compose hermes block not found').not.toBe('');
-    expect(balenaBlock).toMatch(/dockerfile:\s*Dockerfile\.hermes/);
-    expect(deployBlock).toMatch(/dockerfile:\s*Dockerfile\.hermes/);
-    // Neither side may regress to pulling the stock image.
-    expect(balenaBlock).not.toMatch(/image:\s*nousresearch\/hermes-agent/);
-    expect(deployBlock).not.toMatch(/image:\s*nousresearch\/hermes-agent/);
-    // Same context root: the balena app dir (deploy resolves ../balena/registrar).
-    expect(balenaBlock).toMatch(/context:\s*\./);
-    expect(deployBlock).toMatch(/context:\s*\.\.\/balena\/registrar/);
+    // balena: the catalog build (repo-root context), rendered to the
+    // promoted digest at release time.
+    expect(balenaBlock).toMatch(/context:\s*\.\.\/\.\./);
+    expect(balenaBlock).toMatch(/dockerfile:\s*images\/hermes\/Dockerfile/);
+    // platforms/compose/: the published image itself, pinned by commit SHA.
+    expect(deployBlock).toMatch(/image:\s*\$\{VS_IMAGE_REGISTRY:-ghcr\.io\/cwdcwd\/vector-sigma\}\/hermes:\$\{VS_IMAGE_TAG:\?/);
+    expect(deployBlock).not.toMatch(/build:/);
+    // E2E: the same image under its local tag (CI loads the scanned bytes),
+    // with the catalog build as the local source fallback.
+    expect(e2eBlock).toMatch(/image:\s*vs-e2e\/hermes:ci/);
+    expect(e2eBlock).toMatch(/dockerfile:\s*images\/hermes\/Dockerfile/);
+    // No side may regress to pulling the stock image.
+    for (const block of [balenaBlock, deployBlock, e2eBlock]) {
+      expect(block).not.toMatch(/image:\s*nousresearch\/hermes-agent/);
+    }
   });
 
   it('hermes service env carries BEADS_DOLT_PASSWORD (the scotty password posture)', () => {
@@ -195,7 +207,7 @@ describe('primus image contract (fleet-ops-b1r)', () => {
   });
 
   it('e2e asserts the b1r contract (AC13 exists and runs after AC12)', () => {
-    const e2e = readFileSync(path.join(repoRoot, 'deploy/e2e.sh'), 'utf8');
+    const e2e = readFileSync(path.join(repoRoot, 'test/e2e/e2e.sh'), 'utf8');
     expect(e2e).toMatch(/ac13_primus_queue_tooling\(\)/);
     expect(e2e).toMatch(/ac12_primus_self_bootstrap\nac13_primus_queue_tooling/);
     // The canonical id must be asserted against the e2e dolt (the AC's
@@ -204,9 +216,9 @@ describe('primus image contract (fleet-ops-b1r)', () => {
   });
 
   it('devices app carries the runtime-swap image, now the LIVE build (j7g.1)', () => {
-    expect(existsSync(path.join(repoRoot, 'balena/devices/Dockerfile.agent-hermes'))).toBe(true);
+    expect(existsSync(path.join(repoRoot, 'images/agent/Dockerfile'))).toBe(true);
     const agentHermes = readFileSync(
-      path.join(repoRoot, 'balena/devices/Dockerfile.agent-hermes'),
+      path.join(repoRoot, 'images/agent/Dockerfile'),
       'utf8',
     );
     expect(agentHermes).toMatch(/FROM nousresearch\/hermes-agent:v2026\.9\.21/);
@@ -217,14 +229,15 @@ describe('primus image contract (fleet-ops-b1r)', () => {
     expect(stripComments(agentHermes)).toMatch(/ARG BD_VERSION=1\.2\.2/);
     expect(stripComments(agentHermes)).toMatch(/checksums\.txt/);
     expect(stripComments(agentHermes)).toMatch(/ENTRYPOINT \["\/usr\/local\/bin\/gate\.sh"\]/);
-    expect(stripComments(agentHermes)).toMatch(/COPY agent\/vs-a2a-wiring\.sh \/etc\/cont-init\.d\/04-vs-a2a-wiring/);
-    // The devices compose builds THIS file with the canonical long-run
+    expect(stripComments(agentHermes)).toMatch(/COPY images\/common\/hooks\/vs-a2a-wiring\.sh \/etc\/cont-init\.d\/04-vs-a2a-wiring/);
+    // The devices compose builds THIS file (rendered to the promoted digest
+    // at release) with the canonical long-run
     // command and the HERMES_HOME/UID contract (the b1r parity).
     const devicesCompose = stripComments(
-      readFileSync(path.join(repoRoot, 'balena/devices/docker-compose.yml'), 'utf8'),
+      readFileSync(path.join(repoRoot, 'platforms/balena/devices/docker-compose.yml'), 'utf8'),
     );
     const agentBlock = serviceBlock(devicesCompose, 'agent');
-    expect(agentBlock).toMatch(/dockerfile: Dockerfile\.agent-hermes/);
+    expect(agentBlock).toMatch(/dockerfile: images\/agent\/Dockerfile/);
     expect(agentBlock).toMatch(/gateway", "run"|gateway run/);
     expect(agentBlock).toMatch(/HERMES_HOME: \/data\/agent/);
     expect(agentBlock).toMatch(/HERMES_UID: "1000"/);

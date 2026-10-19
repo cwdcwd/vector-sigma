@@ -1,7 +1,8 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { imageInputs, loadCatalog } from '../../scripts/image-catalog.mjs';
 
 /**
  * Image content-exposure guards (fleet-ops-1py.14, plan PR #60).
@@ -10,7 +11,7 @@ import { describe, expect, it } from 'vitest';
  * deployment-specific values in reusable image layers — tailnet DNS
  * names and addresses are the named examples. The master's
  * serve-config.json was the ONE remaining literal bake: the MagicDNS
- * FQDN keyed the Web map, and Dockerfile.tailscale's header comment
+ * FQDN keyed the Web map, and images/tailscale/Dockerfile's header comment
  * asserted (wrongly, per the plan's two-way verification) that the
  * ${TS_CERT_DOMAIN} placeholder is Kubernetes-only.
  *
@@ -29,7 +30,7 @@ import { describe, expect, it } from 'vitest';
  *   2. No Dockerfile comment (or any image-baked source) carries a
  *      literal MagicDNS FQDN or tailnet-qualified name.
  *   3. The stale "Kubernetes-only" comment is corrected — the master
- *      Dockerfile.tailscale header must document the placeholder as
+ *      images/tailscale/Dockerfile header must document the placeholder as
  *      the cross-fleet mechanism.
  *   4. The TCP/ports contract is unchanged by the flip (443/8443/8444
  *      still HTTPS-fronted; proxies still loopback) — the exposure fix
@@ -49,38 +50,29 @@ function stripComments(raw: string): string {
     .join('\n');
 }
 
-/** Every file the published images COPY from the two balena app dirs. */
+/** Every file any published image reads from its build context: each
+ * catalog component's Dockerfile + COPY inputs (images.json), with
+ * directories expanded. Derived, never hand-listed, so a new baked file
+ * is covered the moment a Dockerfile COPYs it. */
+function expand(rel: string): string[] {
+  const abs = path.join(repoRoot, rel);
+  if (!statSync(abs).isDirectory()) return [rel];
+  return readdirSync(abs)
+    .filter((n) => n !== 'node_modules' && n !== 'dist')
+    .flatMap((n) => expand(path.posix.join(rel, n)));
+}
+const catalog = loadCatalog(repoRoot);
 const BAKED_INPUTS = [
-  'balena/registrar/serve-config.json',
-  'balena/devices/serve-config.json',
-  'balena/registrar/Dockerfile.tailscale',
-  'balena/devices/Dockerfile.tailscale',
-  'balena/registrar/Dockerfile.hermes',
-  'balena/devices/Dockerfile.agent-hermes',
-  'balena/registrar/Dockerfile.litellm',
-  'balena/registrar/Dockerfile.postgres',
-  'balena/registrar/Dockerfile.scotty',
-  'balena/registrar/litellm-config.yaml',
-  'balena/registrar/litellm-entrypoint.sh',
-  'balena/registrar/postgres-entrypoint.sh',
-  'balena/registrar/vs-queue-join.sh',
-  'balena/registrar/vs-a2a-wiring.sh',
-  'balena/registrar/vs-memory-tools.sh',
-  'balena/registrar/vs-github-identity.sh',
-  'balena/registrar/vs-github-identity.py',
-  'balena/registrar/vs-mesh-enroll.py',
-  'balena/devices/agent/gate.sh',
-  'balena/devices/agent/vs-a2a-wiring.sh',
-  'balena/devices/agent/vs-memory-tools.sh',
-  'balena/devices/agent/vs-github-identity.sh',
-  'balena/devices/agent/vs-github-identity.py',
-] as const;
+  ...new Set(
+    Object.keys(catalog.components).flatMap((c) => imageInputs(catalog, c, repoRoot).flatMap(expand)),
+  ),
+].sort();
 
 /** A tailnet-qualified MagicDNS name: <host>.<tailnet>.ts.net. */
 const TS_NET_NAME = /[a-z0-9-]+\.[a-z0-9-]+\.ts\.net/i;
 
 describe('master serve-config.json: placeholder, not a live name (1py.14 slice 1)', () => {
-  const sc = JSON.parse(read('balena/registrar/serve-config.json'));
+  const sc = JSON.parse(read('images/tailscale/serve-config.json'));
 
   it('keys every Web entry on the ${TS_CERT_DOMAIN} placeholder', () => {
     expect(Object.keys(sc.Web).sort()).toEqual(
@@ -90,14 +82,16 @@ describe('master serve-config.json: placeholder, not a live name (1py.14 slice 1
   });
 
   it('carries no live tailnet name anywhere in the file', () => {
-    expect(read('balena/registrar/serve-config.json')).not.toMatch(TS_NET_NAME);
+    expect(read('images/tailscale/serve-config.json')).not.toMatch(TS_NET_NAME);
   });
 
   it('keeps the fronted surfaces identical to the pre-flip contract (443/8443/8444 HTTPS, loopback proxies)', () => {
-    expect(Object.keys(sc.TCP).sort()).toEqual(['443', '8443', '8444']);
+    expect(Object.keys(sc.TCP).sort()).toEqual(['3326', '443', '8443', '8444']);
     for (const port of ['443', '8443', '8444']) {
       expect(sc.TCP[port]).toEqual({ HTTPS: true });
     }
+    // The queue's tailnet path (PR #87 review): a loopback TCP forward.
+    expect(sc.TCP['3326']).toEqual({ TCPForward: '127.0.0.1:3326' });
     expect(sc.Web['${TS_CERT_DOMAIN}:443'].Handlers['/'].Proxy).toBe('http://127.0.0.1:3000');
     expect(sc.Web['${TS_CERT_DOMAIN}:8443'].Handlers['/'].Proxy).toBe('http://127.0.0.1:4000');
     expect(sc.Web['${TS_CERT_DOMAIN}:8444'].Handlers['/'].Proxy).toBe('http://127.0.0.1:3306');
@@ -105,12 +99,26 @@ describe('master serve-config.json: placeholder, not a live name (1py.14 slice 1
 });
 
 describe('no image-baked input carries a live tailnet name (1py.14)', () => {
+  it('the derived input set covers every image (sanity: serve configs, hooks, docs, sources)', () => {
+    for (const rel of [
+      'images/tailscale/serve-config.json',
+      'images/tailscale-devices/serve-config.json',
+      'images/common/hooks/vs-a2a-wiring.sh',
+      'images/common/bin/vs-mesh-enroll.py',
+      'docs/device-environment.md',
+      'docs/vs-environment.md',
+      'registrar/src/mesh-enroll.ts',
+    ]) {
+      expect(BAKED_INPUTS).toContain(rel);
+    }
+  });
+
   it.each(BAKED_INPUTS)('%s carries no <host>.<tailnet>.ts.net literal', (rel) => {
     expect(read(rel), rel).not.toMatch(TS_NET_NAME);
   });
 
-  it('Dockerfile.tailscale comments are corrected, not asserting the Kubernetes-only myth', () => {
-    const master = read('balena/registrar/Dockerfile.tailscale');
+  it('images/tailscale/Dockerfile comments are corrected, not asserting the Kubernetes-only myth', () => {
+    const master = read('images/tailscale/Dockerfile');
     // the stale claims that motivated the literal bake:
     expect(master).not.toMatch(/Kubernetes-only/i);
     expect(master).not.toMatch(/substitutes an empty cert domain/i);
@@ -120,9 +128,8 @@ describe('no image-baked input carries a live tailnet name (1py.14)', () => {
 });
 /**
  * Slice 2 (1py.14): the registrar's mesh-enroll module is an
- * IMAGE-BAKED source (vendored into balena/registrar/registrar/src/ and
- * COPYd by Dockerfile.hermes's base build path — the registrar image
- * the build workflow publishes). Its hardcoded tailnet constants
+ * IMAGE-BAKED source (compiled into the registrar image the build
+ * workflow publishes). Its hardcoded tailnet constants
  * (MESH_TAILNET_SUFFIX, MESH_EDGE_HOST) put a live tailnet name into
  * every published registrar image. The plan's data classification:
  * deployment-specific values leave reusable layers; the loop-form
@@ -158,8 +165,7 @@ describe('mesh-enroll: tailnet identity from runtime env, not image bytes (1py.1
 });
 
 describe('mesh-enroll CLI: tailnet suffix from the runtime environment (1py.14 slice 2)', () => {
-  const cli = read('balena/registrar/vs-mesh-enroll.py');
-  const cliCanonical = read('scripts/vs-mesh-enroll.py');
+  const cli = read('images/common/bin/vs-mesh-enroll.py');
 
   it('the baked CLI carries no hardcoded tailnet suffix', () => {
     expect(cli).not.toMatch(/MESH_TAILNET_SUFFIX\s*=\s*["']\.tailb7207e/);
@@ -170,47 +176,18 @@ describe('mesh-enroll CLI: tailnet suffix from the runtime environment (1py.14 s
     expect(cli).toMatch(/VS_MESH_TAILNET_SUFFIX/);
     expect(cli).toMatch(/agent\.env/);
   });
-
-  it('stays byte-identical to the canonical scripts/ copy (drift pin)', () => {
-    expect(cli).toBe(cliCanonical);
-  });
 });
 
 /**
- * Slice 3 (1py.14): vendored docs are COPYd into both published images
- * (Dockerfile.hermes -> /opt/vs/docs, Dockerfile.agent-hermes ->
- * /opt/vs/docs) — they are reusable layer content, same classification
- * as the serve config and mesh-enroll constants. The plan's data rule
- * 4 allows generic operator docs but not a live network map, private
- * URLs, or real deployment identifiers.
+ * Slice 3 (1py.14): docs/ files COPYd into both Hermes images
+ * (/opt/vs/docs) are reusable layer content, same classification as the
+ * serve config and mesh-enroll constants — they are part of BAKED_INPUTS
+ * above. The plan's data rule 4 allows generic operator docs but not a
+ * live network map, private URLs, or real deployment identifiers.
  */
-const VENDORED_DOCS = [
-  'balena/registrar/docs/vs-environment.md',
-  'balena/registrar/docs/a2a-conventions.md',
-  'balena/registrar/docs/gateway-ops.md',
-  'balena/registrar/docs/memory-conventions.md',
-  'balena/registrar/docs/queue-conventions.md',
-  'balena/registrar/docs/vs-github.md',
-  'balena/devices/docs/device-environment.md',
-  'balena/devices/docs/a2a-conventions.md',
-  'balena/devices/docs/gateway-ops.md',
-  'balena/devices/docs/memory-conventions.md',
-  'balena/devices/docs/queue-conventions.md',
-  'balena/devices/docs/vs-github.md',
-] as const;
-
-describe('vendored docs (image-baked) carry no live tailnet FQDN (1py.14 slice 3)', () => {
-  it.each(VENDORED_DOCS)('%s carries no <host>.<tailnet>.ts.net literal', (rel) => {
-    expect(read(rel), rel).not.toMatch(TS_NET_NAME);
-  });
-
-  it('the canonical docs/ sources are sanitized too (one source of truth, vendored-drift pins byte parity)', () => {
-    expect(read('docs/vs-environment.md')).not.toMatch(TS_NET_NAME);
-    expect(read('docs/device-environment.md')).not.toMatch(TS_NET_NAME);
-  });
-
+describe('image-baked docs carry no live tailnet FQDN (1py.14 slice 3)', () => {
   it('the generic placeholder documents the mechanism without a live value', () => {
-    const vsEnv = read('balena/registrar/docs/vs-environment.md');
+    const vsEnv = read('docs/vs-environment.md');
     expect(vsEnv).toMatch(/<master>\.<tailnet>\.ts\.net/);
   });
 });

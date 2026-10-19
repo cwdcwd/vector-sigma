@@ -15,7 +15,7 @@ import {
  * mesh_enroll_not_configured. Root cause — 1py.14 moved mesh-enroll's
  * tailnet suffix/edge host from baked constants to fail-closed runtime
  * env (VS_MESH_TAILNET_SUFFIX / VS_MESH_EDGE_HOST, resolveMeshTopology
- * in src/mesh-enroll.ts), but deploy/compose.e2e.yaml's registrar
+ * in src/mesh-enroll.ts), but test/e2e/compose.e2e.yaml's registrar
  * service was never given them — the E2E registrar refused every
  * enroll by design, not a code defect. This pins the fix: the e2e
  * overlay supplies non-secret, synthetic topology values (same shape
@@ -28,11 +28,11 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '../..');
 
 function readComposeE2e(): Record<string, unknown> {
-  const raw = readFileSync(path.join(repoRoot, 'deploy/compose.e2e.yaml'), 'utf8');
+  const raw = readFileSync(path.join(repoRoot, 'test/e2e/compose.e2e.yaml'), 'utf8');
   return parseYaml(raw) as Record<string, unknown>;
 }
 
-describe('deploy/compose.e2e.yaml: registrar carries mesh topology for AC17 (1py.14 follow-on)', () => {
+describe('test/e2e/compose.e2e.yaml: registrar carries mesh topology for AC17 (1py.14 follow-on)', () => {
   const doc = readComposeE2e();
   const services = doc.services as Record<string, { environment?: Record<string, string> }>;
 

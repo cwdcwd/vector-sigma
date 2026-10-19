@@ -10,9 +10,9 @@ Everything here is a UI-only, one-time-per-device workflow on the balenaCloud da
 
 | Service | Image | Role |
 |---|---|---|
-| `agent` | built from `balena/devices/Dockerfile.agent-hermes` (the real Hermes runtime since j7g.1 — the pinned official image + bd 1.2.2 + the A2A wiring hook) | Your agent runtime. The gate blocks on `/data/agent/ready.marker` — no identity, no start — then boots Hermes (`gateway run`) through the image's own cont-init chain; the 04-vs-a2a-wiring hook derives the mesh env + config.yaml from the delivered bundle on every boot. |
-| `registrant` | built from `balena/devices/registrant/` (vendored workspace sources) | Bootstraps identity: clock gate → registrar fetch → 0600 bundle write → ready marker → resident rotation watcher. |
-| `tailscale` | `tailscale/tailscale:v1.102.5` (pinned official image) | The VS tailnet overlay (j7g phase 1a): joins the device to the private tailnet — off-LAN devices reach the master's endpoints, and the device is reachable from the tailnet. Host network namespace, publishes nothing; funnel is ACL-denied. See [tailscale-runbook.md](tailscale-runbook.md). |
+| `agent` | built from `images/agent/Dockerfile` (the real Hermes runtime since j7g.1 — the pinned official image + bd 1.2.2 + the A2A wiring hook) | Your agent runtime. The gate blocks on `/data/agent/ready.marker` — no identity, no start — then boots Hermes (`gateway run`) through the image's own cont-init chain; the 04-vs-a2a-wiring hook derives the mesh env + config.yaml from the delivered bundle on every boot. |
+| `registrant` | the `registrant` GHCR image (`registrant/Dockerfile`, built once by CI — the same image the master's `registrant-own` runs) | Bootstraps identity: clock gate → registrar fetch → 0600 bundle write → ready marker → resident rotation watcher. |
+| `tailscale` | the `tailscale-devices` GHCR image (`images/tailscale-devices/Dockerfile`: `FROM tailscale/tailscale:v1.102.5` + the baked `serve-config.json`) | The VS tailnet overlay (j7g phase 1a): joins the device to the private tailnet — off-LAN devices reach the master's endpoints, and the device is reachable from the tailnet. Host network namespace, publishes nothing; funnel is ACL-denied. See [tailscale-runbook.md](tailscale-runbook.md). |
 
 Both share the named volume `agent-data`, mounted at `/data/agent`. Identity lives on the data partition: a reflash re-fetches and the device is itself again.
 
@@ -84,7 +84,7 @@ A device whose identity is already delivered does not need the registrar to boot
 
 ## Swap point — real agent runtime
 
-The `agent` service ships a placeholder heartbeat runtime. When the real agent is chosen, one PR swaps `balena/devices/agent/Dockerfile`'s base image and the compose `command` (and, if the runtime runs as a non-root user, aligns its uid to 1000 so it can read the 0600 identity files — see the agent Dockerfile note). `gate.sh` and the identity contract stay untouched.
+The `agent` service ships a placeholder heartbeat runtime. When the real agent is chosen, one PR swaps `images/agent/Dockerfile`'s base image and the compose `command` (and, if the runtime runs as a non-root user, aligns its uid to 1000 so it can read the 0600 identity files — see the agent Dockerfile note). `gate.sh` and the identity contract stay untouched.
 
 ## First flash steps (first device only)
 

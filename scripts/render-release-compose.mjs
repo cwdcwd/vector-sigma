@@ -223,7 +223,7 @@ async function main() {
   const map = APP_SERVICE_COMPONENTS[app];
   if (!map) fail(`unknown --app ${app} (known: registrar, devices)`);
 
-  const composePath = path.join('balena', app, 'docker-compose.yml');
+  const composePath = path.join('platforms', 'balena', app, 'docker-compose.yml');
   if (!existsSync(composePath)) fail(`${composePath} not found (run from the repo root)`);
   const raw = readFileSync(composePath, 'utf8');
 

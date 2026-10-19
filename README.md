@@ -41,13 +41,25 @@ receives the complete identity bundle that makes it *itself*.
 ## Repository layout
 
 ```
-registrar/    # Fastify service: bootstrap API + admin console + DB
-registrant/   # device-side caller + rotation watcher
+registrar/    # Fastify service: bootstrap API + admin console + DB (+ its Dockerfile)
+registrant/   # device-side caller + rotation watcher (+ its Dockerfile)
 shared/       # bundle-contract types shared by both ends
-balena/       # two fleet apps: balena/registrar/ + balena/devices/
-deploy/       # generic self-host example (registrar + postgres)
-docs/         # engineering spec + balena architecture
+images/       # every other image: one dir per images.json component;
+              #   images/common/ = boot hooks, CLIs, plugin baked into several images
+images.json   # THE image list: CI builds, scans, E2Es and promotes exactly these
+stack/        # THE stack definitions (which images run together, how wired);
+              #   rendered into each platform by scripts/render-stack.mjs
+platforms/    # where those images run — one adapter per deploy target
+  balena/     #   registrar + devices fleet apps (live)
+  compose/    #   plain Docker Compose on any host (self-host)
+test/e2e/     # compose-simulated fleet E2E, run on the exact CI-built bytes
+scripts/      # repo tooling: image catalog, scans, promote, release render
+docs/         # engineering spec, runbooks, conventions (some baked into images)
 ```
+
+Images are platform-neutral; a platform is only *how* they are run and
+configured. See [platforms/README.md](platforms/README.md) for the adapter
+contract (and what adding AWS AgentCore will take).
 
 ## Status
 
@@ -55,7 +67,7 @@ Registrar skeleton, registrant, admin console, and the self-host deploy
 example + simulated-device E2E are merged. Next: the two-fleet balena
 deployment ([docs/balena-architecture.md](docs/balena-architecture.md))
 and its GitHub Actions pipelines — the **devices-fleet app ships in this
-repo** ([balena/devices/](balena/devices/README.md)), with the owner
+repo** ([platforms/balena/devices/](platforms/balena/devices/README.md)), with the owner
 runbook ([docs/balena-devices-runbook.md](docs/balena-devices-runbook.md))
 and canary checklist
 ([docs/balena-devices-canary-checklist.md](docs/balena-devices-canary-checklist.md));

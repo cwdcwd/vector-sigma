@@ -1,15 +1,18 @@
-# Build context hygiene for the vector-sigma deploy image.
-# The compose file sets build context to the repo root; keep everything
-# that is host-local, vendored, or secret out of the image layers.
+# Build context hygiene. Every first-party image builds from the repo root
+# (docker build -f <component>/Dockerfile .); keep everything that is
+# host-local, generated, or secret out of the image layers.
 node_modules
 **/node_modules
 **/dist
 **/tsconfig.tsbuildinfo
 .git
 .gitignore
+.claude
 **/coverage
 **/.env
 **/*.log
-deploy/.env
-docs
+platforms/compose/.env
 README.md
+# docs/ feeds the Hermes images (environment maps + conventions); only the
+# binary assets stay out.
+docs/*.png

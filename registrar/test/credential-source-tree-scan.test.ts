@@ -93,4 +93,19 @@ describe('scanSourceTree: finds credential-shaped content in a synthetic build c
     const findings = scanSourceTree(root);
     expect(findings.map((f) => f.pattern)).toContain('pem_private_key');
   });
+
+  // An image's COPY input list mixes files and directories; a file input
+  // once walked as an (unreadable) directory and read as a clean scan.
+  it('scans a single-file input and reports it by basename', () => {
+    const root = makeTmpDir();
+    const file = path.join(root, 'entrypoint.sh');
+    writeFileSync(file, 'AWS_KEY=AKIAFAKEEXAMPLE00000\n');
+    const findings = scanSourceTree(file);
+    expect(findings).toEqual([{ pattern: 'aws_access_key_id', path: 'entrypoint.sh' }]);
+  });
+
+  it('throws on a missing input rather than reporting it clean', () => {
+    const root = makeTmpDir();
+    expect(() => scanSourceTree(path.join(root, 'does-not-exist'))).toThrow();
+  });
 });

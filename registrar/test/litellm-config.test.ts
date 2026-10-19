@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { parse as parseYaml } from 'yaml';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const config = readFileSync(path.join(repoRoot, 'balena/registrar/litellm-config.yaml'), 'utf8');
+const config = readFileSync(path.join(repoRoot, 'images/litellm/litellm-config.yaml'), 'utf8');
 
 function explicitGroup(name: string): string {
   const start = config.indexOf(`  - model_name: ollama-cloud/${name}`);
@@ -100,18 +100,14 @@ describe('Ollama Cloud native route configuration', () => {
     expect(template.split('\n').every((line) => line === '' || line.startsWith('#'))).toBe(true);
   });
 
-  it('documents weekly budgets and keeps gateway ops copies byte-identical', () => {
+  it('documents weekly budgets in the gateway ops docs', () => {
     const canonical = readFileSync(path.join(repoRoot, 'docs/gateway-ops.md'), 'utf8');
-    const registrar = readFileSync(path.join(repoRoot, 'balena/registrar/docs/gateway-ops.md'), 'utf8');
-    const devices = readFileSync(path.join(repoRoot, 'balena/devices/docs/gateway-ops.md'), 'utf8');
     expect(canonical).toContain('## Per-key budget caps (weekly example)');
     expect(canonical).toContain('budget_duration: 7d');
     expect(canonical).toContain('budget_reset_at');
     expect(canonical).toContain('POST /key/{token}/reset_spend');
     expect(canonical).toContain('{"reset_to": 0}');
     expect(canonical).toContain('Budgets also gate MCP calls');
-    expect(registrar).toBe(canonical);
-    expect(devices).toBe(canonical);
   });
 
   it('keeps the sensitive-text constraint stated in the docs and template', () => {

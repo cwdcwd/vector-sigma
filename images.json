@@ -1,0 +1,19 @@
+{
+  "$comment": "The one list of images vector-sigma builds. CI builds, scans, E2Es and promotes exactly these (scripts/image-catalog.mjs turns it into workflow matrices); every platforms/ adapter consumes the promoted GHCR digests. context is the docker build context relative to the repo root; dockerfile is relative to the repo root.",
+  "registry": "ghcr.io/cwdcwd/vector-sigma",
+  "platforms": [
+    { "platform": "linux/amd64", "arch_tag": "amd64", "runner": "ubuntu-latest" },
+    { "platform": "linux/arm64", "arch_tag": "arm64", "runner": "ubuntu-24.04-arm" }
+  ],
+  "components": {
+    "registrar": { "dockerfile": "registrar/Dockerfile", "context": ".", "fleets": ["registrar"] },
+    "registrant": { "dockerfile": "registrant/Dockerfile", "context": ".", "fleets": ["registrar", "devices"] },
+    "hermes": { "dockerfile": "images/hermes/Dockerfile", "context": ".", "fleets": ["registrar"] },
+    "scotty": { "dockerfile": "images/scotty/Dockerfile", "context": ".", "fleets": ["registrar"] },
+    "postgres": { "dockerfile": "images/postgres/Dockerfile", "context": ".", "fleets": ["registrar"] },
+    "litellm": { "dockerfile": "images/litellm/Dockerfile", "context": ".", "fleets": ["registrar"] },
+    "tailscale": { "dockerfile": "images/tailscale/Dockerfile", "context": ".", "fleets": ["registrar"] },
+    "agent": { "dockerfile": "images/agent/Dockerfile", "context": ".", "fleets": ["devices"] },
+    "tailscale-devices": { "dockerfile": "images/tailscale-devices/Dockerfile", "context": ".", "fleets": ["devices"] }
+  }
+}

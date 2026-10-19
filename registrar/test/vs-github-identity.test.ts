@@ -15,12 +15,9 @@ import { describe, expect, it } from 'vitest';
  * installation tokens and fronts git (credential helper) and the REST
  * API. This guard pins:
  *
- *   1. BYTE-PARITY of the wrapper + hook + doc across the THREE copies:
- *      scripts/ (source of truth), balena/devices/agent/ (devices image
- *      context), and balena/registrar/ (primus image context) — the
- *      vendored-drift pattern (b1r/kh1 lineage: one source of truth,
- *      images vendor at build time, drift is a red CI run not a
- *      release-day discovery).
+ *   1. ONE copy: scripts/ and docs/ are the only sources; both Hermes
+ *      images build from the repo root and COPY them directly (no
+ *      vendored copies to drift — image-build-config.test.ts).
  *   2. BOTH Hermes images bake the wrapper at /usr/local/bin and the
  *      hook as cont-init 05- (after stage2's 01-, the queue join 03-,
  *      and the A2A wiring 04- — lexical order), with explicit chmod
@@ -32,23 +29,13 @@ import { describe, expect, it } from 'vitest';
  *      anchoring (never SSL_CERT_FILE — the composition pins that to
  *      the internal CA, which would poison GitHub TLS), no secrets in
  *      any output path, openssl fallback signing.
- *   5. The usage doc is vendored to BOTH images' /opt/vs/docs (with the
- *      existing docs drift list).
+ *   5. The usage doc ships in BOTH images' /opt/vs/docs.
  *   6. FLEET-AGNOSTIC content (kh1): no origin-fleet agent, host, or
  *      gateway names in the wrapper, hook, or doc.
  *   7. The wrapper is FUNCTIONAL: a live behavioral test drives the
  *      token-mint flow against a loopback mock API with a real RSA key
  *      (both signing paths) — proving the wiring end to end without
  *      any real credential.
- *
- * Regeneration recipe (vendored-drift): after editing
- * scripts/vs-github-identity.{py,sh} or docs/vs-github.md, re-vendor:
- *   cp scripts/vs-github-identity.py balena/devices/agent/
- *   cp scripts/vs-github-identity.py balena/registrar/
- *   cp scripts/vs-github-identity.sh balena/devices/agent/
- *   cp scripts/vs-github-identity.sh balena/registrar/
- *   cp docs/vs-github.md balena/devices/docs/
- *   cp docs/vs-github.md balena/registrar/docs/
  */
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '../..');
@@ -69,57 +56,45 @@ function exists(rel: string): boolean {
   return existsSync(path.join(repoRoot, rel));
 }
 
-/** The (source-of-truth, vendored) pairs guarded byte-exact. */
-const DRIFT_PAIRS: Array<[string, string]> = [
-  ['scripts/vs-github-identity.py', 'balena/devices/agent/vs-github-identity.py'],
-  ['scripts/vs-github-identity.py', 'balena/registrar/vs-github-identity.py'],
-  ['scripts/vs-github-identity.sh', 'balena/devices/agent/vs-github-identity.sh'],
-  ['scripts/vs-github-identity.sh', 'balena/registrar/vs-github-identity.sh'],
-  ['docs/vs-github.md', 'balena/devices/docs/vs-github.md'],
-  ['docs/vs-github.md', 'balena/registrar/docs/vs-github.md'],
-];
-
-const wrapper = read('scripts/vs-github-identity.py');
-const hook = read('scripts/vs-github-identity.sh');
+const wrapper = read('images/common/bin/vs-github-identity.py');
+const hook = read('images/common/hooks/vs-github-identity.sh');
 const usageDoc = read('docs/vs-github.md');
-const devicesDockerfile = read('balena/devices/Dockerfile.agent-hermes');
-const registrarDockerfile = read('balena/registrar/Dockerfile.hermes');
+const devicesDockerfile = read('images/agent/Dockerfile');
+const registrarDockerfile = read('images/hermes/Dockerfile');
 
 /** Origin-fleet identity tokens that must NEVER appear in VS repo content. */
 const FLEET_NAME_RE = /doombot|ultronbot|kangbot|thanosbot|lazybaer|thecabal/i;
 
-describe('VS GitHub identity (fleet-ops-e5o.5): vendored byte-parity', () => {
+describe('VS GitHub identity (fleet-ops-e5o.5): sources', () => {
   it('every source-of-truth file exists', () => {
-    expect(exists('scripts/vs-github-identity.py')).toBe(true);
-    expect(exists('scripts/vs-github-identity.sh')).toBe(true);
+    expect(exists('images/common/bin/vs-github-identity.py')).toBe(true);
+    expect(exists('images/common/hooks/vs-github-identity.sh')).toBe(true);
     expect(exists('docs/vs-github.md')).toBe(true);
-  });
-
-  it.each(DRIFT_PAIRS)('%s is vendored byte-exact to %s', (src, vendored) => {
-    expect(read(src) === read(vendored), `${vendored} drifted from ${src}`).toBe(true);
   });
 });
 
 describe('VS GitHub identity (fleet-ops-e5o.5): image wiring', () => {
   it('the devices image bakes the wrapper + the 05- hook with exec bits', () => {
     const code = stripComments(devicesDockerfile);
-    expect(code).toMatch(/COPY agent\/vs-github-identity\.py \/usr\/local\/bin\/vs-github-identity/);
-    expect(code).toMatch(/COPY agent\/vs-github-identity\.sh \/etc\/cont-init\.d\/05-vs-github-identity/);
+    expect(code).toMatch(/COPY images\/common\/bin\/vs-github-identity\.py \/usr\/local\/bin\/vs-github-identity/);
+    expect(code).toMatch(/COPY images\/common\/hooks\/vs-github-identity\.sh \/etc\/cont-init\.d\/05-vs-github-identity/);
     expect(code).toMatch(/chmod 0755 \/usr\/local\/bin\/vs-github-identity \/etc\/cont-init\.d\/05-vs-github-identity/);
   });
 
   it('the primus (registrar) image bakes the same pair (one contract, both images)', () => {
     const code = stripComments(registrarDockerfile);
-    expect(code).toMatch(/COPY vs-github-identity\.py \/usr\/local\/bin\/vs-github-identity/);
-    expect(code).toMatch(/COPY vs-github-identity\.sh \/etc\/cont-init\.d\/05-vs-github-identity/);
+    expect(code).toMatch(/COPY images\/common\/bin\/vs-github-identity\.py \/usr\/local\/bin\/vs-github-identity/);
+    expect(code).toMatch(/COPY images\/common\/hooks\/vs-github-identity\.sh \/etc\/cont-init\.d\/05-vs-github-identity/);
     expect(code).toMatch(/chmod 0755 \/etc\/cont-init\.d\/05-vs-github-identity \/usr\/local\/bin\/vs-github-identity/);
   });
 
-  it('the usage doc is vendored into both images with the docs set (COPY docs /opt/vs/docs)', () => {
-    expect(stripComments(devicesDockerfile)).toMatch(/COPY docs \/opt\/vs\/docs/);
-    expect(stripComments(registrarDockerfile)).toMatch(/COPY docs \/opt\/vs\/docs/);
-    expect(exists('balena/devices/docs/vs-github.md')).toBe(true);
-    expect(exists('balena/registrar/docs/vs-github.md')).toBe(true);
+  it('the usage doc ships in both images with the docs set (docs/vs-github.md -> /opt/vs/docs/)', () => {
+    const docsCopy = /COPY ((?:docs\/[\w.-]+\s*\\?\s*)+)\/opt\/vs\/docs\//;
+    for (const dockerfile of [devicesDockerfile, registrarDockerfile]) {
+      const m = docsCopy.exec(stripComments(dockerfile));
+      expect(m, 'docs COPY to /opt/vs/docs/ not found').not.toBeNull();
+      expect(m![1]).toContain('docs/vs-github.md');
+    }
   });
 });
 
@@ -226,7 +201,7 @@ describe('VS GitHub identity (fleet-ops-e5o.5): behavioral proof (mock API + rea
   // No real credential is touched; the wrapper's API root is pointed at
   // the loopback via its CI-only override env (GH_API_ROOT).
   it('mints and authenticates against a mock installation', () => {
-    const script = path.join(repoRoot, 'scripts/vs-github-identity.py');
+    const script = path.join(repoRoot, 'images/common/bin/vs-github-identity.py');
     const out = execFileSync('node', [path.join(here, 'helpers', 'vs-github-identity.e2e.mjs')], {
       cwd: repoRoot,
       encoding: 'utf8',

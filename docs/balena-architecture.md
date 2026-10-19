@@ -3,7 +3,7 @@
 Vector Sigma deploys as **two balena fleets in one balenaCloud account**:
 
 1. **`registrar` fleet — 1 device.** The registrar + its own Postgres
-   container (the `deploy/` compose pattern). No registrant service —
+   container (the `platforms/compose/` pattern). No registrant service —
    the registrar *is* the identity source, not a client of itself.
 2. **`devices` fleet — 3–4 devices.** Agent runtime + registrant per
    the device-app section of this spec.
@@ -62,23 +62,33 @@ patch never rebuilds or redeploys device apps, and vice versa.
 
 ## GitHub Actions
 
-Five workflows, `.github/workflows/`:
+Seven workflows, `.github/workflows/`. Every image is an `images.json`
+component (9 of them); one reusable pipeline builds them all:
 
+- **`_images.yml`** (reusable, `workflow_call`) — builds EVERY component x
+  amd64/arm64 on native runners (no QEMU) from its canonical Dockerfile,
+  credential-scans its exact build inputs, content-gates each OCI layout,
+  runs the compose-simulated device E2E (`test/e2e/e2e.sh`, prebuilt mode) on
+  the scanned amd64 bytes. Read-only: no job holds write scope.
+- **`_promote.yml`** (reusable) — called from a caller's `publish` job that
+  needs `images` and is gated on `VS_GHCR_PUBLISH_ENABLED` (never on a
+  PR): promotes those exact scanned bytes to
+  `ghcr.io/cwdcwd/vector-sigma/<component>:<sha>` and re-verifies every
+  digest. Build once, test those bytes, ship those bytes.
 - **`ci.yml`** — every PR: typecheck + unit tests across
   `shared/`, `registrar/`, `registrant/` (pg-mem in-process, no
-  Postgres service needed) + the compose-simulated device E2E
-  (`deploy/e2e.sh --up`) on a compose-capable runner.
-- **`build-images.yml`** — every push to `main`: builds all 8 components
-  x amd64/arm64 on native runners (no QEMU) and pushes
-  `<sha>-<arch>` tags to GHCR (`ghcr.io/cwdcwd/vector-sigma/<component>`).
-- **`release-registrar.yml`** — tag `registrar-v*`: build the 7
-  registrar-app components on native runners → GHCR → trivy
-  CRITICAL/HIGH gate → boot-path smoke gate → render the
-  digest-pinned compose (arm64 child digests) → `balena deploy` of
-  the prebuilt images to the registrar fleet. No source leaves
-  the repo for builds.
-- **`release-devices.yml`** — tag `devices-v*`: same pipeline for the
-  devices app (agent + registrant + the devices tailscale bake).
+  Postgres service needed).
+- **`build-images.yml`** — every PR (validate: build + scan + E2E, no
+  write scope) and every push to `main` (the same, then publish all 9
+  when `VS_GHCR_PUBLISH_ENABLED` is set). `platforms/compose/compose.yaml` runs these
+  SHA-tagged images.
+- **`release-registrar.yml`** — tag `registrar-v*`: the pipeline, promoting
+  the 7 registrar-app components → trivy CRITICAL/HIGH gate → boot-path
+  smoke gate → render the digest-pinned compose (arm64 child digests) →
+  `balena deploy` of the prebuilt images to the registrar fleet. No source
+  leaves the repo for builds.
+- **`release-devices.yml`** — tag `devices-v*`: the same, promoting the
+  devices app's 3 (agent + registrant + the devices tailscale bake).
 - **`device-logs.yml`** — manual (`workflow_dispatch`): fetches a
   device's logs via the pinned balena CLI, redacting
   credential-shaped values (Bearer/token/api_key) before they land
@@ -93,7 +103,7 @@ inspects the **master's** `tailscale:<sha>` multi-arch index (built by
 dependency: a `devices-v*` tag cut at a commit whose `registrar-v*`/main
 build never ran will fail the smoke gate loudly — by design.
 
-Release workflows use pinned actions only (`docker/build-push-action@v6`,
+Workflows use pinned actions only (`docker/build-push-action@v6`,
 `docker/login-action@v3`, etc.), a sha256-pinned balena CLI tarball, and
 `GITHUB_TOKEN` for GHCR auth within the run that built the images.
 `balena_token` is a repo Actions secret; fleet slugs are repo variables

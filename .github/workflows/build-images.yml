@@ -1,73 +1,29 @@
 name: Build and publish private VS images
 
-# fleet-ops-1py.14 slice 5: route every candidate build through the
-# slice-4 local OCI content gate (registrar/src/oci-gate) BEFORE any GHCR
-# write, per Thanos's design (fleet-ops-1py.12) and docs/ghcr-image-
-# exposure-plan.md section B. New graph, per component/platform:
+# Every image, every change: the shared pipeline (.github/workflows/_images.yml)
+# builds each images.json component once, credential-scans its inputs,
+# content-gates the OCI layouts, runs the compose E2E on the scanned amd64
+# bytes, and — on main, when publishing is enabled — promotes those exact
+# bytes to GHCR tagged with the commit SHA (the tag platforms/compose/compose.yaml's
+# VS_IMAGE_TAG pins).
 #
-#   stage-and-scan   — buildx build --output type=oci to a LOCAL layout
-#                       tar, NO push, NO registry auth, NO cache-from/
-#                       cache-to; run the gate's scanPlatformLayout()
-#                       against the tar; fail closed on any finding.
-#                       slice 6 adds a credential-only scan of the
-#                       RAW BUILD CONTEXT (registrar/src/credential-scan)
-#                       BEFORE the docker build step even runs — a
-#                       separate, narrower scope than the slice-4
-#                       layer scanner (credential-shaped patterns only,
-#                       never flags topology/FQDN literals, which stay
-#                       the slice-4 gate's job).
-#   assemble-and-validate(component) — local OCI index built ONLY from
-#                       this run's own scanned-and-passed digests
-#                       (assembleLocalOciIndex); rejects missing/
-#                       duplicate/extra platform or an unknown digest.
-#   all-components-gate — aggregate job that `needs:` EVERY stage/scan
-#                       and index job; fails if ANY is missing, failed,
-#                       cancelled, or skipped (matrix fail-fast must
-#                       never silently read as success).
-#   promote(component) — ONLY this job carries packages:write; runs ONLY
-#                       after all-components-gate passed. Publishes the
-#                       EXACT scanned OCI-layout bytes via the in-repo OCI
-#                       Distribution client (scripts/ghcr-promote-run.mjs
-#                       → registrar/src/registry/promote.ts): no rebuild,
-#                       no buildx, no second build context. Every blob and
-#                       manifest is re-read before any release tag is
-#                       applied, and the multi-arch index is assembled by
-#                       the promoter from ONLY the scanned-and-passed child
-#                       descriptors (fleet-ops-r3v).
-#   verify-remote(component) — re-fetches the published index and every
-#                       child BY DIGEST through the in-repo verifier
-#                       (scripts/ghcr-promote-run.mjs verify →
-#                       verifyRemote), recomputes SHA-256 over the served
-#                       bytes, and fails closed on any difference. Carries
-#                       no packages:write and no credential.
-#
-# PR events: stage-and-scan + assemble-and-validate + all-components-gate
-# run (validate-only); there is NO promote job at all on pull_request —
-# structurally absent, not conditionally skipped.
-#
-# owner go-ahead: publishing to GHCR is gated on the repo variable
-# VS_GHCR_PUBLISH_ENABLED. It is NOT set for this repo today, so merging
-# this file cannot by itself cause a live GHCR write even on push to main:
-# promote/verify-remote skip, and every downstream job that needs them
-# skips with them. Flip the variable to enable publishing — a separate,
-# explicit owner action, not part of the implementation PR. See
-# docs/ghcr-promotion-runbook.md.
+# `images` (every event) is read-only. `publish` — the ONLY job holding
+# packages:write — calls _promote.yml after `images` succeeds, never on
+# pull_request (structurally excluded), and only when the owner switch
+# VS_GHCR_PUBLISH_ENABLED is set (docs/ghcr-promotion-runbook.md). Unset, a
+# main push still builds, scans and E2Es; nothing is written.
 on:
   push:
     branches: [main]
-    paths:
-      - 'shared/**'
-      - 'registrar/**'
-      - 'balena/**'
-      - 'deploy/**'
-      - '.github/workflows/build-images.yml'
+    paths-ignore:
+      - 'README.md'
+      - 'docs/audits/**'
+      - '.beads/**'
   pull_request:
-    paths:
-      - 'shared/**'
-      - 'registrar/**'
-      - 'balena/**'
-      - 'deploy/**'
-      - '.github/workflows/build-images.yml'
+    paths-ignore:
+      - 'README.md'
+      - 'docs/audits/**'
+      - '.beads/**'
   workflow_dispatch:
     inputs:
       component:
@@ -85,330 +41,25 @@ on:
           - litellm
           - tailscale
           - agent
+          - tailscale-devices
 
 permissions:
   contents: read
 
 jobs:
-  stage-and-scan:
-    name: Stage + scan ${{ matrix.component }} (${{ matrix.platform }})
-    runs-on: ${{ matrix.runner }}
+  images:
+    name: Build, scan, E2E
+    uses: ./.github/workflows/_images.yml
     permissions:
       contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - component: registrar
-            context: balena/registrar/registrar
-            dockerfile: balena/registrar/registrar/Dockerfile
-            platform: linux/amd64
-            arch_tag: amd64
-            runner: ubuntu-latest
-          - component: registrar
-            context: balena/registrar/registrar
-            dockerfile: balena/registrar/registrar/Dockerfile
-            platform: linux/arm64
-            arch_tag: arm64
-            runner: ubuntu-24.04-arm
-          - component: registrant
-            context: balena/registrar/registrant-own
-            dockerfile: balena/registrar/registrant-own/Dockerfile
-            platform: linux/amd64
-            arch_tag: amd64
-            runner: ubuntu-latest
-          - component: registrant
-            context: balena/registrar/registrant-own
-            dockerfile: balena/registrar/registrant-own/Dockerfile
-            platform: linux/arm64
-            arch_tag: arm64
-            runner: ubuntu-24.04-arm
-          - component: scotty
-            context: balena/registrar
-            dockerfile: balena/registrar/Dockerfile.scotty
-            platform: linux/amd64
-            arch_tag: amd64
-            runner: ubuntu-latest
-          - component: scotty
-            context: balena/registrar
-            dockerfile: balena/registrar/Dockerfile.scotty
-            platform: linux/arm64
-            arch_tag: arm64
-            runner: ubuntu-24.04-arm
-          - component: hermes
-            context: balena/registrar
-            dockerfile: balena/registrar/Dockerfile.hermes
-            platform: linux/amd64
-            arch_tag: amd64
-            runner: ubuntu-latest
-          - component: hermes
-            context: balena/registrar
-            dockerfile: balena/registrar/Dockerfile.hermes
-            platform: linux/arm64
-            arch_tag: arm64
-            runner: ubuntu-24.04-arm
-          - component: postgres
-            context: balena/registrar
-            dockerfile: balena/registrar/Dockerfile.postgres
-            platform: linux/amd64
-            arch_tag: amd64
-            runner: ubuntu-latest
-          - component: postgres
-            context: balena/registrar
-            dockerfile: balena/registrar/Dockerfile.postgres
-            platform: linux/arm64
-            arch_tag: arm64
-            runner: ubuntu-24.04-arm
-          - component: litellm
-            context: balena/registrar
-            dockerfile: balena/registrar/Dockerfile.litellm
-            platform: linux/amd64
-            arch_tag: amd64
-            runner: ubuntu-latest
-          - component: litellm
-            context: balena/registrar
-            dockerfile: balena/registrar/Dockerfile.litellm
-            platform: linux/arm64
-            arch_tag: arm64
-            runner: ubuntu-24.04-arm
-          - component: tailscale
-            context: balena/registrar
-            dockerfile: balena/registrar/Dockerfile.tailscale
-            platform: linux/amd64
-            arch_tag: amd64
-            runner: ubuntu-latest
-          - component: tailscale
-            context: balena/registrar
-            dockerfile: balena/registrar/Dockerfile.tailscale
-            platform: linux/arm64
-            arch_tag: arm64
-            runner: ubuntu-24.04-arm
-          - component: agent
-            context: balena/devices
-            dockerfile: balena/devices/Dockerfile.agent-hermes
-            platform: linux/amd64
-            arch_tag: amd64
-            runner: ubuntu-latest
-          - component: agent
-            context: balena/devices
-            dockerfile: balena/devices/Dockerfile.agent-hermes
-            platform: linux/arm64
-            arch_tag: arm64
-            runner: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - uses: docker/setup-buildx-action@v3
-      # NO docker/login-action anywhere in this job — stage-and-scan never
-      # authenticates to any registry, on any event (PR, main, dispatch).
-      - name: Install gate runtime deps
-        run: npm ci
-      - name: Build (typecheck) so the oci-gate dist/ exists
-        run: npm run build
-      - name: Credential-only scan of this component's build input (fleet-ops-1py.14 slice 6)
-        run: |
-          set -euo pipefail
-          node scripts/credential-scan-run.mjs --context "${{ matrix.context }}"
-      - name: Build candidate to a local OCI layout (no push, no cache)
-        id: build
-        uses: docker/build-push-action@v6
-        with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.dockerfile }}
-          platforms: ${{ matrix.platform }}
-          push: false
-          outputs: type=oci,dest=${{ runner.temp }}/${{ matrix.component }}-${{ matrix.arch_tag }}.tar
-          # Hard requirement (fleet-ops-1py.14 slice 5 design): zero
-          # cache-from/cache-to on any candidate build, on any event.
-          # Do not add one back "temporarily" — see docs/ghcr-image-
-          # exposure-plan.md section B and fleet-ops-1py.12 section 4.
-      - name: Run the slice-4 content gate on this platform's layout
-        run: |
-          set -euo pipefail
-          node scripts/oci-gate-run.mjs scan \
-            --component "${{ matrix.component }}" \
-            --platform "${{ matrix.platform }}" \
-            --tar "${{ runner.temp }}/${{ matrix.component }}-${{ matrix.arch_tag }}.tar" \
-            --out "${{ runner.temp }}/${{ matrix.component }}-${{ matrix.arch_tag }}.descriptor.json"
-      - name: Upload scanned descriptor for index assembly
-        uses: actions/upload-artifact@v4
-        with:
-          name: descriptor-${{ matrix.component }}-${{ matrix.arch_tag }}
-          path: ${{ runner.temp }}/${{ matrix.component }}-${{ matrix.arch_tag }}.descriptor.json
-          retention-days: 1
-      # The layout tar itself, not just its descriptor: the promote job
-      # publishes THESE bytes (fleet-ops-r3v). Without this upload the
-      # promoter would have nothing to push and would be forced back into
-      # a rebuild — exactly the defect class this whole lane removes.
-      - name: Upload the scanned OCI layout (the exact bytes to be promoted)
-        uses: actions/upload-artifact@v4
-        with:
-          name: layout-${{ matrix.component }}-${{ matrix.arch_tag }}
-          path: ${{ runner.temp }}/${{ matrix.component }}-${{ matrix.arch_tag }}.tar
-          retention-days: 1
 
-  assemble-and-validate:
-    name: Assemble + validate local index (${{ matrix.component }})
-    needs: stage-and-scan
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        component: [registrar, registrant, scotty, hermes, postgres, litellm, tailscale, agent]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Install gate runtime deps
-        run: npm ci
-      - name: Build (typecheck) so the oci-gate dist/ exists
-        run: npm run build
-      - name: Download scanned descriptors (amd64 + arm64)
-        uses: actions/download-artifact@v4
-        with:
-          pattern: descriptor-${{ matrix.component }}-*
-          path: ${{ runner.temp }}/descriptors
-          merge-multiple: true
-      - name: Assemble local OCI index from scanned digests only
-        run: |
-          set -euo pipefail
-          node scripts/oci-gate-run.mjs assemble \
-            --component "${{ matrix.component }}" \
-            --out "${{ runner.temp }}/${{ matrix.component }}-index.json" \
-            --descriptors "${{ runner.temp }}/descriptors/${{ matrix.component }}-amd64.descriptor.json" \
-                          "${{ runner.temp }}/descriptors/${{ matrix.component }}-arm64.descriptor.json"
-      - name: Upload validated local index
-        uses: actions/upload-artifact@v4
-        with:
-          name: index-${{ matrix.component }}
-          path: ${{ runner.temp }}/${{ matrix.component }}-index.json
-          retention-days: 1
-
-  all-components-gate:
-    name: All-components content gate (aggregate, fail-closed)
-    if: always()
-    needs: [stage-and-scan, assemble-and-validate]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Require every stage/scan and index job to have succeeded
-        run: |
-          set -euo pipefail
-          if [ "${{ needs.stage-and-scan.result }}" != "success" ]; then
-            echo "stage-and-scan did not succeed for all component/platform jobs (result: ${{ needs.stage-and-scan.result }})" >&2
-            exit 1
-          fi
-          if [ "${{ needs.assemble-and-validate.result }}" != "success" ]; then
-            echo "assemble-and-validate did not succeed for all components (result: ${{ needs.assemble-and-validate.result }})" >&2
-            exit 1
-          fi
-          echo "all-components-gate: every stage/scan and index-assembly job passed"
-
-  # ---------------------------------------------------------------------
-  # promote + verify-remote run ONLY on main push / workflow_dispatch —
-  # there is NO promote job at all for pull_request (structurally absent
-  # via the `if:` guard below, not a conditionally-skipped no-op). Only
-  # this job carries packages:write / GHCR login. On manual dispatch, the
-  # component input narrows BOTH promotion and verification to one component
-  # (or all); stage-and-scan, index assembly and the aggregate gate stay full.
-  #
-  # fleet-ops-r3v: this job NO LONGER rebuilds. It downloads the exact
-  # OCI-layout tars the stage-and-scan job built and scanned, and pushes
-  # those bytes through scripts/ghcr-promote-run.mjs (an in-repo OCI
-  # Distribution v2 client). Every blob/manifest is read back before any
-  # release tag is applied, so a partial write can never produce an
-  # advertised release. The promotion record it writes is the ONLY input
-  # verify-remote trusts.
-  # ---------------------------------------------------------------------
-  promote:
-    name: Promote ${{ matrix.component }} (GHCR write, exact scanned bytes)
+  publish:
+    name: Publish to GHCR
     if: github.event_name != 'pull_request' && vars.VS_GHCR_PUBLISH_ENABLED == 'true'
-    needs: all-components-gate
-    runs-on: ubuntu-latest
+    needs: images
+    uses: ./.github/workflows/_promote.yml
     permissions:
       contents: read
       packages: write
-    strategy:
-      fail-fast: false
-      matrix:
-        component: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.component != 'all' && format('["{0}"]', inputs.component) || '["registrar","registrant","scotty","hermes","postgres","litellm","tailscale","agent"]') }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Install gate runtime deps
-        run: npm ci
-      - name: Build (typecheck) so the registry promoter dist/ exists
-        run: npm run build
-      - name: Download validated local index
-        uses: actions/download-artifact@v4
-        with:
-          name: index-${{ matrix.component }}
-          path: ${{ runner.temp }}
-      - name: Download the exact scanned OCI layouts (amd64 + arm64)
-        uses: actions/download-artifact@v4
-        with:
-          pattern: layout-${{ matrix.component }}-*
-          path: ${{ runner.temp }}/layouts
-          merge-multiple: true
-      - name: Promote the exact scanned bytes to GHCR (no rebuild, no buildx)
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GHCR_ACTOR: ${{ github.actor }}
-        run: |
-          set -euo pipefail
-          node scripts/ghcr-promote-run.mjs promote \
-            --registry ghcr.io \
-            --repository "${{ github.repository }}/${{ matrix.component }}" \
-            --tag "${GITHUB_SHA}" \
-            --layout "linux/amd64=${{ runner.temp }}/layouts/${{ matrix.component }}-amd64.tar" \
-            --layout "linux/arm64=${{ runner.temp }}/layouts/${{ matrix.component }}-arm64.tar" \
-            --token-env GHCR_TOKEN \
-            --actor "${GHCR_ACTOR}" \
-            --record "${{ runner.temp }}/promoted-${{ matrix.component }}.json"
-      - name: Upload the promotion record (index + per-arch digests)
-        uses: actions/upload-artifact@v4
-        with:
-          name: promoted-${{ matrix.component }}
-          path: ${{ runner.temp }}/promoted-${{ matrix.component }}.json
-          retention-days: 1
-
-  verify-remote:
-    name: Verify remote digests (${{ matrix.component }})
-    if: github.event_name != 'pull_request' && vars.VS_GHCR_PUBLISH_ENABLED == 'true'
-    needs: promote
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        component: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.component != 'all' && format('["{0}"]', inputs.component) || '["registrar","registrant","scotty","hermes","postgres","litellm","tailscale","agent"]') }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Install gate runtime deps
-        run: npm ci
-      - name: Build (typecheck) so the registry verifier dist/ exists
-        run: npm run build
-      - name: Download the promotion record
-        uses: actions/download-artifact@v4
-        with:
-          name: promoted-${{ matrix.component }}
-          path: ${{ runner.temp }}
-      # Anonymous re-read: this job carries NO packages:write and no
-      # credential for a public package, so the proof that the published
-      # bytes are intact does not depend on the writer's token.
-      - name: Re-fetch by digest and compare (fails closed on any mismatch)
-        run: |
-          set -euo pipefail
-          node scripts/ghcr-promote-run.mjs verify \
-            --registry ghcr.io \
-            --record "${{ runner.temp }}/promoted-${{ matrix.component }}.json"
+    with:
+      promote_only: ${{ inputs.component || 'all' }}

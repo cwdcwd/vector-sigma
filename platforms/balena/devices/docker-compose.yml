@@ -1,0 +1,227 @@
+# Vector Sigma devices-fleet app — agent + registrant on balenaOS.
+#
+# Runs on the `devices` balena fleet (3–4 Raspberry Pi 5 devices,
+# architecture aarch64). This compose is read by the balena supervisor
+# (compose-file v2.4 semantics), NOT plain docker compose: no `${VAR}`
+# substitution is performed — every runtime value reaches services as a
+# balenaCloud dashboard variable (device or fleet scope). See
+# platforms/balena/devices/README.md and docs/balena-devices-runbook.md.
+#
+# NOTE: the explicit `version: "2.4"` below is load-bearing — without it
+# the balena CLI falls back to the legacy v1 schema and rejects every
+# modern service key with "data/services should NOT have additional
+# properties" (verified against the CLI's bundled ajv schema, v24.x).
+version: "2.4"
+#
+# Images: every VS-built service's `build:` block (context: ../.., the repo
+# root) is the INPUT to scripts/render-release-compose.mjs, which a
+# `devices-v*` release runs to swap each block for the CI-built GHCR image pinned
+# by digest (images.json; .github/workflows/_images.yml). `balena push` /
+# `balena deploy --build` against THIS file is NOT a supported path: the
+# balena CLI confines build contexts to the project dir and rejects ../..
+# Release only by pushing a `devices-v*` tag.
+#
+# No secrets in image layers, build args, or this file. The per-device
+# REGISTRAR_KEY is a device-scoped balena variable; BALENA_DEVICE_UUID is
+# injected by the platform automatically.
+
+services:
+  agent:
+    # j7g.1 (the runtime swap): the real agent runtime — the pinned
+    # official Hermes image (the b1r forward shape, now the build) with
+    # bd 1.2.2 baked read-write, the identity gate, and the A2A mesh
+    # wiring hook. The placeholder image (images/agent/Dockerfile,
+    # node heartbeat) is RETIRED by this lane: the engineering spec's
+    # "real runtime is a fleet PR" clause resolves HERE.
+    build:
+      context: ../../..
+      dockerfile: images/agent/Dockerfile
+    # The canonical long-run form (the upstream reference compose's shape,
+    # the b1r run-3 lesson — a bare REPL exits on EOF with closed stdin).
+    command: ["gateway", "run"]
+    # The gate (ENTRYPOINT) blocks on /data/agent/ready.marker before
+    # exec'ing the image's own entrypoint dispatcher.
+    environment:
+      # State on the shared agent-data volume; the runtime reads the
+      # registrant-written (uid 1000) bundle under this home (the b1r
+      # HERMES_UID remap mechanism — without it the default uid 10000
+      # cannot read the 0600 bundle files).
+      HERMES_HOME: /data/agent
+      HERMES_UID: "1000"
+      HERMES_GID: "1000"
+      # The gateway comes up on first boot (the image's first-boot-only
+      # seed contract; the persisted state wins on every later boot).
+      HERMES_GATEWAY_BOOTSTRAP_STATE: running
+    volumes:
+      - agent-data:/data/agent
+    # j7g.1 serve form (the owner's AC3 live-leg origin decision): the
+    # agent's A2A origin publishes 127.0.0.1 LOOPBACK ONLY — the same
+    # lnf pattern as the master's registrar/litellm/scotty publishes.
+    # The device's tailscale service (host netns) fronts it at the
+    # device's own MagicDNS name, https://<device>.tailb7207e.ts.net:9900,
+    # via the baked serve config (images/tailscale-devices/Dockerfile + serve-config.json
+    # in this dir); the LAN front door stays dark and no firewall port
+    # opens anywhere. The origin_url the gateway's proxy dials rides the
+    # registrar bundle (config/a2a.json public_url, filled by the
+    # mesh-enroll action) — never this compose.
+    ports:
+      - "127.0.0.1:9900:9900"
+    # j7g phase 1b (fleet-ops-lrb): static hosts pin for the master's
+    # MagicDNS FQDN. The lrb canary (2026-10-02) root-caused in-container
+    # resolution: the container DNS chain (embedded 127.0.0.11 -> host
+    # dnsmasq -> upstream) has NO ts.net route, and accept-dns cannot
+    # help — tailscaled would rewrite only its OWN mount namespace's
+    # resolv.conf, never the host dnsmasq chain the containers inherit.
+    # The DECIDED flip mechanism keeps the canonical name in the flipped
+    # variables (REGISTRAR_URL etc.) and pins it here instead. The tailnet
+    # IP is deterministic (ts-state persists node identity). Compose
+    # carries the literal pair — the supervisor does no ${VAR}
+    # substitution and extra_hosts has no variable path; the runbook's
+    # phase-1b owner step names this exact line for BOTH pin sites
+    # (agent + registrant, same values) — docs/tailscale-runbook.md.
+    extra_hosts:
+      - "vector-sigma.tailb7207e.ts.net:100.124.197.78"
+    # Identity gate: no ready marker => the agent never starts. The
+    # supervisor auto-restarts containers on exit (restart defaults to
+    # always under balena); this healthcheck is process liveness to
+    # catch alive-but-broken containers and exec-architecture failures.
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    stop_grace_period: 60s
+    stop_signal: SIGTERM
+    restart: always
+
+  registrant:
+    build:
+      context: ../../..
+      dockerfile: registrant/Dockerfile
+    volumes:
+      - agent-data:/data/agent
+    # j7g phase 1b (fleet-ops-lrb): the SAME static hosts pin as the agent
+    # service above — this is the service whose REGISTRAR_URL flips to
+    # the MagicDNS name, so the pin is load-bearing for the bootstrap
+    # fetch itself. Same values, same reasoning; both sites named in the
+    # runbook's phase-1b owner step — docs/tailscale-runbook.md.
+    extra_hosts:
+      - "vector-sigma.tailb7207e.ts.net:100.124.197.78"
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    stop_grace_period: 30s
+    stop_signal: SIGTERM
+    restart: always
+
+  # j7g phase 1a (fleet-ops-6c2): the tailscale overlay service — one
+  # private network across the registrar (master) and devices fleets, so
+  # VS devices may sit in different physical locations and still reach
+  # the master's endpoints (REGISTRAR_URL, the gateway, the queue).
+  # Per-device overlay (DECIDED, epic j7g): NO subnet routes, NO exit
+  # node; the tailnet ACLs deny the funnel node attribute for all VS
+  # tags — the overlay is reachable only from the tailnet itself, and
+  # this service publishes nothing.
+  #
+  # Image: official tailscale/tailscale at a PINNED tag (never :latest;
+  # arm64 manifest verified in the registry index 2026-10-01). Alpine-
+  # based — the kill -0 1 healthcheck shell exists.
+  # network_mode host: tailscaled manages the host netns (this is the
+  # containerboot contract shape); no ports section is meaningful under
+  # host networking and none is declared.
+  #
+  # NO ${VAR} substitution (supervisor compose): TS_AUTHKEY (per-device
+  # auth key, pre-tagged tag:vs-agent, reusable — owner-minted) arrives
+  # as a balenaCloud SERVICE-scoped variable on the tailscale service
+  # only (keeps the secret out of sibling containers), and TS_HOSTNAME
+  # (the MagicDNS machine name, e.g. the device's balena name) arrives
+  # as a DEVICE-scoped variable — never hardcoded here: the devices
+  # fleet is N devices from one compose. Both are documented in
+  # docs/balena-devices-runbook.md.
+  #
+  # ts-state volume: tailscaled identity persists across container
+  # restarts — without it every restart mints a NEW tailnet node
+  # (containerboot's TS_STATE_DIR contract).
+  #
+  # /dev/net/tun passthrough (6c2 canary fix, 2026-10-01): balenaOS
+  # containers do NOT inherit host /dev — the AC1 pre-flight proved the
+  # node present on both live hosts (crw-rw-rw- 10,200, module builtin
+  # to the 6.12.94-v8 balenaOS 8 kernel) yet the container on release
+  # 4373489 still fell back to --tun=userspace-networking
+  # (tstun: "error initializing tun dev stats polling: no such
+  # device"), which cannot accept inbound tailnet traffic. The
+  # passthrough is load-bearing, not belt-and-braces: containerboot's
+  # own ensureTunFile mknod fallback requires CAP_MKNOD, which this
+  # service deliberately does not grant. The kernel-modules feature
+  # label stays for forward-proofing (a future host whose tun is
+  # modular).
+  #
+  # TS_USERSPACE: "false" — containerboot at v1.102.5 defaults
+  # UserspaceMode TRUE (cmd/containerboot/settings.go:111 —
+  # def.Bool(os.Getenv("TS_USERSPACE"), true)); without this explicit
+  # override the passthrough alone would still boot userspace. Kernel
+  # tun is what accepts inbound tailnet connections.
+  #
+  # TS_BOOT_TIMEOUT: 24h — v1.102.5's default 60s boot deadline expires
+  # the IPN-bus watch on a keyless NeedsLogin park (containerboot exits
+  # 1, supervisor restarts — the ~61s loop pinned live on release
+  # 4373489: 157 restarts on optimus-prime, 34 on the master). A long
+  # deadline makes the keyless state a benign park instead: container
+  # Running/healthy, unjoined, until the owner's TS_AUTHKEY lands —
+  # the supervisor then recreates the container with the new env and
+  # the join evidence starts. The variable is structural (not a
+  # secret) and safe in compose.
+  #
+  #   - Healthcheck is process liveness only: join state (tailscale status
+  #     showing the tailnet IP) is CANARY evidence, not a healthcheck
+  #     question — same marker-vs-liveness split as the rest of this app.
+  #
+  # j7g.1 SERVE FORM (the owner's AC3 live-leg origin decision — the same
+  # serve-only TLS edge pattern the master's lnf build established): the
+  # devices fleet's tailscale service becomes a BUILD (images/tailscale-devices/Dockerfile,
+  # FROM the same pinned v1.102.5) baking serve-config.json, pointed at by
+  # TS_SERVE_CONFIG. The devices fleet is N devices from one compose, so
+  # the config keys the served surface on the ${TS_CERT_DOMAIN} PLACEHOLDER
+  # — containerboot substitutes each node's own MagicDNS FQDN at apply time
+  # (verified from the pinned tag's source, cmd/containerboot/serve.go
+  # readServeConfig + main.go's netmap certDomains) — each device serves
+  # its agent origin at https://<device>.tailb7207e.ts.net:9900 with its
+  # own Let's Encrypt certificate. ACLs govern access (the tag:vs-master
+  # -> tag:vs-agent accept the owner's policy already carries); zero new
+  # firewall surface — the serve edge publishes nothing at a host port.
+  tailscale:
+    build:
+      context: ../../..
+      dockerfile: images/tailscale-devices/Dockerfile
+    network_mode: host
+    cap_add:
+      - net_admin
+      - net_raw
+    devices:
+      - /dev/net/tun
+    environment:
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_USERSPACE: "false"
+      TS_BOOT_TIMEOUT: "24h"
+      # j7g.1: the baked serve config's in-container path (the same
+      # mechanism the master's compose uses for its serve edge).
+      TS_SERVE_CONFIG: /serve-config.json
+    volumes:
+      - ts-state:/var/lib/tailscale
+    labels:
+      io.balena.features.kernel-modules: "1"
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    stop_grace_period: 30s
+    stop_signal: SIGTERM
+    restart: always
+
+volumes:
+  agent-data:
+  # j7g 6c2: tailscaled state (tailnet identity survives restarts).
+  ts-state:

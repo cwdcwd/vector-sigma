@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { loadCatalog } from '../../scripts/image-catalog.mjs';
 
 /**
  * Balena Dockerfile builder-contract guard (fleet-ops-f57.21).
@@ -17,15 +18,17 @@ import { describe, expect, it } from 'vitest';
  * (note linux_ with the EMPTY arch). The fix derives the arch at build
  * time from uname -m instead. This guard pins the contract: NO
  * TARGETARCH/TARGETPLATFORM token may appear (declared or interpolated)
- * in ANY Dockerfile under balena/** — present or future.
+ * in ANY Dockerfile under balena/** or named by images.json — present or
+ * future. (Releases now ship CI-built prebuilts, but the arch derivation
+ * stays builder-agnostic so any image can still build under either.)
  *
  * Full-line comments are stripped before scanning: documentation comments
  * legitimately mention these tokens (this file's own history lives in the
- * Dockerfile.scotty header), only live instructions bind.
+ * images/scotty/Dockerfile header), only live instructions bind.
  */
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '../..');
-const balenaDir = path.join(repoRoot, 'balena');
+const imagesDir = path.join(repoRoot, 'images');
 
 /** BuildKit-only, auto-populated ARG tokens — banned in balena Dockerfiles. */
 const FORBIDDEN_TOKENS = ['TARGETARCH', 'TARGETPLATFORM'] as const;
@@ -38,27 +41,31 @@ function stripComments(raw: string): string {
     .join('\n');
 }
 
-/** Recursively collect every Dockerfile* under balena/** (sorted for stable titles). */
+/** Recursively collect every Dockerfile* under images/** (sorted for stable titles). */
 function collectDockerfiles(dir: string): string[] {
   const out: string[] = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) out.push(...collectDockerfiles(full));
     // Dockerfile* prefix: catches bare `Dockerfile` AND stage-suffixed
-    // variants (`Dockerfile.scotty`) — the suffix form is where f57.21 lived.
+    // variants (`images/scotty/Dockerfile`) — the suffix form is where f57.21 lived.
     else if (entry.isFile() && entry.name.startsWith('Dockerfile')) out.push(full);
   }
   return out.sort();
 }
 
-const dockerfiles = collectDockerfiles(balenaDir);
+const catalogDockerfiles = Object.values(
+  loadCatalog(repoRoot).components as Record<string, { dockerfile: string }>,
+).map((c) => path.join(repoRoot, c.dockerfile));
+const dockerfiles = [...new Set([...collectDockerfiles(imagesDir), ...catalogDockerfiles])].sort();
 
 describe('balena builder contract: Dockerfile inventory', () => {
-  it('guards a non-empty set of balena Dockerfiles (guard is not vacuous)', () => {
-    // 8 Dockerfiles exist at f57.21; if this drops to zero the recursion or
-    // the repo layout changed and the per-file guard below would silently
-    // stop covering anything.
-    expect(dockerfiles.length).toBeGreaterThanOrEqual(8);
+  it('guards every image Dockerfile (guard is not vacuous)', () => {
+    // 9 catalog images from 9 Dockerfiles; if the inventory shrinks below
+    // the catalog, the per-file guard below would silently stop covering
+    // a shipped image.
+    expect(dockerfiles.length).toBeGreaterThanOrEqual(9);
+    for (const df of catalogDockerfiles) expect(dockerfiles).toContain(df);
   });
 });
 

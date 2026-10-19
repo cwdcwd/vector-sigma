@@ -10,15 +10,14 @@
     "registrant"
   ],
   "scripts": {
-    "build": "npm run build -w @vector-sigma/shared && npm run build -w @vector-sigma/registrar && npm run build -w @vector-sigma/registrant && tsc -p deploy/tsconfig.json",
+    "build": "npm run build -w @vector-sigma/shared && npm run build -w @vector-sigma/registrar && npm run build -w @vector-sigma/registrant && tsc -p test/e2e/tsconfig.json",
     "test": "npm run test -w @vector-sigma/registrar && npm run test -w @vector-sigma/registrant",
     "db:generate": "npm run db:generate -w @vector-sigma/registrar"
   },
   "engines": {
     "node": ">=22"
   },
-  "dependencies": {
-    "@fastify/multipart": "10.1.2",
+  "devDependencies": {
     "yaml": "^2.9.1"
   }
 }

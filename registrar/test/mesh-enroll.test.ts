@@ -21,9 +21,8 @@ import { describe, expect, it } from 'vitest';
  *      the alias is live AND the bundle carries it (the f57.14
  *      sentinel path); REFUSE when the alias is live but the bundle
  *      carries nothing (orphan guard).
- *   4. The CLI is vendored byte-exact (drift-pinned, the e5o.5
- *      pattern) and baked into the primus image at
- *      /usr/local/bin/vs-mesh-enroll.
+ *   4. The CLI (images/common/bin/vs-mesh-enroll.py, the only copy) is baked
+ *      into the primus image at /usr/local/bin/vs-mesh-enroll.
  *   5. The CLI reads auth ONLY from env/bundle (MESH_ENROLL_KEY) —
  *      never from image layers; stdlib-only imports.
  */
@@ -41,8 +40,8 @@ function exists(rel: string): boolean {
 const moduleSrc = read('registrar/src/mesh-enroll.ts');
 const appSrc = read('registrar/src/app.ts');
 const sharedSrc = read('shared/src/index.ts');
-const cliSrc = read('scripts/vs-mesh-enroll.py');
-const dockerfile = read('balena/registrar/Dockerfile.hermes');
+const cliSrc = read('images/common/bin/vs-mesh-enroll.py');
+const dockerfile = read('images/hermes/Dockerfile');
 
 describe('mesh-enroll sentinel shape is hardcoded server-side (j7g.1)', () => {
   it('the minted-shape constants exist and lock the mesh surface', () => {
@@ -156,18 +155,10 @@ describe('mesh-enroll API contract: no key material to the caller (j7g.1)', () =
   });
 });
 
-describe('vs-mesh-enroll CLI: thin, bundle-auth, drift-pinned (j7g.1)', () => {
-  it('is vendored byte-exact (scripts/ -> balena/registrar/)', () => {
-    expect(exists('scripts/vs-mesh-enroll.py')).toBe(true);
-    expect(exists('balena/registrar/vs-mesh-enroll.py')).toBe(true);
-    expect(
-      cliSrc === read('balena/registrar/vs-mesh-enroll.py'),
-      'balena/registrar/vs-mesh-enroll.py drifted from scripts/vs-mesh-enroll.py',
-    ).toBe(true);
-  });
-
-  it('is baked into the primus image at /usr/local/bin/vs-mesh-enroll', () => {
-    expect(dockerfile).toMatch(/COPY vs-mesh-enroll\.py \/usr\/local\/bin\/vs-mesh-enroll/);
+describe('vs-mesh-enroll CLI: thin, bundle-auth, single-source (j7g.1)', () => {
+  it('is baked into the primus image at /usr/local/bin/vs-mesh-enroll from scripts/', () => {
+    expect(exists('images/common/bin/vs-mesh-enroll.py')).toBe(true);
+    expect(dockerfile).toMatch(/COPY images\/common\/bin\/vs-mesh-enroll\.py \/usr\/local\/bin\/vs-mesh-enroll/);
     expect(dockerfile).toMatch(/chmod 0755 \/usr\/local\/bin\/vs-mesh-enroll/);
   });
 

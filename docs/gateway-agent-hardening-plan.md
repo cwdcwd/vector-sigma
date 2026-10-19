@@ -1,7 +1,7 @@
 # Gateway & agent hardening plan
 
-**Status:** proposed · **Scope:** the LiteLLM gateway image (`balena/registrar`), the
-Hermes device/agent templates (`balena/devices`, `deploy/`), and operator docs.
+**Status:** proposed · **Scope:** the LiteLLM gateway image (`platforms/balena/registrar`), the
+Hermes device/agent templates (`platforms/balena/devices`, `platforms/compose`), and operator docs.
 
 This plan carries over lessons from running the same stack — LiteLLM gateway + Ollama Cloud +
 Hermes agents over A2A — in a production fleet during October 2026. Every item is expressed as

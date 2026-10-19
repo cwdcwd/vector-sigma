@@ -53,8 +53,8 @@ const WORKFLOWS = [
 
 /** Image path -> repo source the bake COPYs from (the bytes the image carries). */
 const IMAGE_TO_SOURCE: Record<string, string> = {
-  '/usr/local/bin/postgres-wrapper.sh': 'balena/registrar/postgres-entrypoint.sh',
-  '/usr/local/bin/gate.sh': 'balena/devices/agent/gate.sh',
+  '/usr/local/bin/postgres-wrapper.sh': 'images/postgres/postgres-entrypoint.sh',
+  '/usr/local/bin/gate.sh': 'images/agent/gate.sh',
 };
 
 const appFor: Record<string, string> = {
@@ -178,12 +178,12 @@ describe('smoke assertions vs real bake sources (findings 4-5 classes)', () => {
     // prints nothing and the needle grep fails. (The file carries the
     // probe inside a double-quoted bash string, so the inner quotes are
     // backslash-escaped bytes — assert the byte-exact form.)
-    expect(smoke).toContain('require(\\"/app/dist/config.js\\").loadConfig()');
-    expect(smoke).not.toContain('require(\\"/app/dist/config.js\\")}catch');
+    expect(smoke).toContain('require(\\"/app/registrar/dist/config.js\\").loadConfig()');
+    expect(smoke).not.toContain('require(\\"/app/registrar/dist/config.js\\")}catch');
   });
 
   it('the registrant probe runs the entrypoint — and that works because registrant/src/index.ts calls loadConfig() at module scope', () => {
-    const smokeCmdRegistrar = 'node /app/dist/index.js 2>&1 | head -3';
+    const smokeCmdRegistrar = 'node /app/registrant/dist/index.js 2>&1 | head -3';
     expect(smoke).toContain(smokeCmdRegistrar);
     const registrantIndex = read('registrant/src/index.ts');
     expect(
@@ -196,8 +196,8 @@ describe('smoke assertions vs real bake sources (findings 4-5 classes)', () => {
   it('fail-loud needles exist in the sources the images bake', () => {
     expect(read('registrar/src/config.ts')).toContain('invalid registrar configuration');
     expect(read('registrant/src/config.ts')).toContain('invalid registrant configuration');
-    expect(read('balena/registrar/postgres-entrypoint.sh')).toContain('LITELLM_PG_PASSWORD is required');
-    expect(read('balena/registrar/litellm-entrypoint.sh')).toContain('LITELLM_PG_PASSWORD is required');
+    expect(read('images/postgres/postgres-entrypoint.sh')).toContain('LITELLM_PG_PASSWORD is required');
+    expect(read('images/litellm/litellm-entrypoint.sh')).toContain('LITELLM_PG_PASSWORD is required');
   });
 });
 

@@ -2,7 +2,7 @@
 /**
  * vs-github-identity behavioral harness (fleet-ops-e5o.5).
  *
- * Drives the REAL wrapper (scripts/vs-github-identity.py) end to end
+ * Drives the REAL wrapper (images/common/bin/vs-github-identity.py) end to end
  * against a loopback mock of the GitHub API with a REAL RSA keypair
  * (openssl-generated per run): proves the JWT mint (RS256, both
  * signing paths), the installation-token mint, whoami's shape, the

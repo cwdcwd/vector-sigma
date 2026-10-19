@@ -26,17 +26,17 @@ import { describe, expect, it } from 'vitest';
  *      cert domain on ANY node type at the pinned tag; the devices
  *      fleet has served on the placeholder form since j7g.1) — NO
  *      MagicDNS FQDN is baked into any image layer.
- *   2. Dockerfile.tailscale: FROM the same pinned tag the devices
+ *   2. images/tailscale/Dockerfile: FROM the same pinned tag the devices
  *      fleet's stock service uses (never :latest); the serve config
  *      is baked (the supervisor cannot bind-mount — the f57.12
  *      precedent), never a runtime fetch.
- *   3. balena/registrar compose: the tailscale service BUILDS the
+ *   3. platforms/balena/registrar compose: the tailscale service BUILDS the
  *      serve image and declares TS_SERVE_CONFIG; NO caddy service; no
  *      caddy-data volume; registrar/litellm/scotty publish loopback
  *      ONLY (no unprefixed host publishes anywhere).
- *   4. balena/devices compose (j7g.1, the AC3 serve form): the
+ *   4. platforms/balena/devices compose (j7g.1, the AC3 serve form): the
  *      tailscale service BUILDS the devices' own serve image
- *      (Dockerfile.tailscale + serve-config.json keyed on the
+ *      (images/tailscale/Dockerfile + serve-config.json keyed on the
  *      ${TS_CERT_DOMAIN} placeholder — N devices from one compose)
  *      fronting the agent's A2A origin at :9900; the agent publishes
  *      loopback-only. The master/devices delta is now WHAT each edge
@@ -76,19 +76,30 @@ function serviceBlock(code: string, name: string): string {
 }
 
 const registrarCompose = stripComments(
-  read('balena/registrar/docker-compose.yml'),
+  read('platforms/balena/registrar/docker-compose.yml'),
 );
-const devicesCompose = stripComments(read('balena/devices/docker-compose.yml'));
-const deployCompose = stripComments(read('deploy/compose.yaml'));
+const devicesCompose = stripComments(read('platforms/balena/devices/docker-compose.yml'));
+const deployCompose = stripComments(read('platforms/compose/compose.yaml'));
 
 describe('serve-config.json: the containerboot v1.102.5 dialect (lnf)', () => {
-  const sc = JSON.parse(read('balena/registrar/serve-config.json'));
+  const sc = JSON.parse(read('images/tailscale/serve-config.json'));
 
   it('fronts exactly the three management surfaces on the tailnet ports', () => {
-    expect(Object.keys(sc.TCP).sort()).toEqual(['443', '8443', '8444']);
+    expect(Object.keys(sc.TCP).sort()).toEqual(['3326', '443', '8443', '8444']);
     for (const port of ['443', '8443', '8444']) {
       expect(sc.TCP[port]).toEqual({ HTTPS: true });
     }
+  });
+
+  // PR #87 review (kangbot, 5575541043): #89 bound dolt's host publish to
+  // loopback, which cut device bd clients off the queue. The tailnet is the
+  // secured path: a raw TCP forward of the tailnet :3326 to the loopback
+  // publish (Dolt speaks the MySQL wire protocol, not HTTP — no Web
+  // handler). Reachable only from tailnet peers the ACL admits
+  // (tag:vs-agent -> tag:vs-master); never the LAN.
+  it('forwards the queue (dolt) as raw TCP on the tailnet :3326 -> loopback 3326 only', () => {
+    expect(sc.TCP['3326']).toEqual({ TCPForward: '127.0.0.1:3326' });
+    expect(Object.keys(sc.Web)).not.toContain('${TS_CERT_DOMAIN}:3326');
   });
 
   it('keys Web by SNI:port on the ${TS_CERT_DOMAIN} placeholder (1py.14 — no baked FQDN)', () => {
@@ -106,14 +117,14 @@ describe('serve-config.json: the containerboot v1.102.5 dialect (lnf)', () => {
   });
 
   it('carries no tailnet-qualified name (the exposure fix, plan PR #60)', () => {
-    expect(read('balena/registrar/serve-config.json')).not.toMatch(
+    expect(read('images/tailscale/serve-config.json')).not.toMatch(
       /[a-z0-9-]+\.[a-z0-9-]+\.ts\.net/i,
     );
   });
 });
 
-describe('Dockerfile.tailscale: the master serve image (lnf)', () => {
-  const df = read('balena/registrar/Dockerfile.tailscale');
+describe('images/tailscale/Dockerfile: the master serve image (lnf)', () => {
+  const df = read('images/tailscale/Dockerfile');
   const dfCode = stripComments(df);
 
   it('pins the same tailscale tag the devices fleet uses (never :latest)', () => {
@@ -122,14 +133,14 @@ describe('Dockerfile.tailscale: the master serve image (lnf)', () => {
   });
 
   it('bakes the serve config (the supervisor cannot bind-mount)', () => {
-    expect(dfCode).toMatch(/COPY serve-config\.json \/serve-config\.json/);
+    expect(dfCode).toMatch(/COPY images\/tailscale(-devices)?\/serve-config\.json \/serve-config\.json/);
   });
 });
 
-describe('balena/registrar compose: the serve-only edge (lnf)', () => {
+describe('platforms/balena/registrar compose: the serve-only edge (lnf)', () => {
   it('the tailscale service BUILDS the serve image and declares TS_SERVE_CONFIG', () => {
     const ts = serviceBlock(registrarCompose, 'tailscale');
-    expect(ts).toMatch(/dockerfile: Dockerfile\.tailscale/);
+    expect(ts).toMatch(/dockerfile: images\/tailscale(-devices)?\/Dockerfile/);
     expect(ts).toMatch(/TS_SERVE_CONFIG: \/serve-config\.json/);
   });
 
@@ -149,23 +160,26 @@ describe('balena/registrar compose: the serve-only edge (lnf)', () => {
   });
 
   it('publishes nothing to the LAN front door (IP-prefixed only)', () => {
-    // every ports entry must carry the 127.0.0.1 prefix; dolt's :3326 is
-    // the one documented exception (the queue contract, lane D5).
+    // every ports entry carries the 127.0.0.1 prefix — dolt included since
+    // #89; devices reach the queue through the serve edge's tailnet :3326
+    // TCP forward (asserted above), never a LAN publish.
     const publishes = registrarCompose.match(/- "[^"]+:\d+"$/gm) ?? [];
+    expect(publishes.length).toBeGreaterThan(0);
     for (const p of publishes) {
-      expect(p.startsWith('- "127.0.0.1:') || p === '- "3326:3306"').toBe(true);
+      expect(p.startsWith('- "127.0.0.1:'), p).toBe(true);
     }
+    expect(publishes).toContain('- "127.0.0.1:3326:3306"');
   });
 });
 
-describe('balena/devices compose: the agent-origin serve edge (j7g.1 — the AC3 serve form)', () => {
+describe('platforms/balena/devices compose: the agent-origin serve edge (j7g.1 — the AC3 serve form)', () => {
   it('the tailscale service BUILDS the serve image and declares TS_SERVE_CONFIG', () => {
     // j7g.1 (the owner's AC3 live-leg origin decision): the devices
     // fleet's tailscale service becomes a BUILD — the same serve-only
     // TLS edge pattern the master's lnf build established, fronting
     // the ONE device surface the mesh needs: the agent's A2A origin.
     const ts = serviceBlock(devicesCompose, 'tailscale');
-    expect(ts).toMatch(/dockerfile: Dockerfile\.tailscale/);
+    expect(ts).toMatch(/dockerfile: images\/tailscale(-devices)?\/Dockerfile/);
     expect(ts).toMatch(/TS_SERVE_CONFIG: \/serve-config\.json/);
   });
 
@@ -189,7 +203,7 @@ describe('balena/devices compose: the agent-origin serve edge (j7g.1 — the AC3
     // verified at the pinned v1.102.5 tag). The MASTER's config stays
     // literal (single device, known name) — this is the ONE deliberate
     // dialect delta between the two serve configs.
-    const sc = JSON.parse(read('balena/devices/serve-config.json'));
+    const sc = JSON.parse(read('images/tailscale-devices/serve-config.json'));
     expect(Object.keys(sc.TCP)).toEqual(['9900']);
     expect(sc.TCP['9900']).toEqual({ HTTPS: true });
     expect(Object.keys(sc.Web)).toEqual(['${TS_CERT_DOMAIN}:9900']);
@@ -198,11 +212,11 @@ describe('balena/devices compose: the agent-origin serve edge (j7g.1 — the AC3
     );
   });
 
-  it('Dockerfile.tailscale pins the same tailscale tag both fleets build from', () => {
-    const dfCode = stripComments(read('balena/devices/Dockerfile.tailscale'));
+  it('images/tailscale/Dockerfile pins the same tailscale tag both fleets build from', () => {
+    const dfCode = stripComments(read('images/tailscale-devices/Dockerfile'));
     expect(dfCode).toMatch(/FROM tailscale\/tailscale:v1\.102\.5/);
     expect(dfCode).not.toMatch(/:latest/);
-    expect(dfCode).toMatch(/COPY serve-config\.json \/serve-config\.json/);
+    expect(dfCode).toMatch(/COPY images\/tailscale(-devices)?\/serve-config\.json \/serve-config\.json/);
   });
 });
 
@@ -225,9 +239,9 @@ describe('deploy twin parity: loopback publishes, no caddy (lnf)', () => {
 describe('retired machinery is GONE repo-side (lnf, AC5)', () => {
   it('no compose carries basic_auth or SCOTTY_BASIC_AUTH_HASH', () => {
     for (const rel of [
-      'balena/registrar/docker-compose.yml',
-      'balena/devices/docker-compose.yml',
-      'deploy/compose.yaml',
+      'platforms/balena/registrar/docker-compose.yml',
+      'platforms/balena/devices/docker-compose.yml',
+      'platforms/compose/compose.yaml',
     ]) {
       const code = stripComments(read(rel));
       expect(code, rel).not.toMatch(/SCOTTY_BASIC_AUTH_HASH/);
@@ -238,14 +252,14 @@ describe('retired machinery is GONE repo-side (lnf, AC5)', () => {
   it('the Caddyfile and Dockerfile.caddy are deleted', () => {
     let caddyfile: string | null = null;
     try {
-      caddyfile = read('balena/registrar/Caddyfile');
+      caddyfile = read('platforms/balena/registrar/Caddyfile');
     } catch {
       caddyfile = null;
     }
     expect(caddyfile).toBeNull();
     let dockerfile: string | null = null;
     try {
-      dockerfile = read('balena/registrar/Dockerfile.caddy');
+      dockerfile = read('platforms/balena/registrar/Dockerfile.caddy');
     } catch {
       dockerfile = null;
     }

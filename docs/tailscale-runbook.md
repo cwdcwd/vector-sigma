@@ -97,7 +97,11 @@ exit-1 restart-loop instead of a benign park).
    cannot talk to each other over the tailnet (the first overlay
    activation proved it: control-plane pongs while the data plane
    stayed dark). The owner's live policy already carries it; this
-   example now matches.
+   example now matches. The same rule is what admits devices to the
+   queue: Dolt is loopback-only on the master (#89) and the serve edge
+   forwards the tailnet `:3326` to it as raw TCP, so bd clients on
+   `tag:vs-agent` devices (and the owner, via the first rule) reach it at
+   `<master>.<tailnet>.ts.net:3326` and nothing on the LAN can.
 4. **Set the balenaCloud variables** (dashboard → device/service
    pages):
    - `TS_HOSTNAME` — **device-scoped**, per device: the MagicDNS
@@ -197,7 +201,7 @@ Caddy is retired from the composition; the master's tailscale service
 IS the TLS front door. What shipped:
 
 - **The master's tailscale service becomes a BUILD**:
-  `balena/registrar/Dockerfile.tailscale` (FROM the same pinned
+  `images/tailscale/Dockerfile` (FROM the same pinned
   `v1.102.5`) bakes `serve-config.json`; the compose sets
   `TS_SERVE_CONFIG=/serve-config.json`. ~~The devices fleet's tailscale
   service stays on the stock image~~ — superseded by the j7g.1 serve
@@ -214,8 +218,9 @@ IS the TLS front door. What shipped:
 - **Loopback-only publishes**: registrar/litellm/scotty gain
   `127.0.0.1`-prefixed host publishes (the supervisor dialect this
   lane was gated to exercise). The LAN front door (80/443/8443/8444)
-  is dark from this release on; only dolt's `:3326` stays
-  LAN-reachable (the bd queue contract).
+  is dark from this release on, dolt's `:3326` included (#89): bd
+  clients reach the queue at the master's tailnet `:3326`, which the
+  serve config forwards as raw TCP to dolt's loopback publish.
 - **Let's Encrypt certificates** auto-provision + renew inside
   tailscaled once the tailnet has **HTTPS enabled** (admin console →
   DNS → MagicDNS → HTTPS Certificates) — the ONE owner prerequisite.
@@ -249,7 +254,11 @@ cannot resolve ts.net names):
 - [ ] `https://vector-sigma.tailb7207e.ts.net:8444/api/projects` →
   200 (no credentials — the ACL is the lock now).
 - [ ] LAN front door dark: `80/443/8443/8444` REFUSED from a LAN host
-  at the device IP (the AC3 contrast; dolt `:3326` still answers).
+  at the device IP (the AC3 contrast) — and `:3326` REFUSED on the LAN too.
+- [ ] Queue over the tailnet: from a `tag:vs-agent` device (or the owner's
+  machine), `nc -zv <master>.<tailnet>.ts.net 3326` connects and
+  `bd list` against `--server-host <master>.<tailnet>.ts.net --server-port
+  3326` returns the queue (the serve edge's TCP forward, PR #87).
 - [ ] On-device loopback probes: `127.0.0.1:3000/healthz`,
   `127.0.0.1:4000` (gateway port), `127.0.0.1:3306/api/projects`
   answer from the device's host shell.
@@ -275,9 +284,9 @@ The live enroll's `origin_url` is the SERVE form
 (`https://<device>.tailb7207e.ts.net:9900`), never a tailnet IP +
 firewall, never a `:9900` host publish.
 
-What ships (repo-side, `balena/devices/`):
+What ships (repo-side, `platforms/balena/devices/`):
 
-- **`Dockerfile.tailscale` + `serve-config.json`** — the devices
+- **`images/tailscale/Dockerfile` + `serve-config.json`** — the devices
   fleet's tailscale service becomes a BUILD (FROM the same pinned
   `v1.102.5`), baking a serve config that fronts `:9900` at the
   node's own MagicDNS name, proxying the agent's loopback publish.
@@ -344,8 +353,10 @@ traffic — the master's own MagicDNS name and each enrolled device's
 serve name. Its container DNS chain has no ts.net route (the lrb
 canary verdict class — accept-dns cannot reach the host dnsmasq
 chain from tailscaled's mount namespace), so EVERY enrolled device
-needs a static pin line on the litellm service in
-`balena/registrar/docker-compose.yml`:
+needs a static pin line on the litellm service's `x-balena` block in
+`stack/registrar.yaml` (rendered into
+`platforms/balena/registrar/docker-compose.yml` by
+`node scripts/render-stack.mjs`):
 
 ```
 extra_hosts:
@@ -355,7 +366,7 @@ extra_hosts:
 
 `extra_hosts` has no `${VAR}` substitution under the supervisor
 compose, so ONE LINE PER ENROLLED DEVICE IS THE MECHANISM: each new
-enroll = one compose line (the device's tailnet IP; `tailscale
+enroll = one spec line, re-rendered (the device's tailnet IP; `tailscale
 status` on the device host names it) + a master redeploy. This is
 the N-devices scaling cost, documented at the compose site and in
 the README's enroll section; the pin test
