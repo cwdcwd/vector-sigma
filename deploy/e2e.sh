@@ -529,7 +529,12 @@ ac8_grace_self_heal() {
 ac9_litellm_runtime_spendlogs() {
   note "AC9c (1py.15): LiteLLM runtime plain, streaming, tool-call SpendLogs uniqueness against local mock"
   local base="http://127.0.0.1:4001"
-  local key="sk-runtime-e2e-test"
+  local key
+  key="$(grep -E '^LITELLM_RUNTIME_MASTER_KEY=' "$ENV_FILE" | cut -d= -f2-)"
+  if [ -z "$key" ]; then
+    fail "AC9c runtime gateway" "LITELLM_RUNTIME_MASTER_KEY missing from $ENV_FILE"
+    return
+  fi
   local deadline=$((SECONDS + 180)) code=""
   until code="$(curl -s -o /dev/null -w '%{http_code}' -m 5 "$base/health/liveliness" 2>/dev/null)" \
     && [ "$code" = "200" ]; do
@@ -734,23 +739,25 @@ ac9b_litellm_db_smoke() {
 #     "secret_fields" (raw captured headers) is dropped entirely. This
 #     masking is unconditional — it does not depend on the prompt-storage
 #     flag.
-#   - The probe's completion is a local mock (mock_response) against an
-#     explicitly-configured model group: no provider/upstream traffic
-#     involves the wildcard, and no real credential is ever used — only
-#     synthetic canaries. Neither the request nor the stored body is
-#     printed.
+#   - The probe's completion rides the isolated spend-log runtime (the same
+#     pinned 1.105.1 image as the gateway) and its explicitly-configured
+#     `runtime-spendlogs-test` model whose only upstream is the local mock
+#     Ollama service: no provider/upstream traffic, and no real credential
+#     is ever used — only synthetic canaries. Neither the request nor the
+#     stored body is printed.
 ac9c_litellm_spend_log_redaction() {
   note "AC9c: LiteLLM spend-log request-body credential redaction (upstream #43635 behavior)"
-  local base="$GATEWAY_LB"
+  # Use the isolated upgraded LiteLLM fixture, whose only upstream is the local mock.
+  local base="http://127.0.0.1:4001"
   local call_id="e2e-redaction-$(date +%s)-$$"
   local request_body=/tmp/e2e-ac9c-redaction-request.json
   local row_body=/tmp/e2e-ac9c-redaction-row.json
   local list_body=/tmp/e2e-ac9c-redaction-list.json
   local status lookup_status config_status
   local master
-  master="$(grep -E '^LITELLM_MASTER_KEY=' "$ENV_FILE" | cut -d= -f2-)"
+  master="$(grep -E '^LITELLM_RUNTIME_MASTER_KEY=' "$ENV_FILE" | cut -d= -f2-)"
   if [ -z "$master" ]; then
-    fail AC9c "LITELLM_MASTER_KEY missing from $ENV_FILE"
+    fail AC9c "LITELLM_RUNTIME_MASTER_KEY missing from $ENV_FILE"
     return
   fi
 
@@ -788,9 +795,8 @@ ac9c_litellm_spend_log_redaction() {
   node -e '
     const fs = require("fs");
     const body = {
-      model: "ollama-cloud/glm-5.3",
+      model: "runtime-spendlogs-test",
       messages: [{ role: "user", content: "synthetic redaction probe (AC9c)" }],
-      mock_response: "e2e mock completion — no upstream call",
       aws_access_key_id: "AKIACANARY_E2E_ONLY",
       aws_secret_access_key: "SECRETCANARY_E2E_ONLY",
       aws_session_token: "TOKENCANARY_E2E_ONLY",
@@ -812,12 +818,15 @@ ac9c_litellm_spend_log_redaction() {
       -H 'Content-Type: application/json' \
       --data-binary "@$request_body" 2>/dev/null || true)"
   if [ "$status" != "200" ]; then
-    fail AC9c "mock completion returned HTTP ${status:-none}; expected 200 — request suppressed"
+    fail AC9c "isolated mock completion returned HTTP ${status:-none}; expected 200 — response body suppressed"
+    # Print only filtered diagnostic status from container logs. Do not emit
+    # request or response bodies, which may carry the synthetic canaries.
+    docker logs "$PROJECT-litellm-runtime-1" 2>&1 | grep -E 'Invalid API key|No connected DB|ERROR' | tail -5 || true
     ac9c_restore_prompt_storage
     rm -f "$request_body" "$row_body" "$list_body"
     return
   fi
-  pass "AC9c mock completion" "explicit model group served by mock_response (HTTP 200); no upstream/provider traffic"
+  pass "AC9c isolated completion" "upgraded runtime model served by local Ollama mock (HTTP 200); no external provider traffic"
 
   # The spend row is written by an async logging task: poll before giving up.
   # Primary lookup rides /spend/logs/ui/<request_id>; if that misses, fall
