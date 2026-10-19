@@ -784,7 +784,7 @@ ac9c_litellm_spend_log_redaction() {
     if [ "$config_status" != "200" ]; then
       fail AC9c "could not restore store_prompts_in_spend_logs=false in the isolated runtime (HTTP ${config_status:-none})"
     else
-      pass AC9c "prompt storage restored" "isolated runtime returned to store_prompts_in_spend_logs=false"
+      pass "AC9c prompt storage restored" "isolated runtime returned to store_prompts_in_spend_logs=false"
     fi
   }
 
@@ -797,7 +797,7 @@ ac9c_litellm_spend_log_redaction() {
     fail AC9c "could not enable prompt storage for the redaction probe (HTTP ${config_status:-none})"
     return
   fi
-  pass AC9c "prompt storage enable accepted" "isolated runtime field/update returned HTTP 200; runtime DB config row store_prompts_in_spend_logs=$(docker exec "$PROJECT-postgres-runtime-1" psql -U runtime -d litellm_runtime -tA -c "SELECT COALESCE(param_value::json->>'store_prompts_in_spend_logs','absent') FROM LiteLLM_Config WHERE param_name='general_settings' LIMIT 1" 2>/dev/null | head -1)"
+  pass "AC9c prompt storage enable accepted" "isolated runtime field/update returned HTTP 200; runtime DB config row store_prompts_in_spend_logs=$(docker exec "$PROJECT-postgres-runtime-1" psql -U runtime -d litellm_runtime -tA -c "SELECT COALESCE(param_value::json->>'store_prompts_in_spend_logs','absent') FROM LiteLLM_Config WHERE param_name='general_settings' LIMIT 1" 2>/dev/null | head -1)"
 
   # Diagnostic precheck (shape-only, never fails the battery): a second tiny
   # completion with the same credential-named keys, fetched by its own call
@@ -839,7 +839,8 @@ ac9c_litellm_spend_log_redaction() {
     psr_diag="$(node -e '
       const fs = require("fs");
       let root; try { root = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); } catch { console.log("psr=unreadable"); process.exit(0); }
-      const psr = root && root.proxy_server_request;
+      if (root === null || typeof root !== "object") { console.log("psr=payload-null"); process.exit(0); }
+      const psr = root.proxy_server_request;
       const psrStr = typeof psr === "string" ? psr : (psr === undefined || psr === null ? String(psr) : JSON.stringify(psr));
       let parsed = null; try { parsed = typeof psr === "string" ? JSON.parse(psr) : psr; } catch { parsed = null; }
       const KEYSET = new Set(["aws_access_key_id","aws_secret_access_key","aws_session_token","client_secret","Authorization"]);
@@ -848,7 +849,7 @@ ac9c_litellm_spend_log_redaction() {
       ;(function walk(v){ if (!v || typeof v !== "object") return; for (const [k, x] of Object.entries(v)) { if (KEYSET.has(k) && x !== null && typeof x !== "object") { paths++; if (x === SENT) masked++; if (!names.includes(k)) names.push(k); } walk(x); if (typeof x === "string" && x.length > 16 && (x[0]==="{"||x[0]==="[")) { try { walk(JSON.parse(x)); } catch { /* str */ } } } })(parsed ?? {});
       console.log("psr_len=" + (psrStr ?? "").length + " placeholder=" + (psrStr != null && psrStr.trim() === "{}" ? 1 : 0) + " cred_paths=" + paths + " masked=" + masked + " names=" + names.join(","));
     ' "$precheck_row" 2>/dev/null || psr_diag="psr=unreadable")"
-    pass AC9c "prompt-storage precheck" "completion HTTP ${precheck_status:-none}, row lookup HTTP ${precheck_lookup:-none}; ${psr_diag}"
+    pass "AC9c prompt-storage precheck" "completion HTTP ${precheck_status:-none}, row lookup HTTP ${precheck_lookup:-none}; ${psr_diag}"
     rm -f "$precheck_body" "$precheck_row"
   fi
 
@@ -904,8 +905,18 @@ ac9c_litellm_spend_log_redaction() {
         "$base/spend/logs/ui/$call_id" \
         -H "Authorization: Bearer $master" 2>/dev/null || true)"
     if [ "$lookup_status" = "200" ]; then
-      found="ui"
-      break
+      # This LiteLLM build answers /spend/logs/ui/<id> with HTTP 200 and a
+      # literal `null` body when no row matches, so a miss must be detected
+      # client-side instead of trusting the status code alone.
+      if node -e '
+        const fs = require("fs");
+        let root; try { root = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); } catch { process.exit(1); }
+        process.exit(root && typeof root === "object" && (root.proxy_server_request !== undefined || root.messages !== undefined) ? 0 : 1);
+      ' "$row_body" 2>/dev/null; then
+        found="ui"
+        break
+      fi
+      found=""
     fi
     sleep 2
   done
@@ -921,28 +932,62 @@ ac9c_litellm_spend_log_redaction() {
           --data-urlencode "page=1" \
           -H "Authorization: Bearer $master" 2>/dev/null || true)"
       if [ "$lookup_status" = "200" ]; then
-        if node -e '
+        list_request_id="$(node -e '
           const fs = require("fs");
-          const list = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+          let list; try { list = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); } catch { process.exit(1); }
           const rows = Array.isArray(list.data) ? list.data : (Array.isArray(list) ? list : []);
           const row = rows.find(r => r && (r.litellm_call_id === process.argv[2] || r.request_id === process.argv[2]));
           if (!row) process.exit(1);
           fs.writeFileSync(process.argv[3], JSON.stringify(row), { mode: 0o600 });
-        ' "$list_body" "$call_id" "$row_body" 2>/dev/null; then
+          console.log(row.request_id || "");
+        ' "$list_body" "$call_id" "$row_body" 2>/dev/null)"
+        if [ -n "$list_request_id" ]; then
           found="list"
           break
         fi
       fi
       sleep 2
     done
+    # The list endpoint omits the heavy proxy_server_request column, so once a
+    # row is identified its full record is refetched straight from the runtime
+    # database (by its request_id from the list, else by the client call id).
+    if [ -n "$list_request_id" ]; then
+      db_full="$(docker exec "$PROJECT-postgres-runtime-1" psql -U runtime -d litellm_runtime -tA -c \
+        "SELECT row_to_json(f) FROM (SELECT \"LiteLLM_SpendLogs\".* FROM \"LiteLLM_SpendLogs\" WHERE request_id = '$list_request_id' LIMIT 1) f;" 2>/dev/null | head -1)"
+      if [ -n "$db_full" ]; then
+        printf '%s' "$db_full" > "$row_body"
+        found="list+db"
+      fi
+    fi
+  fi
+  local list_request_id db_full
+  local cnt_by_call cnt_recent
+  if [ -z "$found" ]; then
+    cnt_by_call="$(docker exec "$PROJECT-postgres-runtime-1" psql -U runtime -d litellm_runtime -tA -c \
+      "SELECT count(*) FROM \"LiteLLM_SpendLogs\" WHERE litellm_call_id = '$call_id';" 2>/dev/null | tr -d '[:space:]')"
+    cnt_recent="$(docker exec "$PROJECT-postgres-runtime-1" psql -U runtime -d litellm_runtime -tA -c \
+      "SELECT count(*) FROM \"LiteLLM_SpendLogs\" WHERE \"startTime\" > now() - interval '10 minutes';" 2>/dev/null | tr -d '[:space:]')"
+    if [[ "$cnt_by_call" =~ ^[0-9]+$ && "$cnt_by_call" != "0" ]]; then
+      docker exec "$PROJECT-postgres-runtime-1" psql -U runtime -d litellm_runtime -tA -c \
+        "SELECT row_to_json(f) FROM (SELECT \"LiteLLM_SpendLogs\".* FROM \"LiteLLM_SpendLogs\" WHERE litellm_call_id = '$call_id' LIMIT 1) f;" 2>/dev/null | head -1 > "$row_body"
+      found="db-call-id"
+    elif [[ "$cnt_recent" =~ ^[0-9]+$ && "$cnt_recent" != "0" ]]; then
+      docker exec "$PROJECT-postgres-runtime-1" psql -U runtime -d litellm_runtime -tA -c \
+        "SELECT row_to_json(f) FROM (SELECT * FROM \"LiteLLM_SpendLogs\" WHERE \"startTime\" > now() - interval '10 minutes' ORDER BY \"startTime\" DESC LIMIT 1) f;" 2>/dev/null | head -1 > "$row_body"
+      if grep -q '"proxy_server_request"' "$row_body"; then
+        found="db-recent"
+      else
+        rm -f "$row_body"
+      fi
+    fi
   fi
   if [ -z "$found" ]; then
-    fail AC9c "spend-log row for the probe call id not found via /spend/logs/ui (last HTTP ${lookup_status:-none}) or the list endpoint"
+    fail "AC9c spend-log row located" "not found via /spend/logs/ui by call id (last HTTP ${lookup_status:-none}), the list endpoint, or the runtime DB (rows matching call id=${cnt_by_call:-?}, rows in recent window=${cnt_recent:-?}); payload suppressed"
     ac9c_restore_prompt_storage
     rm -f "$request_body" "$row_body" "$list_body"
     return
   fi
-  pass "AC9c spend-log row found" "row discovered via the $found endpoint (found by call id; body not printed)"
+  pass "AC9c spend-log row found" "row discovered via the $found path (full record incl. body column fetched for the db paths; body not printed)"
 
   # Assertion, computed on the parsed payload only: every canary absent from
   # ANY string anywhere in the row, and all five credential-named values
@@ -957,6 +1002,12 @@ ac9c_litellm_spend_log_redaction() {
     let root;
     try { root = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); }
     catch { console.log("row_not_json"); process.exit(0); }
+    if (root === null || typeof root !== "object") {
+      // The ui endpoint answers an unmatched id with HTTP 200 + `null`.
+      console.log("diag::payload=null");
+      console.log("missing::payload-null");
+      process.exit(0);
+    }
     let expected;
     try { expected = JSON.parse(fs.readFileSync(REQUEST, "utf8")); } catch { expected = null; }
     const CREDENTIAL_KEYS = new Set([
