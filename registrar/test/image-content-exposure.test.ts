@@ -86,10 +86,12 @@ describe('master serve-config.json: placeholder, not a live name (1py.14 slice 1
   });
 
   it('keeps the fronted surfaces identical to the pre-flip contract (443/8443/8444 HTTPS, loopback proxies)', () => {
-    expect(Object.keys(sc.TCP).sort()).toEqual(['443', '8443', '8444']);
+    expect(Object.keys(sc.TCP).sort()).toEqual(['3326', '443', '8443', '8444']);
     for (const port of ['443', '8443', '8444']) {
       expect(sc.TCP[port]).toEqual({ HTTPS: true });
     }
+    // The queue's tailnet path (PR #87 review): a loopback TCP forward.
+    expect(sc.TCP['3326']).toEqual({ TCPForward: '127.0.0.1:3326' });
     expect(sc.Web['${TS_CERT_DOMAIN}:443'].Handlers['/'].Proxy).toBe('http://127.0.0.1:3000');
     expect(sc.Web['${TS_CERT_DOMAIN}:8443'].Handlers['/'].Proxy).toBe('http://127.0.0.1:4000');
     expect(sc.Web['${TS_CERT_DOMAIN}:8444'].Handlers['/'].Proxy).toBe('http://127.0.0.1:3306');

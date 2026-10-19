@@ -69,8 +69,9 @@ Notes:
 - **VS queue plane (f57.15)**: `DOLT_PASSWORD`, `DOLT_ROOT_PASSWORD`, and
   `BEADS_DOLT_PASSWORD` (same value as `DOLT_PASSWORD`) are required in
   `deploy/.env`. The `dolt` service (Dolt SQL server, `vs_ops` database)
-  publishes :3326 for device bd clients (the queue contract — drop the
-  publish only if you accept a queue nobody can join); `scotty` (the
+  publishes :3326 on loopback only (#89) — devices can join the queue only
+  once you front it with your own secured path (your tailnet, an SSH
+  tunnel; the balena master uses a tailscale serve TCP forward); `scotty` (the
   patched pinned dashboard) publishes :3306 and serves the queue
   READ-ONLY (two layers: `SCOTTY_READ_ONLY=1` + the `bd-readonly` BD_BIN
   wrapper). One-time `bd init --server` + device joins: see

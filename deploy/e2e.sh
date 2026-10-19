@@ -1453,8 +1453,8 @@ ac10_queue_plane() {
   # bakes). Why host-side: bd init inits a git repository in the workspace
   # for the sync protocol, and the scotty image deliberately ships WITHOUT
   # git (upstream README documents it); more importantly this mirrors the
-  # real device story — VS devices run their OWN bd clients against the
-  # LAN dolt (deploy compose publishes 3326), not through the scotty
+  # real device story — VS devices run their OWN bd clients against
+  # dolt's :3326 (loopback here; the master's tailnet forward on balena), not through the scotty
   # container. The runner provides git + writable HOME; CI=true keeps bd
   # non-interactive. --external: the compose dolt is already running
   # (without it bd starts its OWN server on the port and dies — run-4's
@@ -1490,8 +1490,8 @@ ac10_queue_plane() {
     return
   fi
   local bd_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-  # The compose dolt publishes host 3326 (the queue contract — device bd
-  # clients reach it exactly this way); the host-side client connects there.
+  # The compose dolt publishes host 127.0.0.1:3326 (on the balena master the
+  # serve edge forwards the tailnet :3326 here); the host-side client connects there.
   if ! (cd "$workdir" && PATH="$bd_path" BEADS_DOLT_PASSWORD="$dolt_password" CI=true "$bd_bin" init --server --external \
         --server-host 127.0.0.1 --server-port 3326 --server-user vs \
         --database vs_ops --non-interactive) 2>"$init_err"; then

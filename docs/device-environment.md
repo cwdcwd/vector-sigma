@@ -42,10 +42,10 @@ their LAN/tailnet addresses, below.
   your environment on every boot. The bundle is the contract —
   never hardcode a URL the bundle already carries.
 - **The queue** — the VS queue's Dolt server lives on the MASTER
-  device: database `vs_ops`, user `vs`. Devices reach it at the
-  master's LAN endpoint `<master-LAN-IP>:3326` (or the master's
-  tailnet hostname, per the runbook) — NEVER the compose-internal
-  `dolt:3306`. The exact host/port for your deployment arrive in your
+  device: database `vs_ops`, user `vs`. Devices reach it over the
+  TAILNET at `<master>.<tailnet>.ts.net:3326` — the master's serve edge forwards that
+  port (raw TCP) to Dolt's loopback-only publish. It is NOT on the
+  LAN, and NEVER the compose-internal `dolt:3306`. The exact host/port for your deployment arrive in your
   bundle's `extra_env` (the `BEADS_*` keys in `config/agent.env`,
   merged into your environment by the wiring hook).
 - **`REGISTRAR_URL`** — the registrar's TLS endpoint; the registrant

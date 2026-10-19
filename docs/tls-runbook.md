@@ -38,9 +38,11 @@ The f57.13 runbook's history is recoverable from git history.
   consequence). The tailnet ACLs — `autogroup:member` →
   `tag:vs-master:*` — are the auth layer; TLS identity (Let's
   Encrypt) is the transport layer.
-- The **dolt server keeps its `:3326` LAN publish** (bd clients, not
-  HTTP; the queue contract — see scripts/vs-queue-bootstrap.md). It is
-  the composition's one remaining LAN-reachable port, documented as
+- The **dolt server is tailnet-only at `:3326`** (bd clients, not
+  HTTP; the queue contract — see scripts/vs-queue-bootstrap.md): its host
+  publish is loopback-only and the serve edge forwards the tailnet :3326
+  as raw TCP (no TLS termination — WireGuard is the transport). Before
+  #89 it was the composition's one LAN-reachable port, documented as
   such.
 
 ## Owner steps (first setup)
@@ -101,8 +103,8 @@ prefer leaving `ts-state` alone unless the canary says otherwise.
   GO accepted this consequence) or probe the loopback publishes from
   the device itself.
 - **LAN front door (80/443/8443/8444) refuses connections**: the
-  intended end state — nothing listens on the LAN IPs anymore. Only
-  dolt's `:3326` (bd clients) remains LAN-reachable.
+  intended end state — nothing listens on the LAN IPs anymore, dolt's
+  `:3326` included (bd clients use the tailnet :3326 forward).
 - **A device fails TLS handshake**: wrong clock (cert not-yet-valid
   from the device's view — the clock gate's own contract; wait for
   NTP). There is no fleet CA variable to go stale anymore.

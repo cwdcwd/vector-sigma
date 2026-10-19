@@ -718,8 +718,11 @@ Keep gateway plain-HTTP and database host publishes loopback-only. Compose
 internal service-to-service access remains unchanged. E2E uses the deploy
 compose base (its overlay adds no gateway/database publish) and host probes
 continue to use loopback. The Dolt host publish is loopback-only now; remote
-queue clients cannot reach host port 3326 directly and require a separately
-secured access path.
+queue clients cannot reach host port 3326 directly. On the balena master the
+secured path is the tailnet: the serve edge forwards the tailnet :3326 as raw
+TCP to the loopback publish (`balena/registrar/serve-config.json`), reachable
+only by ACL-admitted tailnet peers (`tag:vs-agent`, the owner). Self-host
+operators front the loopback publish with their own secured path.
 
 | Port | File | Before | After |
 |---|---|---|---|

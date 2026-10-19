@@ -105,8 +105,9 @@ Since lnf (j7g phase 2) the composition's published surface is the
 `https://vector-sigma.tailb7207e.ts.net:8444/` for the scotty queue UI
 (the tailnet ACL is the lock — basic_auth retired with caddy). Every
 service publishes on 127.0.0.1 loopback ONLY; the LAN front door
-(80/443/8443/8444) is dark from this release on. Only dolt's `:3326`
-stays LAN-reachable (the bd queue contract). See docs/tls-runbook.md
+(80/443/8443/8444) is dark from this release on, and dolt's `:3326` is
+loopback-only too (#89): bd clients reach the queue at the tailnet `:3326`,
+which `serve-config.json` forwards as raw TCP to the loopback publish. See docs/tls-runbook.md
 (rewritten for the serve-only edge) and docs/tailscale-runbook.md.
 
 
@@ -474,7 +475,7 @@ discovery.
 ## The VS queue (dolt + scotty) — f57.15
 
 The master composition also carries the VS fleet's own work queue:
-the `dolt` service (Dolt SQL server, database `vs_ops`, LAN :3326)
+the `dolt` service (Dolt SQL server, database `vs_ops`, tailnet :3326)
 and the `scotty` dashboard (Bead Me Up Scotty v0.3.0 `cc55734` + the
 fleet's 8ea deep-link patch + bd pinned at 1.2.2 + the `bd-readonly`
 wrapper, LAN :3306). VS devices run bd clients against the dolt

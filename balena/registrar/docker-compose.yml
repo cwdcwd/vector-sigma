@@ -239,8 +239,10 @@ services:
     volumes:
       - doltdata:/var/lib/dolt
     ports:
-      # Loopback-only per gateway hardening: device queue clients must use
-      # the documented approved access path rather than an exposed DB port.
+      # Loopback-only per gateway hardening (#89): no database port on the
+      # LAN. Device bd clients reach the queue over the TAILNET :3326 — the
+      # tailscale serve edge forwards it as raw TCP to this publish
+      # (serve-config.json "3326": TCPForward 127.0.0.1:3326).
       - "127.0.0.1:3326:3306"
     healthcheck:
       # Dolt's documented liveness query, AUTHENTICATED, with the client
