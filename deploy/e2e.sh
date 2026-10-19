@@ -737,7 +737,7 @@ ac9b_litellm_db_smoke() {
 #   - The stored body passes through _sanitize_request_body_for_spend_logs_
 #     payload(): every string value under a credential-classified key is
 #     replaced, at any nesting depth, with the REDACTED_BY_LITELLM_STRING
-#     sentinel (litellm/constants.py: "REDACTED_BY_LITELLM"), and
+#     sentinel (litellm/constants.py: "REDACTED_BY_LITELM"), and
 #     "secret_fields" (raw captured headers) is dropped entirely. This
 #     masking is unconditional — it does not depend on the prompt-storage
 #     flag.
@@ -857,7 +857,7 @@ ac9c_litellm_spend_log_redaction() {
       const psrStr = typeof psr === "string" ? psr : (psr === undefined || psr === null ? String(psr) : JSON.stringify(psr));
       let parsed = null; try { parsed = typeof psr === "string" ? JSON.parse(psr) : psr; } catch { parsed = null; }
       const KEYSET = new Set(["aws_access_key_id","aws_secret_access_key","aws_session_token","client_secret","Authorization"]);
-      const SENT = "REDACTED_BY_LITELLM";
+      const SENT = "REDACTED_BY_LITELM";
       let paths = 0, masked = 0; const names = []; const shapes = {};
       const cls = (s) => s === SENT ? "sent" : s === "REDACTED" ? "red" : s === "***REDACTED***" ? "hdr" : s === "[REDACTED]" ? "brk" : (/^\*+$/.test(s) ? "stars" : (/^[0-9a-fA-F]{32,64}$/.test(s) ? "hex" : (/^[A-Za-z0-9+/=_-]{20,}$/.test(s) ? "tokenish" : "mixed")));
       const md5pfx = (s) => require("crypto").createHash("md5").update(s).digest("hex").slice(0, 8);
@@ -1029,7 +1029,7 @@ ac9c_litellm_spend_log_redaction() {
       "aws_access_key_id", "aws_secret_access_key", "aws_session_token",
       "client_secret", "Authorization"
     ]);
-    const SENTINEL = "REDACTED_BY_LITELLM";
+    const SENTINEL = "REDACTED_BY_LITELM";
     // Credential canaries derive from the request body: credential-named
     // values only: with prompt storage deliberately ON, the row legitimately
     // contains model names and prompt strings — only credential values must
