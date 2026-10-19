@@ -3,7 +3,7 @@
 Vector Sigma deploys as **two balena fleets in one balenaCloud account**:
 
 1. **`registrar` fleet — 1 device.** The registrar + its own Postgres
-   container (the `deploy/` compose pattern). No registrant service —
+   container (the `platforms/compose/` pattern). No registrant service —
    the registrar *is* the identity source, not a client of itself.
 2. **`devices` fleet — 3–4 devices.** Agent runtime + registrant per
    the device-app section of this spec.
@@ -68,7 +68,7 @@ component (9 of them); one reusable pipeline builds them all:
 - **`_images.yml`** (reusable, `workflow_call`) — builds EVERY component x
   amd64/arm64 on native runners (no QEMU) from its canonical Dockerfile,
   credential-scans its exact build inputs, content-gates each OCI layout,
-  runs the compose-simulated device E2E (`deploy/e2e.sh`, prebuilt mode) on
+  runs the compose-simulated device E2E (`test/e2e/e2e.sh`, prebuilt mode) on
   the scanned amd64 bytes. Read-only: no job holds write scope.
 - **`_promote.yml`** (reusable) — called from a caller's `publish` job that
   needs `images` and is gated on `VS_GHCR_PUBLISH_ENABLED` (never on a
@@ -80,7 +80,7 @@ component (9 of them); one reusable pipeline builds them all:
   Postgres service needed).
 - **`build-images.yml`** — every PR (validate: build + scan + E2E, no
   write scope) and every push to `main` (the same, then publish all 9
-  when `VS_GHCR_PUBLISH_ENABLED` is set). `deploy/compose.yaml` runs these
+  when `VS_GHCR_PUBLISH_ENABLED` is set). `platforms/compose/compose.yaml` runs these
   SHA-tagged images.
 - **`release-registrar.yml`** — tag `registrar-v*`: the pipeline, promoting
   the 7 registrar-app components → trivy CRITICAL/HIGH gate → boot-path

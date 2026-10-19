@@ -182,7 +182,7 @@ and share it with every VS agent:
 
 ## Rebuilding you
 
-Your image is `balena/registrar/Dockerfile.hermes`: the pinned official
+Your image is `images/hermes/Dockerfile`: the pinned official
 Hermes image (`nousresearch/hermes-agent:v2026.9.21`) plus this lane's
 additions — bd 1.2.2 baked full read-write (you are the queue CURATOR;
 the scotty dashboard's read-only wrapper posture does not apply to you),

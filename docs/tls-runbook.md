@@ -26,8 +26,8 @@ The f57.13 runbook's history is recoverable from git history.
 - The names and ports are **exactly what the phase-1b flipped fleet
   variables already carry** (`REGISTRAR_URL`,
   `GATEWAY_URL`/`A2A_PUBLIC_URL`): no variable flips in this release.
-- The serve config is `balena/registrar/serve-config.json`, baked into
-  the master's tailscale image (`Dockerfile.tailscale`, FROM the same
+- The serve config is `images/tailscale/serve-config.json`, baked into
+  the master's tailscale image (`images/tailscale/Dockerfile`, FROM the same
   pinned `v1.102.5` tag the devices fleet uses) and pointed at by the
   `TS_SERVE_CONFIG` environment variable — the supervisor cannot
   bind-mount (the f57.12 precedent).
@@ -39,7 +39,7 @@ The f57.13 runbook's history is recoverable from git history.
   `tag:vs-master:*` — are the auth layer; TLS identity (Let's
   Encrypt) is the transport layer.
 - The **dolt server is tailnet-only at `:3326`** (bd clients, not
-  HTTP; the queue contract — see scripts/vs-queue-bootstrap.md): its host
+  HTTP; the queue contract — see docs/vs-queue-bootstrap.md): its host
   publish is loopback-only and the serve edge forwards the tailnet :3326
   as raw TCP (no TLS termination — WireGuard is the transport). Before
   #89 it was the composition's one LAN-reachable port, documented as

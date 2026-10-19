@@ -1,0 +1,142 @@
+# VS Queue Bootstrap (fleet-ops-f57.15)
+
+One-time bring-up of the Vector Sigma fleet's own work queue: the Dolt server
+container on the master device + `bd` server-mode clients + the Scotty
+dashboard. Owner ruling: **the VS queue is fully self-contained** — VS devices
+run bd clients against the master's Dolt; cross-fleet coordination
+(primus ↔ the origin-fleet coordinator) is A2A agent-to-agent, NEVER through each other's queues.
+
+## The composition
+
+```
+dolt     dolthub/dolt-sql-server:2.3.5, host 127.0.0.1:3326 (loopback) + tailnet :3326
+         via the master serve edge's TCP forward, volume doltdata
+scotty   scotty v0.3.0 cc55734 + 8ea patch + bd 1.2.2 + bd-readonly wrapper,
+         port 3306 (LAN), SCOTTY_READ_ONLY=1, BEADS_REPO=/queue-join
+```
+
+Both balena (`platforms/balena/registrar/docker-compose.yml`) and self-host
+(`platforms/compose/compose.yaml`) run byte-identical shapes.
+
+## ⚠️ THE LANDMINE: `bd init --server` is a ONE-TIME, ONE-CLIENT act
+
+`bd init --server` does not merely configure the local client — it generates a
+fresh project_id and REWRITES the shared database's project_id with it. Every
+other client whose metadata points at the previous id is silently locked out.
+This is the exact root cause of the 2026-09-09 fleet lockout (one agent's init
+stamped the DB; a second agent's later init overwrote it, locking the first out).
+
+Rules, verbatim from the fleet contract:
+
+1. `bd init --server` runs ONCE, by whoever first connects — the coordinator
+   (primus, once f57.14 lands) or the owner. On a brand-new database only.
+2. The `project_id` it mints is THE canonical VS queue contract — treat it
+   like a credential. Every later client (every VS device, the scotty
+   container's queue-join) obtains it from the coordinator or fleet memory and
+   pastes it into their join config. NOBODY generates their own.
+3. No client EVER runs any `bd init` variant afterwards. Joining is
+   config-only (below). A second init is not an idempotent no-op — it is the
+   lockout.
+4. bd clients are pinned at **1.2.2** (fleet convention `bd-version-pin`):
+   bd 1.3+ auto-migrates the shared Dolt schema and locks out every 1.2.2
+   client. Never `npm i -g beads@latest`.
+
+## One-time init (coordinator- or owner-run, first connect only)
+
+From any tailnet host the ACL admits to `<master>.<tailnet>.ts.net:3326` (the owner's
+machine, or the master itself at `127.0.0.1:3326`), with bd 1.2.2 installed:
+
+```bash
+mkdir vs-ops && cd vs-ops          # any scratch dir; the name is cosmetic
+export BEADS_DOLT_PASSWORD='<from owner — the DOLT_PASSWORD fleet variable>'
+bd init --server \
+  --server-host <master>.<tailnet>.ts.net \
+  --server-port 3326 \
+  --server-user vs \
+  --database vs_ops \
+  --non-interactive
+```
+
+The init mints the project_id (visible in `.beads/metadata.json` after init).
+Immediately:
+
+1. Record the project_id in fleet memory (`fleet/status/vector-sigma-queue`).
+2. Paste it into `images/common/queue-join/.beads/metadata.json` in-repo (the
+   scotty image's join config) and release.
+   DONE (fleet-ops-anc, 2026-09-29): the canonical project_id
+   `bcde5891-5482-4eb0-a223-8533504832d6` is baked into the file — this
+   step is complete; treat the committed value as the contract.
+3. Hand it to every VS device join (below). Devices NEVER init — config only.
+
+## Device / client join (config-only — everyone else)
+
+In the workspace directory (the directory name sets the issue-ID prefix —
+pick a stable one, e.g. the device hostname):
+
+```bash
+mkdir -p .beads
+# 1. metadata.json — copy the repo's queue-join/.beads/metadata.json (the
+#    project_id is baked in-repo with the canonical value since
+#    fleet-ops-anc), and set dolt_server_host to the master's tailnet
+#    hostname (Dolt is published on loopback only; the serve edge
+#    forwards tailnet :3326 to it):
+cat > .beads/metadata.json <<'EOF'
+{
+  "database": "vs_ops",
+  "backend": "dolt",
+  "dolt_mode": "server",
+  "dolt_server_host": "<master>.<tailnet>.ts.net",
+  "dolt_server_user": "vs",
+  "dolt_database": "vs_ops",
+  "project_id": "bcde5891-5482-4eb0-a223-8533504832d6",
+  "dolt_server_port": 3326
+}
+EOF
+# 2. port file
+echo 3326 > .beads/dolt-server.port
+# 3. password (never commit, echo, or log it)
+echo "BEADS_DOLT_PASSWORD=<from owner>" > .beads/.env
+chmod 600 .beads/.env
+# 4. attribution: stamp the AGENT name, never the machine/bot login
+bd config set actor <agent-name>   # e.g. primus
+# 5. verify the join — you must see the shared issue counts, not zero
+BEADS_ACTOR=<agent-name> bd status
+```
+
+Zero or near-zero issues on a fresh join is EXPECTED (new queue) — but
+`bd status` must connect, not error. A wrong project_id shows as a foreign or
+empty project: stop and re-check the contract id, never re-init.
+
+## Scotty (the dashboard)
+
+Nothing to bootstrap — the image is self-contained:
+
+- Two-layer read-only posture: `SCOTTY_READ_ONLY=1` (scotty refuses project
+  writes server-side) + `BD_BIN` wrapper (`bd-readonly` allowlists
+  `export --json` / `show <id> --json` / `--version` only, exit 77 otherwise).
+- The one setup dependency: `queue-join/metadata.json`'s `project_id`
+  is baked in-repo with the canonical id (fleet-ops-anc, 2026-09-29) —
+  the image bakes the file as-is, no post-init edit is needed anymore.
+
+## Queue conventions (the VS mirror of the origin fleet's FLEET.md)
+
+See `docs/queue-conventions.md`.
+
+## Exposure decisions (documented per AC1)
+
+- **Dolt :3326 is TAILNET-only** — device-side bd clients are load-bearing
+  (owner ruling: "VS devices run bd clients against it"), but the host
+  publish is loopback-only (`127.0.0.1:3326:3306`, #89's hardening: no
+  database port on the LAN). The master's tailscale serve edge forwards the
+  tailnet :3326 as raw TCP to that loopback publish
+  (`images/tailscale/serve-config.json`: `"3326": {"TCPForward":
+  "127.0.0.1:3326"}`), so the queue is reachable exactly by the tailnet
+  peers the ACL admits — `tag:vs-agent` devices and the owner — over
+  WireGuard, and still authenticates as the `vs` user. Self-host
+  (`platforms/compose/`) has no serve edge: front the loopback publish with your own
+  secured path (your tailnet, an SSH tunnel) before devices can join.
+- **Scotty :3306 published to the device LAN** — the queue UI for the owner
+  and VS agents; same LAN-only posture.
+- **Dolt root stays localhost-only** (image default); the queue user `vs` is
+  the only remotely reachable account (via the tailnet :3326 forward),
+  password via fleet variable.

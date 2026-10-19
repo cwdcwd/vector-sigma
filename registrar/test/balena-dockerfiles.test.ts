@@ -24,11 +24,11 @@ import { loadCatalog } from '../../scripts/image-catalog.mjs';
  *
  * Full-line comments are stripped before scanning: documentation comments
  * legitimately mention these tokens (this file's own history lives in the
- * Dockerfile.scotty header), only live instructions bind.
+ * images/scotty/Dockerfile header), only live instructions bind.
  */
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '../..');
-const balenaDir = path.join(repoRoot, 'balena');
+const imagesDir = path.join(repoRoot, 'images');
 
 /** BuildKit-only, auto-populated ARG tokens — banned in balena Dockerfiles. */
 const FORBIDDEN_TOKENS = ['TARGETARCH', 'TARGETPLATFORM'] as const;
@@ -41,14 +41,14 @@ function stripComments(raw: string): string {
     .join('\n');
 }
 
-/** Recursively collect every Dockerfile* under balena/** (sorted for stable titles). */
+/** Recursively collect every Dockerfile* under images/** (sorted for stable titles). */
 function collectDockerfiles(dir: string): string[] {
   const out: string[] = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) out.push(...collectDockerfiles(full));
     // Dockerfile* prefix: catches bare `Dockerfile` AND stage-suffixed
-    // variants (`Dockerfile.scotty`) — the suffix form is where f57.21 lived.
+    // variants (`images/scotty/Dockerfile`) — the suffix form is where f57.21 lived.
     else if (entry.isFile() && entry.name.startsWith('Dockerfile')) out.push(full);
   }
   return out.sort();
@@ -57,7 +57,7 @@ function collectDockerfiles(dir: string): string[] {
 const catalogDockerfiles = Object.values(
   loadCatalog(repoRoot).components as Record<string, { dockerfile: string }>,
 ).map((c) => path.join(repoRoot, c.dockerfile));
-const dockerfiles = [...new Set([...collectDockerfiles(balenaDir), ...catalogDockerfiles])].sort();
+const dockerfiles = [...new Set([...collectDockerfiles(imagesDir), ...catalogDockerfiles])].sort();
 
 describe('balena builder contract: Dockerfile inventory', () => {
   it('guards every image Dockerfile (guard is not vacuous)', () => {

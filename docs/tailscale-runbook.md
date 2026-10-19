@@ -201,7 +201,7 @@ Caddy is retired from the composition; the master's tailscale service
 IS the TLS front door. What shipped:
 
 - **The master's tailscale service becomes a BUILD**:
-  `balena/registrar/Dockerfile.tailscale` (FROM the same pinned
+  `images/tailscale/Dockerfile` (FROM the same pinned
   `v1.102.5`) bakes `serve-config.json`; the compose sets
   `TS_SERVE_CONFIG=/serve-config.json`. ~~The devices fleet's tailscale
   service stays on the stock image~~ — superseded by the j7g.1 serve
@@ -284,9 +284,9 @@ The live enroll's `origin_url` is the SERVE form
 (`https://<device>.tailb7207e.ts.net:9900`), never a tailnet IP +
 firewall, never a `:9900` host publish.
 
-What ships (repo-side, `balena/devices/`):
+What ships (repo-side, `platforms/balena/devices/`):
 
-- **`Dockerfile.tailscale` + `serve-config.json`** — the devices
+- **`images/tailscale/Dockerfile` + `serve-config.json`** — the devices
   fleet's tailscale service becomes a BUILD (FROM the same pinned
   `v1.102.5`), baking a serve config that fronts `:9900` at the
   node's own MagicDNS name, proxying the agent's loopback publish.
@@ -354,7 +354,7 @@ serve name. Its container DNS chain has no ts.net route (the lrb
 canary verdict class — accept-dns cannot reach the host dnsmasq
 chain from tailscaled's mount namespace), so EVERY enrolled device
 needs a static pin line on the litellm service in
-`balena/registrar/docker-compose.yml`:
+`platforms/balena/registrar/docker-compose.yml`:
 
 ```
 extra_hosts:

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const template = readFileSync(path.join(repoRoot, 'balena/devices/hermes-agent-defaults.yaml'), 'utf8');
+const template = readFileSync(path.join(repoRoot, 'images/agent/hermes-agent-defaults.yaml'), 'utf8');
 
 function render(source: string, env: Record<string, string>): string {
   return source.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}/g,

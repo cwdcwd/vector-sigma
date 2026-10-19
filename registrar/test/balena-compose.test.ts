@@ -11,7 +11,7 @@ import { describe, expect, it } from 'vitest';
  *   Only "service_started" type of service dependency is supported
  * (registrar-v1.1.0 deploy run 36155320589 failed on exactly this).
  * Plain docker compose accepts the long-form — so CI's compose-simulated
- * E2E (deploy/, plain docker) stays green while the balena deploy breaks.
+ * E2E (test/e2e/, plain docker) stays green while the balena deploy breaks.
  * This test pins the builder contract on BOTH balena app composes so the
  * divergence class can never silently return:
  *
@@ -28,8 +28,8 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '../..');
 
 const composes = [
-  'balena/registrar/docker-compose.yml',
-  'balena/devices/docker-compose.yml',
+  'platforms/balena/registrar/docker-compose.yml',
+  'platforms/balena/devices/docker-compose.yml',
 ];
 
 /** File with full-line (`#`-prefixed) comment lines removed. */

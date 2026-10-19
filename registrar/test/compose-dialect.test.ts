@@ -10,11 +10,11 @@ import { describe, expect, it } from 'vitest';
  *
  * The two composes are written in DIFFERENT dialects on purpose:
  *
- *  - deploy/compose.yaml is driven by docker compose, which de-escapes
+ *  - platforms/compose/compose.yaml is driven by docker compose, which de-escapes
  *    `$$` -> `$` at config time. Its `$$` is the documented, correct way
  *    to defer expansion to the in-container shell.
  *
- *  - balena/registrar/docker-compose.yml is built by balena's remote
+ *  - platforms/balena/registrar/docker-compose.yml is built by balena's remote
  *    builder, which does NOT de-escape `$$` — it is stored literally,
  *    the CMD-SHELL probe expands it to the shell PID, and the
  *    supervisor restart-loops the service ~every 95s. Proven live on
@@ -26,10 +26,10 @@ import { describe, expect, it } from 'vitest';
  * (${POSTGRES_USER}) and dolt ($DOLT_PASSWORD) carry it today. This
  * guard pins:
  *
- *   1. balena/registrar/docker-compose.yml: NO `$$` anywhere — every
+ *   1. platforms/balena/registrar/docker-compose.yml: NO `$$` anywhere — every
  *      runtime-expanded healthcheck must use single-$ / ${VAR} shapes,
  *      the form proven on-device.
- *   2. deploy/compose.yaml: the dolt probe KEEPS its `$$` (docker
+ *   2. platforms/compose/compose.yaml: the dolt probe KEEPS its `$$` (docker
  *      compose de-escapes; single-$ would let the ${VAR} interpolation
  *      parser eat DOLT_PASSWORD at config time — a secret leak into
  *      `docker inspect` output).
@@ -48,10 +48,10 @@ function stripComments(raw: string): string {
     .join('\n');
 }
 
-describe('compose dialect guard: balena/registrar/docker-compose.yml', () => {
+describe('compose dialect guard: platforms/balena/registrar/docker-compose.yml', () => {
   const code = stripComments(
     readFileSync(
-      path.join(repoRoot, 'balena/registrar/docker-compose.yml'),
+      path.join(repoRoot, 'platforms/balena/registrar/docker-compose.yml'),
       'utf8',
     ),
   );
@@ -61,9 +61,9 @@ describe('compose dialect guard: balena/registrar/docker-compose.yml', () => {
   });
 });
 
-describe('compose dialect guard: deploy/compose.yaml', () => {
+describe('compose dialect guard: platforms/compose/compose.yaml', () => {
   const code = stripComments(
-    readFileSync(path.join(repoRoot, 'deploy/compose.yaml'), 'utf8'),
+    readFileSync(path.join(repoRoot, 'platforms/compose/compose.yaml'), 'utf8'),
   );
 
   it('dolt healthcheck keeps $$ (runtime expansion of DOLT_PASSWORD must not leak through config-time interpolation)', () => {

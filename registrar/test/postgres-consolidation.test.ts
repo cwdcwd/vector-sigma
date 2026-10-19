@@ -9,12 +9,12 @@ import { describe, expect, it } from 'vitest';
  *
  * The one-shot litellm-init service is ELIMINATED from both composes; the
  * provisioning SQL lives in the postgres service's own wrapper image
- * (balena/registrar/Dockerfile.postgres + postgres-entrypoint.sh). This
+ * (images/postgres/Dockerfile + postgres-entrypoint.sh). This
  * guard pins the consolidation so the retired one-shot can never silently
  * return and the wrapper's hard gates stay in the tree:
  *
  *   1. no `litellm-init` service key in either compose;
- *   2. the postgres service BUILDS (Dockerfile.postgres) in both composes
+ *   2. the postgres service BUILDS (images/postgres/Dockerfile) in both composes
  *      — not `image: postgres:16-alpine` (balena side) and not an unwrapped
  *      pull (deploy side);
  *   3. the balena litellm env block carries the STATIC
@@ -30,7 +30,7 @@ import { describe, expect, it } from 'vitest';
  *   6. queue-join metadata carries the CANONICAL VS queue project_id (from
  *      fleet/status/vector-sigma-queue — the fleet contract, never
  *      regenerated), not the SET_BY_COORDINATOR placeholder;
- *   7. deploy parity: deploy/compose.yaml feeds the wrapper the same
+ *   7. deploy parity: platforms/compose/compose.yaml feeds the wrapper the same
  *      LITELLM_PG_PASSWORD + superuser credential the balena fleet vars
  *      deliver.
  *
@@ -49,16 +49,16 @@ function stripComments(raw: string): string {
 }
 
 const balenaCompose = stripComments(
-  readFileSync(path.join(repoRoot, 'balena/registrar/docker-compose.yml'), 'utf8'),
+  readFileSync(path.join(repoRoot, 'platforms/balena/registrar/docker-compose.yml'), 'utf8'),
 );
 const deployCompose = stripComments(
-  readFileSync(path.join(repoRoot, 'deploy/compose.yaml'), 'utf8'),
+  readFileSync(path.join(repoRoot, 'platforms/compose/compose.yaml'), 'utf8'),
 );
 
 describe('postgres consolidation contract (fleet-ops-anc)', () => {
   it.each([
-    ['balena/registrar/docker-compose.yml', balenaCompose],
-    ['deploy/compose.yaml', deployCompose],
+    ['platforms/balena/registrar/docker-compose.yml', balenaCompose],
+    ['platforms/compose/compose.yaml', deployCompose],
   ])('%s: no litellm-init service key', (_rel, code) => {
     expect(code, 'the one-shot litellm-init service must not exist').not.toMatch(
       /^\s{2}litellm-init:\s*$/m,
@@ -73,15 +73,15 @@ describe('postgres consolidation contract (fleet-ops-anc)', () => {
     return m ? m[1] : '';
   };
 
-  it('balena/registrar/docker-compose.yml: postgres service is the wrapper image build (rendered to its digest at release)', () => {
+  it('platforms/balena/registrar/docker-compose.yml: postgres service is the wrapper image build (rendered to its digest at release)', () => {
     const block = postgresBlock(balenaCompose);
     expect(block, 'postgres must build the wrapper, not pull the stock image').toMatch(
-      /dockerfile:\s*Dockerfile\.postgres/,
+      /dockerfile:\s*images\/postgres\/Dockerfile/,
     );
     expect(block).not.toMatch(/image:\s*postgres:16-alpine/);
   });
 
-  it('deploy/compose.yaml: postgres service runs the published wrapper image (the images.json postgres component)', () => {
+  it('platforms/compose/compose.yaml: postgres service runs the published wrapper image (the images.json postgres component)', () => {
     const block = postgresBlock(deployCompose);
     expect(block).toMatch(/image:\s*\$\{VS_IMAGE_REGISTRY:-ghcr\.io\/cwdcwd\/vector-sigma\}\/postgres:\$\{VS_IMAGE_TAG:\?/);
     expect(block, 'postgres must not use the unwrapped stock image').not.toMatch(
@@ -103,7 +103,7 @@ describe('postgres consolidation contract (fleet-ops-anc)', () => {
 
   it('wrapper script exists and translates the stop signal (the corruption hard gate)', () => {
     const wrapper = readFileSync(
-      path.join(repoRoot, 'balena/registrar/postgres-entrypoint.sh'),
+      path.join(repoRoot, 'images/postgres/postgres-entrypoint.sh'),
       'utf8',
     );
     // The wrapper MUST trap the stop signals and get the postmaster to
@@ -141,9 +141,9 @@ describe('postgres consolidation contract (fleet-ops-anc)', () => {
     expect(wrapper).toContain('CREATE DATABASE litellm OWNER litellm');
   });
 
-  it('Dockerfile.postgres wraps the stock entrypoint, same base pin', () => {
+  it('images/postgres/Dockerfile wraps the stock entrypoint, same base pin', () => {
     const dockerfile = readFileSync(
-      path.join(repoRoot, 'balena/registrar/Dockerfile.postgres'),
+      path.join(repoRoot, 'images/postgres/Dockerfile'),
       'utf8',
     );
     expect(dockerfile).toMatch(/FROM postgres:16-alpine/);
@@ -153,11 +153,11 @@ describe('postgres consolidation contract (fleet-ops-anc)', () => {
 
   it('retired one-shot artifacts are gone', () => {
     expect(
-      existsSync(path.join(repoRoot, 'balena/registrar/Dockerfile.litellm-init')),
+      existsSync(path.join(repoRoot, 'platforms/balena/registrar/Dockerfile.litellm-init')),
       'Dockerfile.litellm-init must be deleted',
     ).toBe(false);
     expect(
-      existsSync(path.join(repoRoot, 'balena/registrar/litellm-init.sh')),
+      existsSync(path.join(repoRoot, 'platforms/balena/registrar/litellm-init.sh')),
       'litellm-init.sh must be deleted',
     ).toBe(false);
   });
@@ -165,7 +165,7 @@ describe('postgres consolidation contract (fleet-ops-anc)', () => {
   it('queue-join metadata carries the canonical VS queue project_id', () => {
     const meta = JSON.parse(
       readFileSync(
-        path.join(repoRoot, 'balena/registrar/queue-join/.beads/metadata.json'),
+        path.join(repoRoot, 'images/common/queue-join/.beads/metadata.json'),
         'utf8',
       ),
     ) as { project_id?: string };

@@ -59,7 +59,7 @@ package install, or self-config/SOUL mutation.
   hash row + per-IP rate limiter + audit), mirroring the device-API
   pattern. `mk_`-prefix key class, structurally distinct from device
   (`bk_`) and admin (`ak_`) keys.
-- `scripts/vs-mesh-enroll.py` (baked at `/usr/local/bin/vs-mesh-enroll`
+- `images/common/bin/vs-mesh-enroll.py` (baked at `/usr/local/bin/vs-mesh-enroll`
   on the primus image) — the one-command CLI; reads `MESH_ENROLL_KEY`
   from the bundle's `config/agent.env`, never from image layers.
 - Console: **Mesh-enroll keys** page (mint show-once + revoke) and the

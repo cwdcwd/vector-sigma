@@ -53,8 +53,8 @@ function serviceBlock(code: string, name: string): string {
 }
 
 describe.each([
-  ['balena/registrar/docker-compose.yml', 'balena'],
-  ['deploy/compose.yaml', 'deploy'],
+  ['platforms/balena/registrar/docker-compose.yml', 'balena'],
+  ['platforms/compose/compose.yaml', 'deploy'],
 ])('scotty fronting (lnf serve-only): %s', (rel) => {
   const raw = readFileSync(path.join(repoRoot, rel), 'utf8');
   const code = stripComments(raw);
@@ -77,7 +77,7 @@ describe.each([
 describe('serve config: scotty fronted at the served name (lnf; placeholder since 1py.14)', () => {
   it('the serve config proxies :8444 to the scotty loopback publish', () => {
     const sc = JSON.parse(
-      readFileSync(path.join(repoRoot, 'balena/registrar/serve-config.json'), 'utf8'),
+      readFileSync(path.join(repoRoot, 'images/tailscale/serve-config.json'), 'utf8'),
     );
     const key = '${TS_CERT_DOMAIN}:8444';
     expect(sc.Web[key].Handlers['/'].Proxy).toBe('http://127.0.0.1:3306');

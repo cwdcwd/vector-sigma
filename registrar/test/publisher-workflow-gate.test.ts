@@ -313,7 +313,7 @@ describe('publisher workflow graph: E2E runs the scanned bytes, never a rebuild'
 
   it('e2e runs in prebuilt mode (no --build) and always tears down', () => {
     const text = stepsText(e2e);
-    expect(text).toContain('E2E_PREBUILT=1 deploy/e2e.sh --up');
+    expect(text).toContain('E2E_PREBUILT=1 test/e2e/e2e.sh --up');
     const teardown = (e2e.steps ?? []).find((s) => String(s.run ?? '').includes('--down'));
     expect(teardown?.if).toBe('always()');
   });
@@ -336,7 +336,7 @@ describe('publisher workflow graph: E2E runs the scanned bytes, never a rebuild'
   });
 
   it('ci.yml no longer runs a separate source-built E2E', () => {
-    expect(read('.github/workflows/ci.yml')).not.toContain('deploy/e2e.sh');
+    expect(read('.github/workflows/ci.yml')).not.toContain('test/e2e/e2e.sh');
   });
 });
 

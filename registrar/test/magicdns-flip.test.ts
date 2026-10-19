@@ -82,14 +82,14 @@ function serviceBlock(code: string, name: string): string {
 }
 
 const balenaRegistrar = stripComments(
-  read('balena/registrar/docker-compose.yml'),
+  read('platforms/balena/registrar/docker-compose.yml'),
 );
-const balenaDevices = stripComments(read('balena/devices/docker-compose.yml'));
-const deployCompose = stripComments(read('deploy/compose.yaml'));
+const balenaDevices = stripComments(read('platforms/balena/devices/docker-compose.yml'));
+const deployCompose = stripComments(read('platforms/compose/compose.yaml'));
 
 describe.each([
-  ['balena/registrar/docker-compose.yml', balenaRegistrar],
-  ['balena/devices/docker-compose.yml', balenaDevices],
+  ['platforms/balena/registrar/docker-compose.yml', balenaRegistrar],
+  ['platforms/balena/devices/docker-compose.yml', balenaDevices],
 ] as const)('extra_hosts pin: %s', (_rel, code) => {
   it('carries the pin pair exactly where the flipped URLs are consumed', () => {
     // registrar compose: hermes (gateway/A2A URL consumer);
@@ -152,7 +152,7 @@ describe('the serve edge keys on the ${TS_CERT_DOMAIN} placeholder (1py.14 flip)
     // time, which IS the pinned name on the master — the pins stay
     // load-bearing for in-container DNS (the compose runtime contract,
     // unchanged by this flip).
-    const sc = JSON.parse(read('balena/registrar/serve-config.json'));
+    const sc = JSON.parse(read('images/tailscale/serve-config.json'));
     for (const key of Object.keys(sc.Web)) {
       expect(key.startsWith('${TS_CERT_DOMAIN}:')).toBe(true);
     }
@@ -168,9 +168,9 @@ describe('provision-then-flip: no flipped URL ships in any compose (lrb)', () =>
 
   it('no compose anywhere ships a ts.net URL (the flip is a fleet variable)', () => {
     for (const [rel, code] of [
-      ['balena/registrar/docker-compose.yml', balenaRegistrar],
-      ['balena/devices/docker-compose.yml', balenaDevices],
-      ['deploy/compose.yaml', deployCompose],
+      ['platforms/balena/registrar/docker-compose.yml', balenaRegistrar],
+      ['platforms/balena/devices/docker-compose.yml', balenaDevices],
+      ['platforms/compose/compose.yaml', deployCompose],
     ] as const) {
       expect(code, rel).not.toMatch(/https?:\/\/[^\s"']*ts\.net/);
     }

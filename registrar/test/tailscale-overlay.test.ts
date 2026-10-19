@@ -58,8 +58,8 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '../..');
 
 const composes = [
-  'balena/registrar/docker-compose.yml',
-  'balena/devices/docker-compose.yml',
+  'platforms/balena/registrar/docker-compose.yml',
+  'platforms/balena/devices/docker-compose.yml',
 ];
 
 /** File with full-line (`#`-prefixed) comment lines removed. */
@@ -98,11 +98,11 @@ describe.each(composes)('tailscale overlay service: %s', (rel) => {
 
   it('pins the official image at a fixed tag (never :latest)', () => {
     // lnf: the master BUILDS the serve image FROM this pin
-    // (Dockerfile.tailscale) — either a direct `image:` pin (devices)
+    // (images/tailscale/Dockerfile) — either a direct `image:` pin (devices)
     // or a build whose FROM is the pin (master) satisfies the guard.
     expect(
       /^    image: tailscale\/tailscale:v1\.102\.5$/m.test(ts) ||
-        /dockerfile: Dockerfile\.tailscale/.test(ts),
+        /dockerfile: images\/tailscale(-devices)?\/Dockerfile/.test(ts),
     ).toBe(true);
     expect(ts).not.toMatch(/:latest/);
   });
@@ -180,7 +180,7 @@ describe('tailscale overlay service: the deliberate master/devices delta (lnf + 
     // gateway :8443, scotty :8444). j7g.1 (the owner's AC3 live-leg
     // origin decision) extends the SAME serve-only TLS edge pattern to
     // the devices fleet: the devices' tailscale service becomes a BUILD
-    // too (Dockerfile.tailscale + serve-config.json in balena/devices),
+    // too (images/tailscale/Dockerfile + serve-config.json in platforms/balena/devices),
     // fronting the agent's A2A origin at :9900 — keyed on the
     // ${TS_CERT_DOMAIN} placeholder so each of the N devices serves at
     // its own MagicDNS name. Everything else — image tag lineage,
@@ -191,14 +191,14 @@ describe('tailscale overlay service: the deliberate master/devices delta (lnf + 
     const [master, devices] = blocks;
     expect(master).not.toBe('');
     expect(devices).not.toBe('');
-    expect(master).toMatch(/dockerfile: Dockerfile\.tailscale/);
+    expect(master).toMatch(/dockerfile: images\/tailscale(-devices)?\/Dockerfile/);
     expect(master).toMatch(/TS_SERVE_CONFIG: \/serve-config\.json/);
-    expect(devices).toMatch(/dockerfile: Dockerfile\.tailscale/);
+    expect(devices).toMatch(/dockerfile: images\/tailscale(-devices)?\/Dockerfile/);
     expect(devices).toMatch(/TS_SERVE_CONFIG: \/serve-config\.json/);
     // the shared join contract: identical lines modulo the serve delta
     const stripServe = (b: string) =>
       b.split('\n').filter((l) =>
-        !/dockerfile: Dockerfile\.tailscale/.test(l) &&
+        !/dockerfile: images\/tailscale(-devices)?\/Dockerfile/.test(l) &&
         !/build:/.test(l) &&
         !/context: \./.test(l) &&
         !/TS_SERVE_CONFIG/.test(l),

@@ -11,7 +11,7 @@ import { imageInputs, loadCatalog } from '../../scripts/image-catalog.mjs';
  * deployment-specific values in reusable image layers — tailnet DNS
  * names and addresses are the named examples. The master's
  * serve-config.json was the ONE remaining literal bake: the MagicDNS
- * FQDN keyed the Web map, and Dockerfile.tailscale's header comment
+ * FQDN keyed the Web map, and images/tailscale/Dockerfile's header comment
  * asserted (wrongly, per the plan's two-way verification) that the
  * ${TS_CERT_DOMAIN} placeholder is Kubernetes-only.
  *
@@ -30,7 +30,7 @@ import { imageInputs, loadCatalog } from '../../scripts/image-catalog.mjs';
  *   2. No Dockerfile comment (or any image-baked source) carries a
  *      literal MagicDNS FQDN or tailnet-qualified name.
  *   3. The stale "Kubernetes-only" comment is corrected — the master
- *      Dockerfile.tailscale header must document the placeholder as
+ *      images/tailscale/Dockerfile header must document the placeholder as
  *      the cross-fleet mechanism.
  *   4. The TCP/ports contract is unchanged by the flip (443/8443/8444
  *      still HTTPS-fronted; proxies still loopback) — the exposure fix
@@ -72,7 +72,7 @@ const BAKED_INPUTS = [
 const TS_NET_NAME = /[a-z0-9-]+\.[a-z0-9-]+\.ts\.net/i;
 
 describe('master serve-config.json: placeholder, not a live name (1py.14 slice 1)', () => {
-  const sc = JSON.parse(read('balena/registrar/serve-config.json'));
+  const sc = JSON.parse(read('images/tailscale/serve-config.json'));
 
   it('keys every Web entry on the ${TS_CERT_DOMAIN} placeholder', () => {
     expect(Object.keys(sc.Web).sort()).toEqual(
@@ -82,7 +82,7 @@ describe('master serve-config.json: placeholder, not a live name (1py.14 slice 1
   });
 
   it('carries no live tailnet name anywhere in the file', () => {
-    expect(read('balena/registrar/serve-config.json')).not.toMatch(TS_NET_NAME);
+    expect(read('images/tailscale/serve-config.json')).not.toMatch(TS_NET_NAME);
   });
 
   it('keeps the fronted surfaces identical to the pre-flip contract (443/8443/8444 HTTPS, loopback proxies)', () => {
@@ -101,10 +101,10 @@ describe('master serve-config.json: placeholder, not a live name (1py.14 slice 1
 describe('no image-baked input carries a live tailnet name (1py.14)', () => {
   it('the derived input set covers every image (sanity: serve configs, hooks, docs, sources)', () => {
     for (const rel of [
-      'balena/registrar/serve-config.json',
-      'balena/devices/serve-config.json',
-      'deploy/vs-a2a-wiring.sh',
-      'scripts/vs-mesh-enroll.py',
+      'images/tailscale/serve-config.json',
+      'images/tailscale-devices/serve-config.json',
+      'images/common/hooks/vs-a2a-wiring.sh',
+      'images/common/bin/vs-mesh-enroll.py',
       'docs/device-environment.md',
       'docs/vs-environment.md',
       'registrar/src/mesh-enroll.ts',
@@ -117,8 +117,8 @@ describe('no image-baked input carries a live tailnet name (1py.14)', () => {
     expect(read(rel), rel).not.toMatch(TS_NET_NAME);
   });
 
-  it('Dockerfile.tailscale comments are corrected, not asserting the Kubernetes-only myth', () => {
-    const master = read('balena/registrar/Dockerfile.tailscale');
+  it('images/tailscale/Dockerfile comments are corrected, not asserting the Kubernetes-only myth', () => {
+    const master = read('images/tailscale/Dockerfile');
     // the stale claims that motivated the literal bake:
     expect(master).not.toMatch(/Kubernetes-only/i);
     expect(master).not.toMatch(/substitutes an empty cert domain/i);
@@ -165,7 +165,7 @@ describe('mesh-enroll: tailnet identity from runtime env, not image bytes (1py.1
 });
 
 describe('mesh-enroll CLI: tailnet suffix from the runtime environment (1py.14 slice 2)', () => {
-  const cli = read('scripts/vs-mesh-enroll.py');
+  const cli = read('images/common/bin/vs-mesh-enroll.py');
 
   it('the baked CLI carries no hardcoded tailnet suffix', () => {
     expect(cli).not.toMatch(/MESH_TAILNET_SUFFIX\s*=\s*["']\.tailb7207e/);

@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 /**
  * Queue-seed contract guard (fleet-ops-1py.2).
  *
- * balena/registrar/queue-seed/ holds the VS queue's opening board as
+ * platforms/balena/registrar/queue-seed/ holds the VS queue's opening board as
  * repo artifacts: initial-beads.json (the bd create --graph seed — the
  * ONLY fleet-verified hierarchy format: bd create -f silently drops
  * parent links and rejects --dry-run) + README.md (the one-time run
@@ -30,7 +30,7 @@ import { describe, expect, it } from 'vitest';
  */
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '../..');
-const seedDir = path.join(repoRoot, 'balena/registrar/queue-seed');
+const seedDir = path.join(repoRoot, 'platforms/balena/registrar/queue-seed');
 
 interface SeedNode {
   key: string;

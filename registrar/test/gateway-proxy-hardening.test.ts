@@ -7,7 +7,7 @@ import { parse } from 'yaml';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '../..');
 const read = (rel: string) => readFileSync(path.join(repoRoot, rel), 'utf8');
-const composeFiles = ['balena/registrar/docker-compose.yml', 'deploy/compose.yaml'];
+const composeFiles = ['platforms/balena/registrar/docker-compose.yml', 'platforms/compose/compose.yaml'];
 
 function publishedPorts(rel: string, service: string): string[] {
   const compose = parse(read(rel)) as { services?: Record<string, { ports?: Array<string | { published?: string; target?: number; host_ip?: string }> }> };
@@ -22,7 +22,7 @@ describe('gateway proxy hardening contract', () => {
   });
 
   it('enables LiteLLM forwarded client IP handling', () => {
-    const config = parse(read('balena/registrar/litellm-config.yaml')) as { general_settings?: { use_x_forwarded_for?: boolean } };
+    const config = parse(read('images/litellm/litellm-config.yaml')) as { general_settings?: { use_x_forwarded_for?: boolean } };
     expect(config.general_settings?.use_x_forwarded_for).toBe(true);
   });
 
@@ -34,7 +34,7 @@ describe('gateway proxy hardening contract', () => {
     expect(canonical).toContain("outside the network's dynamic");
     // Single source: both images COPY docs/gateway-ops.md straight from the
     // repo-root build context (no vendored copies to keep in sync).
-    for (const dockerfile of ['balena/registrar/Dockerfile.hermes', 'balena/devices/Dockerfile.agent-hermes']) {
+    for (const dockerfile of ['images/hermes/Dockerfile', 'images/agent/Dockerfile']) {
       expect(read(dockerfile), dockerfile).toMatch(/^\s+docs\/gateway-ops\.md \\$/m);
     }
   });

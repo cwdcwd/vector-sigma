@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
  * gateway-memory plugin contract (fleet-ops-e5o.3).
  *
  * The VS agent images bake a product-agnostic copy of the gateway-memory
- * plugin (deploy/gateway-memory/ — the only copy; both Hermes images COPY
+ * plugin (images/common/gateway-memory/ — the only copy; both Hermes images COPY
  * it from the repo-root build context). This guard pins the lane's
  * contract points:
  *
@@ -28,7 +28,7 @@ import { describe, expect, it } from 'vitest';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '../..');
-const pluginDir = path.join(repoRoot, 'deploy/gateway-memory');
+const pluginDir = path.join(repoRoot, 'images/common/gateway-memory');
 
 const PY_SOURCES = ['__init__.py', 'schemas.py', 'tools.py'] as const;
 const ALLOWED_IMPORTS = new Set([
@@ -67,7 +67,7 @@ describe('gateway-memory plugin (e5o.3)', () => {
       'skills/gateway-memory/SKILL.md',
       'provenance-sha256.txt',
     ]) {
-      expect(existsSync(path.join(pluginDir, f)), `deploy/gateway-memory/${f} missing`).toBe(true);
+      expect(existsSync(path.join(pluginDir, f)), `images/common/gateway-memory/${f} missing`).toBe(true);
     }
   });
 
@@ -169,22 +169,22 @@ describe('gateway-memory plugin (e5o.3)', () => {
 describe('gateway-memory bake wiring (e5o.3, Dockerfiles + hook)', () => {
   const strip = (p: string) => stripComments(readFileSync(path.join(repoRoot, p), 'utf8'));
 
-  it('primus image (Dockerfile.hermes) bakes plugin + 06- hook', () => {
-    const code = strip('balena/registrar/Dockerfile.hermes');
-    expect(code).toMatch(/COPY deploy\/gateway-memory \/opt\/vs\/gateway-memory/);
-    expect(code).toMatch(/COPY deploy\/vs-memory-tools\.sh \/etc\/cont-init\.d\/06-vs-memory-tools/);
+  it('primus image (images/hermes/Dockerfile) bakes plugin + 06- hook', () => {
+    const code = strip('images/hermes/Dockerfile');
+    expect(code).toMatch(/COPY images\/common\/gateway-memory \/opt\/vs\/gateway-memory/);
+    expect(code).toMatch(/COPY images\/common\/hooks\/vs-memory-tools\.sh \/etc\/cont-init\.d\/06-vs-memory-tools/);
     expect(code).toMatch(/chmod 0755 \/etc\/cont-init\.d\/06-vs-memory-tools/);
   });
 
-  it('devices image (Dockerfile.agent-hermes) bakes plugin + 06- hook', () => {
-    const code = strip('balena/devices/Dockerfile.agent-hermes');
-    expect(code).toMatch(/COPY deploy\/gateway-memory \/opt\/vs\/gateway-memory/);
-    expect(code).toMatch(/COPY deploy\/vs-memory-tools\.sh \/etc\/cont-init\.d\/06-vs-memory-tools/);
+  it('devices image (images/agent/Dockerfile) bakes plugin + 06- hook', () => {
+    const code = strip('images/agent/Dockerfile');
+    expect(code).toMatch(/COPY images\/common\/gateway-memory \/opt\/vs\/gateway-memory/);
+    expect(code).toMatch(/COPY images\/common\/hooks\/vs-memory-tools\.sh \/etc\/cont-init\.d\/06-vs-memory-tools/);
     expect(code).toMatch(/chmod 0755 \/etc\/cont-init\.d\/06-vs-memory-tools/);
   });
 
   it('the hook: with-contenv shape, installs to plugins/, seeds plugins.enabled, fail-soft', () => {
-    const hook = readFileSync(path.join(repoRoot, 'deploy/vs-memory-tools.sh'), 'utf8');
+    const hook = readFileSync(path.join(repoRoot, 'images/common/hooks/vs-memory-tools.sh'), 'utf8');
     expect(hook).toMatch(/^#!\/command\/with-contenv sh/);
     const code = stripComments(hook);
     // installs into $HERMES_HOME/plugins/<plugin-name> (the loader's
@@ -204,7 +204,7 @@ describe('gateway-memory bake wiring (e5o.3, Dockerfiles + hook)', () => {
   it('no BuildKit-only ARG tokens in the hook-driven Dockerfiles (f57.21 guard holds)', () => {
     // the balena-dockerfiles test already sweeps all Dockerfiles; this is
     // the lane-local restatement for the two images this lane touches.
-    for (const f of ['balena/registrar/Dockerfile.hermes', 'balena/devices/Dockerfile.agent-hermes']) {
+    for (const f of ['images/hermes/Dockerfile', 'images/agent/Dockerfile']) {
       expect(strip(f)).not.toContain('TARGETARCH');
       expect(strip(f)).not.toContain('TARGETPLATFORM');
     }

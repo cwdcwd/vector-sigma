@@ -56,19 +56,19 @@ function exists(rel: string): boolean {
   return existsSync(path.join(repoRoot, rel));
 }
 
-const wrapper = read('scripts/vs-github-identity.py');
-const hook = read('scripts/vs-github-identity.sh');
+const wrapper = read('images/common/bin/vs-github-identity.py');
+const hook = read('images/common/hooks/vs-github-identity.sh');
 const usageDoc = read('docs/vs-github.md');
-const devicesDockerfile = read('balena/devices/Dockerfile.agent-hermes');
-const registrarDockerfile = read('balena/registrar/Dockerfile.hermes');
+const devicesDockerfile = read('images/agent/Dockerfile');
+const registrarDockerfile = read('images/hermes/Dockerfile');
 
 /** Origin-fleet identity tokens that must NEVER appear in VS repo content. */
 const FLEET_NAME_RE = /doombot|ultronbot|kangbot|thanosbot|lazybaer|thecabal/i;
 
 describe('VS GitHub identity (fleet-ops-e5o.5): sources', () => {
   it('every source-of-truth file exists', () => {
-    expect(exists('scripts/vs-github-identity.py')).toBe(true);
-    expect(exists('scripts/vs-github-identity.sh')).toBe(true);
+    expect(exists('images/common/bin/vs-github-identity.py')).toBe(true);
+    expect(exists('images/common/hooks/vs-github-identity.sh')).toBe(true);
     expect(exists('docs/vs-github.md')).toBe(true);
   });
 });
@@ -76,15 +76,15 @@ describe('VS GitHub identity (fleet-ops-e5o.5): sources', () => {
 describe('VS GitHub identity (fleet-ops-e5o.5): image wiring', () => {
   it('the devices image bakes the wrapper + the 05- hook with exec bits', () => {
     const code = stripComments(devicesDockerfile);
-    expect(code).toMatch(/COPY scripts\/vs-github-identity\.py \/usr\/local\/bin\/vs-github-identity/);
-    expect(code).toMatch(/COPY scripts\/vs-github-identity\.sh \/etc\/cont-init\.d\/05-vs-github-identity/);
+    expect(code).toMatch(/COPY images\/common\/bin\/vs-github-identity\.py \/usr\/local\/bin\/vs-github-identity/);
+    expect(code).toMatch(/COPY images\/common\/hooks\/vs-github-identity\.sh \/etc\/cont-init\.d\/05-vs-github-identity/);
     expect(code).toMatch(/chmod 0755 \/usr\/local\/bin\/vs-github-identity \/etc\/cont-init\.d\/05-vs-github-identity/);
   });
 
   it('the primus (registrar) image bakes the same pair (one contract, both images)', () => {
     const code = stripComments(registrarDockerfile);
-    expect(code).toMatch(/COPY scripts\/vs-github-identity\.py \/usr\/local\/bin\/vs-github-identity/);
-    expect(code).toMatch(/COPY scripts\/vs-github-identity\.sh \/etc\/cont-init\.d\/05-vs-github-identity/);
+    expect(code).toMatch(/COPY images\/common\/bin\/vs-github-identity\.py \/usr\/local\/bin\/vs-github-identity/);
+    expect(code).toMatch(/COPY images\/common\/hooks\/vs-github-identity\.sh \/etc\/cont-init\.d\/05-vs-github-identity/);
     expect(code).toMatch(/chmod 0755 \/etc\/cont-init\.d\/05-vs-github-identity \/usr\/local\/bin\/vs-github-identity/);
   });
 
@@ -201,7 +201,7 @@ describe('VS GitHub identity (fleet-ops-e5o.5): behavioral proof (mock API + rea
   // No real credential is touched; the wrapper's API root is pointed at
   // the loopback via its CI-only override env (GH_API_ROOT).
   it('mints and authenticates against a mock installation', () => {
-    const script = path.join(repoRoot, 'scripts/vs-github-identity.py');
+    const script = path.join(repoRoot, 'images/common/bin/vs-github-identity.py');
     const out = execFileSync('node', [path.join(here, 'helpers', 'vs-github-identity.e2e.mjs')], {
       cwd: repoRoot,
       encoding: 'utf8',
