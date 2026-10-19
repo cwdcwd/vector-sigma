@@ -13,6 +13,14 @@
 # properties" (verified against the CLI's bundled ajv schema, v24.x).
 version: "2.4"
 #
+# Images: every VS-built service's `build:` block (context: ../.., the repo
+# root) is the INPUT to scripts/render-release-compose.mjs, which a
+# `devices-v*` release runs to swap each block for the CI-built GHCR image pinned
+# by digest (images.json; .github/workflows/_images.yml). `balena push` /
+# `balena deploy --build` against THIS file is NOT a supported path: the
+# balena CLI confines build contexts to the project dir and rejects ../..
+# Release only by pushing a `devices-v*` tag.
+#
 # No secrets in image layers, build args, or this file. The per-device
 # REGISTRAR_KEY is a device-scoped balena variable; BALENA_DEVICE_UUID is
 # injected by the platform automatically.
@@ -26,8 +34,8 @@ services:
     # node heartbeat) is RETIRED by this lane: the engineering spec's
     # "real runtime is a fleet PR" clause resolves HERE.
     build:
-      context: .
-      dockerfile: Dockerfile.agent-hermes
+      context: ../..
+      dockerfile: balena/devices/Dockerfile.agent-hermes
     # The canonical long-run form (the upstream reference compose's shape,
     # the b1r run-3 lesson — a bare REPL exits on EOF with closed stdin).
     command: ["gateway", "run"]
@@ -88,8 +96,8 @@ services:
 
   registrant:
     build:
-      context: ./registrant
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: registrant/Dockerfile
     volumes:
       - agent-data:/data/agent
     # j7g phase 1b (fleet-ops-lrb): the SAME static hosts pin as the agent

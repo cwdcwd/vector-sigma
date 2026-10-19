@@ -7,9 +7,9 @@ import { describe, expect, it } from 'vitest';
  * gateway-memory plugin contract (fleet-ops-e5o.3).
  *
  * The VS agent images bake a product-agnostic copy of the gateway-memory
- * plugin (deploy/gateway-memory/ — canonical; byte-pinned into both balena
- * app dirs by the vendored-drift test). This guard pins the lane's
- * non-vendoring contract points:
+ * plugin (deploy/gateway-memory/ — the only copy; both Hermes images COPY
+ * it from the repo-root build context). This guard pins the lane's
+ * contract points:
  *
  *   1. The plugin is stdlib-only (the bake ruling: no new runtime deps
  *      for the agent image). Import scan over the python sources.
@@ -171,15 +171,15 @@ describe('gateway-memory bake wiring (e5o.3, Dockerfiles + hook)', () => {
 
   it('primus image (Dockerfile.hermes) bakes plugin + 06- hook', () => {
     const code = strip('balena/registrar/Dockerfile.hermes');
-    expect(code).toMatch(/COPY gateway-memory \/opt\/vs\/gateway-memory/);
-    expect(code).toMatch(/COPY vs-memory-tools\.sh \/etc\/cont-init\.d\/06-vs-memory-tools/);
+    expect(code).toMatch(/COPY deploy\/gateway-memory \/opt\/vs\/gateway-memory/);
+    expect(code).toMatch(/COPY deploy\/vs-memory-tools\.sh \/etc\/cont-init\.d\/06-vs-memory-tools/);
     expect(code).toMatch(/chmod 0755 \/etc\/cont-init\.d\/06-vs-memory-tools/);
   });
 
   it('devices image (Dockerfile.agent-hermes) bakes plugin + 06- hook', () => {
     const code = strip('balena/devices/Dockerfile.agent-hermes');
-    expect(code).toMatch(/COPY agent\/gateway-memory \/opt\/vs\/gateway-memory/);
-    expect(code).toMatch(/COPY agent\/vs-memory-tools\.sh \/etc\/cont-init\.d\/06-vs-memory-tools/);
+    expect(code).toMatch(/COPY deploy\/gateway-memory \/opt\/vs\/gateway-memory/);
+    expect(code).toMatch(/COPY deploy\/vs-memory-tools\.sh \/etc\/cont-init\.d\/06-vs-memory-tools/);
     expect(code).toMatch(/chmod 0755 \/etc\/cont-init\.d\/06-vs-memory-tools/);
   });
 

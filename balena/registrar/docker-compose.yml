@@ -14,6 +14,14 @@
 # properties" (verified against the CLI's bundled ajv schema, v24.x).
 version: "2.4"
 #
+# Images: every VS-built service's `build:` block (context: ../.., the repo
+# root) is the INPUT to scripts/render-release-compose.mjs, which a
+# `registrar-v*` release runs to swap each block for the CI-built GHCR image pinned
+# by digest (images.json; .github/workflows/_images.yml). `balena push` /
+# `balena deploy --build` against THIS file is NOT a supported path: the
+# balena CLI confines build contexts to the project dir and rejects ../..
+# Release only by pushing a `registrar-v*` tag.
+#
 # Cross-fleet reachability: each balena fleet is its own VPN — devices
 # on the devices fleet CANNOT resolve this device over balena's
 # internal network. The registrar therefore publishes on the device's
@@ -95,8 +103,10 @@ services:
 
   registrar:
     build:
-      context: ./registrar
-      dockerfile: Dockerfile
+      # Repo-root context: releases never build here — CI builds images.json's
+      # component once and the release renderer swaps this block for its digest.
+      context: ../..
+      dockerfile: registrar/Dockerfile
     environment:
       # Structural (fleet-ops-f57.8): the registrar builds DATABASE_URL
       # from POSTGRES_USER/POSTGRES_PASSWORD/POSTGRES_DB/DB_HOST/DB_PORT
@@ -229,8 +239,10 @@ services:
     volumes:
       - doltdata:/var/lib/dolt
     ports:
-      # Loopback-only per gateway hardening: device queue clients must use
-      # the documented approved access path rather than an exposed DB port.
+      # Loopback-only per gateway hardening (#89): no database port on the
+      # LAN. Device bd clients reach the queue over the TAILNET :3326 — the
+      # tailscale serve edge forwards it as raw TCP to this publish
+      # (serve-config.json "3326": TCPForward 127.0.0.1:3326).
       - "127.0.0.1:3326:3306"
     healthcheck:
       # Dolt's documented liveness query, AUTHENTICATED, with the client
@@ -332,11 +344,10 @@ services:
     # the config-only queue join + the environment docs + the boot
     # hook. Owner ruling: primus must be fully rebuildable from the
     # repo + a fresh registrar release with zero manual steps. One
-    # artifact: deploy/compose.yaml builds the SAME Dockerfile — no
-    # twin drift (the FROM pin stays the parity pin both sides share).
+    # artifact: deploy/compose.yaml runs the SAME GHCR image.
     build:
-      context: .
-      dockerfile: Dockerfile.hermes
+      context: ../..
+      dockerfile: balena/registrar/Dockerfile.hermes
     # The image's CMD default is a bare `hermes` REPL — it exits on EOF
     # when stdin closes (compose up -d). The upstream reference compose's
     # canonical long-run form (run-3 lesson): `gateway run`.
@@ -401,16 +412,16 @@ services:
     stop_signal: SIGTERM
     restart: always
 
-  # f57.14: the master device's OWN registrant (vendored twin of the
-  # devices app's registrant — same sources, same image shape). Polls the
+  # f57.14: the master device's OWN registrant (the same registrant
+  # image the devices fleet runs). Polls the
   # compose-internal registrar over http (pre-TLS per the bead's contract:
   # never leaves the composition network) and applies the primus bundle to
   # the shared primus-data volume, writing /data/primus/ready.marker last
   # — the hermes service's gate.
   registrant-own:
     build:
-      context: ./registrant-own
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: registrant/Dockerfile
     environment:
       # The master's own balena device UUID (BALENA_DEVICE_UUID) and the
       # REGISTRAR_KEY for the primus row are balenaCloud DEVICE variables

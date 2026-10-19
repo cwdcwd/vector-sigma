@@ -12,6 +12,7 @@
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
+    "@fastify/multipart": "^10.1.2",
     "@node-rs/argon2": "^2.0.2",
     "@vector-sigma/shared": "*",
     "drizzle-orm": "^0.45.2",

@@ -97,7 +97,11 @@ exit-1 restart-loop instead of a benign park).
    cannot talk to each other over the tailnet (the first overlay
    activation proved it: control-plane pongs while the data plane
    stayed dark). The owner's live policy already carries it; this
-   example now matches.
+   example now matches. The same rule is what admits devices to the
+   queue: Dolt is loopback-only on the master (#89) and the serve edge
+   forwards the tailnet `:3326` to it as raw TCP, so bd clients on
+   `tag:vs-agent` devices (and the owner, via the first rule) reach it at
+   `<master>.<tailnet>.ts.net:3326` and nothing on the LAN can.
 4. **Set the balenaCloud variables** (dashboard → device/service
    pages):
    - `TS_HOSTNAME` — **device-scoped**, per device: the MagicDNS
@@ -214,8 +218,9 @@ IS the TLS front door. What shipped:
 - **Loopback-only publishes**: registrar/litellm/scotty gain
   `127.0.0.1`-prefixed host publishes (the supervisor dialect this
   lane was gated to exercise). The LAN front door (80/443/8443/8444)
-  is dark from this release on; only dolt's `:3326` stays
-  LAN-reachable (the bd queue contract).
+  is dark from this release on, dolt's `:3326` included (#89): bd
+  clients reach the queue at the master's tailnet `:3326`, which the
+  serve config forwards as raw TCP to dolt's loopback publish.
 - **Let's Encrypt certificates** auto-provision + renew inside
   tailscaled once the tailnet has **HTTPS enabled** (admin console →
   DNS → MagicDNS → HTTPS Certificates) — the ONE owner prerequisite.
@@ -249,7 +254,11 @@ cannot resolve ts.net names):
 - [ ] `https://vector-sigma.tailb7207e.ts.net:8444/api/projects` →
   200 (no credentials — the ACL is the lock now).
 - [ ] LAN front door dark: `80/443/8443/8444` REFUSED from a LAN host
-  at the device IP (the AC3 contrast; dolt `:3326` still answers).
+  at the device IP (the AC3 contrast) — and `:3326` REFUSED on the LAN too.
+- [ ] Queue over the tailnet: from a `tag:vs-agent` device (or the owner's
+  machine), `nc -zv <master>.<tailnet>.ts.net 3326` connects and
+  `bd list` against `--server-host <master>.<tailnet>.ts.net --server-port
+  3326` returns the queue (the serve edge's TCP forward, PR #87).
 - [ ] On-device loopback probes: `127.0.0.1:3000/healthz`,
   `127.0.0.1:4000` (gateway port), `127.0.0.1:3306/api/projects`
   answer from the device's host shell.

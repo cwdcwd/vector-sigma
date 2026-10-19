@@ -104,8 +104,7 @@ describe('credential-only scanner: binary content is skipped, not scanned', () =
 });
 
 describe('pem_private_key: distinguishes a non-secret PEM placeholder from a real-shaped PEM body (PR #61 review finding #2)', () => {
-  // The exact shape registrar/src/admin-html.ts ships (and its vendored
-  // twin in balena/registrar/registrar/src/admin-html.ts): a GitHub App
+  // The exact shape registrar/src/admin-html.ts ships: a GitHub App
   // PEM textarea placeholder — header + ellipsis + footer, zero real
   // key material. This is UI copy, not a secret, and must PASS.
   const placeholderShape = '-----BEGIN RSA PRIVATE KEY-----\n\u2026\n-----END RSA PRIVATE KEY-----';

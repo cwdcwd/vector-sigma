@@ -85,10 +85,21 @@ describe('serve-config.json: the containerboot v1.102.5 dialect (lnf)', () => {
   const sc = JSON.parse(read('balena/registrar/serve-config.json'));
 
   it('fronts exactly the three management surfaces on the tailnet ports', () => {
-    expect(Object.keys(sc.TCP).sort()).toEqual(['443', '8443', '8444']);
+    expect(Object.keys(sc.TCP).sort()).toEqual(['3326', '443', '8443', '8444']);
     for (const port of ['443', '8443', '8444']) {
       expect(sc.TCP[port]).toEqual({ HTTPS: true });
     }
+  });
+
+  // PR #87 review (kangbot, 5575541043): #89 bound dolt's host publish to
+  // loopback, which cut device bd clients off the queue. The tailnet is the
+  // secured path: a raw TCP forward of the tailnet :3326 to the loopback
+  // publish (Dolt speaks the MySQL wire protocol, not HTTP — no Web
+  // handler). Reachable only from tailnet peers the ACL admits
+  // (tag:vs-agent -> tag:vs-master); never the LAN.
+  it('forwards the queue (dolt) as raw TCP on the tailnet :3326 -> loopback 3326 only', () => {
+    expect(sc.TCP['3326']).toEqual({ TCPForward: '127.0.0.1:3326' });
+    expect(Object.keys(sc.Web)).not.toContain('${TS_CERT_DOMAIN}:3326');
   });
 
   it('keys Web by SNI:port on the ${TS_CERT_DOMAIN} placeholder (1py.14 — no baked FQDN)', () => {
@@ -149,12 +160,15 @@ describe('balena/registrar compose: the serve-only edge (lnf)', () => {
   });
 
   it('publishes nothing to the LAN front door (IP-prefixed only)', () => {
-    // every ports entry must carry the 127.0.0.1 prefix; dolt's :3326 is
-    // the one documented exception (the queue contract, lane D5).
+    // every ports entry carries the 127.0.0.1 prefix — dolt included since
+    // #89; devices reach the queue through the serve edge's tailnet :3326
+    // TCP forward (asserted above), never a LAN publish.
     const publishes = registrarCompose.match(/- "[^"]+:\d+"$/gm) ?? [];
+    expect(publishes.length).toBeGreaterThan(0);
     for (const p of publishes) {
-      expect(p.startsWith('- "127.0.0.1:') || p === '- "3326:3306"').toBe(true);
+      expect(p.startsWith('- "127.0.0.1:'), p).toBe(true);
     }
+    expect(publishes).toContain('- "127.0.0.1:3326:3306"');
   });
 });
 

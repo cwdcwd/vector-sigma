@@ -338,9 +338,11 @@ describe('ghcr-promote-run.mjs: CI invokes it with https (no scheme override)', 
     }
   });
 
-  it('every publisher workflow that promotes or verifies invokes the in-repo script', () => {
+  it('every publisher workflow that promotes, verifies or ledgers invokes the in-repo script', () => {
+    // Promote + verify live once in the shared pipeline; the releases run
+    // the same script for the release-evidence ledger.
     for (const wf of [
-      '.github/workflows/build-images.yml',
+      '.github/workflows/_promote.yml',
       '.github/workflows/release-registrar.yml',
       '.github/workflows/release-devices.yml',
     ]) {

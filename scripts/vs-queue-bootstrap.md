@@ -9,7 +9,8 @@ run bd clients against the master's Dolt; cross-fleet coordination
 ## The composition
 
 ```
-dolt     dolthub/dolt-sql-server:2.3.5, port 3326 (LAN), volume doltdata
+dolt     dolthub/dolt-sql-server:2.3.5, host 127.0.0.1:3326 (loopback) + tailnet :3326
+         via the master serve edge's TCP forward, volume doltdata
 scotty   scotty v0.3.0 cc55734 + 8ea patch + bd 1.2.2 + bd-readonly wrapper,
          port 3306 (LAN), SCOTTY_READ_ONLY=1, BEADS_REPO=/queue-join
 ```
@@ -42,13 +43,14 @@ Rules, verbatim from the fleet contract:
 
 ## One-time init (coordinator- or owner-run, first connect only)
 
-From any host that can reach `<master-LAN-IP>:3326`, with bd 1.2.2 installed:
+From any tailnet host the ACL admits to `<master>.<tailnet>.ts.net:3326` (the owner's
+machine, or the master itself at `127.0.0.1:3326`), with bd 1.2.2 installed:
 
 ```bash
 mkdir vs-ops && cd vs-ops          # any scratch dir; the name is cosmetic
 export BEADS_DOLT_PASSWORD='<from owner — the DOLT_PASSWORD fleet variable>'
 bd init --server \
-  --server-host <master-LAN-IP> \
+  --server-host <master>.<tailnet>.ts.net \
   --server-port 3326 \
   --server-user vs \
   --database vs_ops \
@@ -82,7 +84,7 @@ cat > .beads/metadata.json <<'EOF'
   "database": "vs_ops",
   "backend": "dolt",
   "dolt_mode": "server",
-  "dolt_server_host": "<master-LAN-IP>",
+  "dolt_server_host": "<master>.<tailnet>.ts.net",
   "dolt_server_user": "vs",
   "dolt_database": "vs_ops",
   "project_id": "bcde5891-5482-4eb0-a223-8533504832d6",
@@ -121,13 +123,19 @@ See `docs/queue-conventions.md`.
 
 ## Exposure decisions (documented per AC1)
 
-- **Dolt :3326 published to the device LAN** — deliberate: the owner ruling
-  makes device-side bd clients load-bearing ("VS devices run bd clients
-  against it"); an unpublished port would break the core queue contract. Not
-  reachable off-LAN: balenaCloud's public-URL feature tunnels device port 80
-  ONLY (fleet-ops-f57.9). Matches the origin-fleet precedent (central Dolt at LAN
-  :3326 serving every fleet bd client).
+- **Dolt :3326 is TAILNET-only** — device-side bd clients are load-bearing
+  (owner ruling: "VS devices run bd clients against it"), but the host
+  publish is loopback-only (`127.0.0.1:3326:3306`, #89's hardening: no
+  database port on the LAN). The master's tailscale serve edge forwards the
+  tailnet :3326 as raw TCP to that loopback publish
+  (`balena/registrar/serve-config.json`: `"3326": {"TCPForward":
+  "127.0.0.1:3326"}`), so the queue is reachable exactly by the tailnet
+  peers the ACL admits — `tag:vs-agent` devices and the owner — over
+  WireGuard, and still authenticates as the `vs` user. Self-host
+  (`deploy/`) has no serve edge: front the loopback publish with your own
+  secured path (your tailnet, an SSH tunnel) before devices can join.
 - **Scotty :3306 published to the device LAN** — the queue UI for the owner
   and VS agents; same LAN-only posture.
 - **Dolt root stays localhost-only** (image default); the queue user `vs` is
-  the only LAN-reachable account, password via fleet variable.
+  the only remotely reachable account (via the tailnet :3326 forward),
+  password via fleet variable.

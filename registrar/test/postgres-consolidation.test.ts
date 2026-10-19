@@ -65,19 +65,25 @@ describe('postgres consolidation contract (fleet-ops-anc)', () => {
     );
   });
 
-  it.each([
-    ['balena/registrar/docker-compose.yml', balenaCompose],
-    ['deploy/compose.yaml', deployCompose],
-  ])('%s: postgres service builds the wrapper image', (_rel, code) => {
-    // The postgres block must be a build, and the dockerfile must be
-    // Dockerfile.postgres. Extract the postgres service block (up to the
-    // next service key) so a stray dockerfile line elsewhere cannot pass it.
+  // Extract the postgres service block (up to the next service key) so a
+  // stray dockerfile/image line elsewhere cannot pass it.
+  const postgresBlock = (code: string): string => {
     const m = /^ {2}postgres:\n([\s\S]*?)(?=^ {2}\S|\n\w|\Z|^$)/m.exec(code);
     expect(m, 'postgres service block not found').not.toBeNull();
-    const block = m ? m[1] : '';
-    expect(block, 'postgres must build, not pull the stock image').toMatch(
+    return m ? m[1] : '';
+  };
+
+  it('balena/registrar/docker-compose.yml: postgres service is the wrapper image build (rendered to its digest at release)', () => {
+    const block = postgresBlock(balenaCompose);
+    expect(block, 'postgres must build the wrapper, not pull the stock image').toMatch(
       /dockerfile:\s*Dockerfile\.postgres/,
     );
+    expect(block).not.toMatch(/image:\s*postgres:16-alpine/);
+  });
+
+  it('deploy/compose.yaml: postgres service runs the published wrapper image (the images.json postgres component)', () => {
+    const block = postgresBlock(deployCompose);
+    expect(block).toMatch(/image:\s*\$\{VS_IMAGE_REGISTRY:-ghcr\.io\/cwdcwd\/vector-sigma\}\/postgres:\$\{VS_IMAGE_TAG:\?/);
     expect(block, 'postgres must not use the unwrapped stock image').not.toMatch(
       /image:\s*postgres:16-alpine/,
     );

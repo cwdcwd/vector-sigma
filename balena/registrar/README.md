@@ -19,40 +19,29 @@ Deployed fleet: `g_c_d/vector-sigma-master`.
 ```
 balena/registrar/
 ├── docker-compose.yml        # registrar + postgres + gateway + queue + primus + tailscale (the serve edge)
-├── README.md
-└── registrar/                 # VENDORED workspace sources (context dir)
-    ├── Dockerfile            # multi-stage: build → runtime (non-root)
-    ├── package.json          # exact-pinned deps, workspaces: shared
-    ├── tsconfig.json
-    ├── drizzle/              # migrations (MIGRATE_ON_START=true)
-    ├── shared/               # vendored @vector-sigma/shared
-    └── src/                  # vendored registrar sources
+├── Dockerfile.hermes         # primus (repo-root context: COPYs docs/, deploy/, scripts/)
+├── Dockerfile.{postgres,litellm,scotty,tailscale}  # wrappers (this dir is their context)
+├── queue-join/, vs-queue-join.sh, bd-readonly, … # inputs only these images use
+└── README.md
 ```
 
-## Why the sources are vendored
+## Where the images come from
 
-Same constraint as [balena/devices/](../devices/README.md): balena
-build contexts are confined to the app source dir, so the registrar +
-shared sources live here byte-for-byte identical to the workspace
-originals, pinned by `registrant/test/vendored-drift.test.ts` in the
-root test suite. Regenerate on upstream change:
+Nothing here is vendored. Every image is an `images.json` component that CI
+builds ONCE (`.github/workflows/_images.yml`) from the canonical sources —
+`registrar/Dockerfile` and `registrant/Dockerfile` at the repo root, the
+Dockerfiles in this dir — scans it, runs the compose E2E on those exact
+bytes and promotes them to GHCR. A `registrar-v*` tag runs that pipeline,
+then `scripts/render-release-compose.mjs` turns every `build:` block in
+`docker-compose.yml` into `image: ghcr.io/…/<component>@sha256:<arm64
+child digest>` and `balena deploy` ships the rendered compose. The
+`build:` blocks here are that render's input (and the repo-root build
+recipe) — the balena builder never sees source.
 
-```bash
-cp -f registrar/package.json balena/registrar/registrar/package.json  # then re-pin versions to the lockfile
-cp -f registrar/tsconfig.json balena/registrar/registrar/tsconfig.json
-cp -f shared/tsconfig.json balena/registrar/registrar/shared/tsconfig.json
-cp -f shared/src/index.ts balena/registrar/registrar/shared/src/index.ts
-cp -f registrar/src/*.ts balena/registrar/registrar/src/        # flat src/
-cp -f registrar/src/db/*.ts balena/registrar/registrar/src/db/
-cp -f registrar/drizzle/*.sql balena/registrar/registrar/drizzle/
-cp -f registrar/drizzle/meta/* balena/registrar/registrar/drizzle/meta/
-```
-
-Note: the vendored `package.json` is NOT byte-identical to the
-workspace one (the workspace manifest carries vitest/pg-mem/drizzle-kit
-dev tooling the image does not need, and `workspaces` is scoped to the
-vendored `shared/`); the drift test pins its dependency versions to
-the root lockfile instead.
+`balena push` (or `balena deploy --build`) against `docker-compose.yml` is
+**not a supported path**: the `build:` contexts point at the repo root
+(`../..`), which the balena CLI refuses — it confines build contexts to the
+project dir. Ship by pushing a `registrar-v*` tag.
 
 ## Runtime configuration
 
@@ -116,8 +105,9 @@ Since lnf (j7g phase 2) the composition's published surface is the
 `https://vector-sigma.tailb7207e.ts.net:8444/` for the scotty queue UI
 (the tailnet ACL is the lock — basic_auth retired with caddy). Every
 service publishes on 127.0.0.1 loopback ONLY; the LAN front door
-(80/443/8443/8444) is dark from this release on. Only dolt's `:3326`
-stays LAN-reachable (the bd queue contract). See docs/tls-runbook.md
+(80/443/8443/8444) is dark from this release on, and dolt's `:3326` is
+loopback-only too (#89): bd clients reach the queue at the tailnet `:3326`,
+which `serve-config.json` forwards as raw TCP to the loopback publish. See docs/tls-runbook.md
 (rewritten for the serve-only edge) and docs/tailscale-runbook.md.
 
 
@@ -485,7 +475,7 @@ discovery.
 ## The VS queue (dolt + scotty) — f57.15
 
 The master composition also carries the VS fleet's own work queue:
-the `dolt` service (Dolt SQL server, database `vs_ops`, LAN :3326)
+the `dolt` service (Dolt SQL server, database `vs_ops`, tailnet :3326)
 and the `scotty` dashboard (Bead Me Up Scotty v0.3.0 `cc55734` + the
 fleet's 8ea deep-link patch + bd pinned at 1.2.2 + the `bd-readonly`
 wrapper, LAN :3306). VS devices run bd clients against the dolt
@@ -519,8 +509,8 @@ the coordinator bootstraps through the SAME chain every device uses:
 registrar (started) → registrant-own (fetch + apply bundle) → hermes (started)
 ```
 
-- **`registrant-own`** — a vendored twin of the devices app's registrant
-  (byte-pinned by `registrant/test/vendored-drift.test.ts`). It polls the
+- **`registrant-own`** — the same `registrant` image every device runs.
+  It polls the
   compose-internal registrar (`http://registrar:3000` — pre-TLS by the
   bead's contract; the https flip rides the same sequencing as the
   devices fleet) and applies the primus bundle to the shared
@@ -584,7 +574,7 @@ never clobbered by a container update.
    key — f57.8 pattern).
 4. Tag the release; the chain self-bootstraps. The deploy E2E (AC12)
    proves the chain end-to-end in CI: the REAL official image + the REAL
-   vendored registrant + the seeded full bundle.
+   registrant image + the seeded full bundle.
 
 ### primus health
 

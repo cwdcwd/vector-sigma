@@ -28,8 +28,8 @@ dashboard variables on the device).
 
 ```bash
 cp deploy/.env.example deploy/.env
-$EDITOR deploy/.env        # set POSTGRES_PASSWORD, SESSION_SECRET, LITELLM_* (required)
-docker compose -f deploy/compose.yaml up -d --build
+$EDITOR deploy/.env        # set VS_IMAGE_TAG, POSTGRES_PASSWORD, SESSION_SECRET, LITELLM_* (required)
+docker compose -f deploy/compose.yaml up -d
 # TLS (lnf, j7g phase 2): the caddy edge is RETIRED. Services publish
 # 127.0.0.1-only; front them with your own TLS edge (tailscale serve on
 # the balena master). Quickstart probes the loopback registrar:
@@ -69,8 +69,9 @@ Notes:
 - **VS queue plane (f57.15)**: `DOLT_PASSWORD`, `DOLT_ROOT_PASSWORD`, and
   `BEADS_DOLT_PASSWORD` (same value as `DOLT_PASSWORD`) are required in
   `deploy/.env`. The `dolt` service (Dolt SQL server, `vs_ops` database)
-  publishes :3326 for device bd clients (the queue contract — drop the
-  publish only if you accept a queue nobody can join); `scotty` (the
+  publishes :3326 on loopback only (#89) — devices can join the queue only
+  once you front it with your own secured path (your tailnet, an SSH
+  tunnel; the balena master uses a tailscale serve TCP forward); `scotty` (the
   patched pinned dashboard) publishes :3306 and serves the queue
   READ-ONLY (two layers: `SCOTTY_READ_ONLY=1` + the `bd-readonly` BD_BIN
   wrapper). One-time `bd init --server` + device joins: see
@@ -148,8 +149,8 @@ What the E2E proves, in order (the bead's acceptance criteria):
     the tailscale serve edge proxies at the MagicDNS name on the
     balena master. The caddy TLS edge and its cert checks are
     retired; the https-on-ts.net path is canary evidence (AC4).
-12. **primus self-bootstrap (f57.14)**: the REAL official Hermes image +
-    the REAL vendored registrant bootstrap the coordinator's identity
+12. **primus self-bootstrap (f57.14)**: the REAL primus Hermes image +
+    the REAL registrant image bootstrap the coordinator's identity
     through the same chain every device uses — ready marker, every
     structured canonical on the volume (merged agent.env, secrets.env,
     verbatim SOUL.md, a2a.json, github-app.pem), and the hermes
@@ -180,20 +181,33 @@ The device service runs the real registrant image (`registrant/dist/index.js`)
 — the same container shape the balenaOS device app uses (f57.6), with
 platform env provided by compose instead of the balena supervisor.
 
-## Image
+## Images
 
-One image (`deploy/Dockerfile`), three entrypoints:
+Self-host runs the SAME images the balena fleets run. `images.json` lists
+every component; CI (`.github/workflows/_images.yml`) builds each one once
+from its Dockerfile, credential-scans its inputs, content-gates the OCI
+layout, runs the compose E2E on those exact amd64 bytes, and promotes them
+to `ghcr.io/cwdcwd/vector-sigma/<component>`, tagged with the commit SHA.
 
-| Service   | Command                                    |
-|-----------|--------------------------------------------|
-| registrar | `node registrar/dist/index.js`             |
-| seed      | `node --import tsx deploy/seed/seed.ts`     |
-| device    | `node registrant/dist/index.js`             |
+| Service          | Image (`<component>`) | Dockerfile |
+|------------------|-----------------------|------------|
+| registrar        | `registrar`           | `registrar/Dockerfile` |
+| registrant-own   | `registrant`          | `registrant/Dockerfile` |
+| hermes           | `hermes`              | `balena/registrar/Dockerfile.hermes` |
+| postgres         | `postgres`            | `balena/registrar/Dockerfile.postgres` |
+| litellm          | `litellm`             | `balena/registrar/Dockerfile.litellm` |
+| scotty           | `scotty`              | `balena/registrar/Dockerfile.scotty` |
 
-Build context is the repo root (see `.dockerignore`); all three workspaces
-are built by the root npm workspaces install. The container runs as the
-base image's built-in non-root `node` user (uid/gid 1000) — the device data
-volume must be writable by that uid (compose named volumes are).
+Set `VS_IMAGE_TAG` in `deploy/.env` to the commit SHA you run (there is no
+floating tag); `VS_IMAGE_REGISTRY` points at a mirror if you keep one.
+Images run as the non-root `node` user (uid/gid 1000) where they carry
+their own runtime — volumes must be writable by that uid (compose named
+volumes are).
+
+The E2E (`deploy/e2e.sh --up`) builds the same Dockerfiles locally under
+`vs-e2e/<component>:ci` tags; in CI, `E2E_PREBUILT=1` runs the scanned
+images instead and never builds. `deploy/Dockerfile` is only the E2E seed
+harness (test tooling, never published).
 
 ## Device Hermes context and tool-output defaults (1py.18)
 

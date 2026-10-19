@@ -122,5 +122,8 @@ describe('credential-history-audit.mjs: detects + redacts a synthetic credential
     const result = runCredentialHistoryAudit(['--repo', repoRoot, '--out', outPath]);
     expect(result.commitsVisited).toBeGreaterThan(0);
     expect(readFileSync(outPath, 'utf8')).toContain('Credential-only git HISTORY audit');
-  });
+    // Runtime scales with the checkout's history (several git calls per
+    // commit, every ref): CI's depth-1 clone takes seconds, a full local
+    // clone ~40s, so this one test gets more than the 30s default.
+  }, 120_000);
 });

@@ -1,10 +1,11 @@
 # balena/registrar/Dockerfile.hermes — primus (the VS coordinator Hermes)
 # custom image (fleet-ops-b1r).
 #
-# One artifact, three build paths — the balena remote builder (legacy
-# builder — see the arch note below), CI's compose E2E, and a plain
-# `docker build`: all build THIS file; the compose files never fork the
-# bytes. The official Hermes image pin is the same tag the compose used
+# Built from the REPO ROOT context (docker build -f balena/registrar/
+# Dockerfile.hermes .): CI builds it once, scans it, E2Es those bytes and
+# promotes them to GHCR; balena and deploy/ pull the published digest.
+# Every COPY reads the canonical source (deploy/, scripts/, docs/) — there
+# are no vendored copies to drift. The official Hermes image pin is the same tag the compose used
 # before this lane (do NOT bump independently — the tag is the auditable
 # lineage and the compose's parity pin):
 #   FROM nousresearch/hermes-agent:v2026.9.21
@@ -76,16 +77,17 @@ RUN arch="$(uname -m)" \
 # class). The password NEVER lives here: primus receives
 # BEADS_DOLT_PASSWORD via the composition env (fleet variable cascades
 # or compose entry, mirroring the scotty posture).
-#
-# The balena remote builder receives ONLY this app dir
-# (balena-app-dir-self-contained convention), so everything the image
-# bakes must live inside balena/registrar/ — the join config, both docs,
-# and the hook all do.
-COPY queue-join /opt/vs/queue-join
-# Docs are vendored into the app dir at build time (docs-sync.sh — the
-# vendored-drift pattern, one source of truth: docs/ at the repo root).
-COPY docs /opt/vs/docs
-COPY vs-queue-join.sh /etc/cont-init.d/03-vs-queue-join
+COPY balena/registrar/queue-join /opt/vs/queue-join
+# Primus's doc set: its own environment map (vs-environment.md) plus the
+# shared conventions — straight from docs/.
+COPY docs/queue-conventions.md \
+     docs/vs-environment.md \
+     docs/a2a-conventions.md \
+     docs/gateway-ops.md \
+     docs/memory-conventions.md \
+     docs/vs-github.md \
+     /opt/vs/docs/
+COPY balena/registrar/vs-queue-join.sh /etc/cont-init.d/03-vs-queue-join
 RUN chmod 0755 /etc/cont-init.d/03-vs-queue-join
 # j7g.1: the A2A mesh wiring hook — primus is a mesh member too (the
 # coordinator's Hermes serves its own card through the master gateway).
@@ -93,7 +95,7 @@ RUN chmod 0755 /etc/cont-init.d/03-vs-queue-join
 # config.yaml managed section from the registrar-delivered bundle on
 # every boot. 04- prefix: after stage2 (01-), lexically after the queue
 # join (03-) — both hooks are independent and fail-soft.
-COPY vs-a2a-wiring.sh /etc/cont-init.d/04-vs-a2a-wiring
+COPY deploy/vs-a2a-wiring.sh /etc/cont-init.d/04-vs-a2a-wiring
 RUN chmod 0755 /etc/cont-init.d/04-vs-a2a-wiring
 
 # e5o.5: the GitHub App identity wiring hook — primus writes to this
@@ -104,31 +106,29 @@ RUN chmod 0755 /etc/cont-init.d/04-vs-a2a-wiring
 # The wrapper itself ships in the SAME venv python the image already
 # provides (PyJWT included) — see the COPY of vs-github-identity.py
 # to /usr/local/bin below.
-COPY vs-github-identity.sh /etc/cont-init.d/05-vs-github-identity
-COPY vs-github-identity.py /usr/local/bin/vs-github-identity
+COPY scripts/vs-github-identity.sh /etc/cont-init.d/05-vs-github-identity
+COPY scripts/vs-github-identity.py /usr/local/bin/vs-github-identity
 RUN chmod 0755 /etc/cont-init.d/05-vs-github-identity /usr/local/bin/vs-github-identity
 
-# j7g.1 mesh-enroll: the thin primus CLI (drift-pinned vs scripts/,
-# one source of truth). One command per agent: vs-mesh-enroll <agent>
+# j7g.1 mesh-enroll: the thin primus CLI (scripts/vs-mesh-enroll.py). One command per agent: vs-mesh-enroll <agent>
 # calls the registrar's /v1/mesh-enroll machine-auth action, which
 # mints/opens the vs-<agent>-a2a sentinel server-side and merges BOTH
 # sides' bundles. The CLI reads its auth (MESH_ENROLL_KEY) from the
 # bundle's config/agent.env via $HERMES_HOME — NEVER from image layers.
 # The venv python the image already ships runs it (stdlib-only).
-COPY vs-mesh-enroll.py /usr/local/bin/vs-mesh-enroll
+COPY scripts/vs-mesh-enroll.py /usr/local/bin/vs-mesh-enroll
 RUN chmod 0755 /usr/local/bin/vs-mesh-enroll
 
 # e5o.3: the gateway-memory plugin + its install hook. The plugin copy
-# (gateway-memory/, product-agnostic VS copy of the origin fleet-memory
-# plugin) is byte-pinned to deploy/gateway-memory/ by the vendored-drift
-# test and sha-stamped by provenance-sha256.txt (the drift guard). The
+# (deploy/gateway-memory/, product-agnostic VS copy of the origin
+# fleet-memory plugin) is sha-stamped by provenance-sha256.txt. The
 # 06- hook copies it into $HERMES_HOME/plugins/ and seeds
 # plugins.enabled — PluginManager gates user plugins through the
 # allow-list, so the copy alone would register NOTHING. Keys arrive via
 # the bundle's extra_env (GATEWAY_MEMORY_{SHARED,PRIVATE}_KEY), never
 # baked. Lexically after 05-, both fail-soft.
-COPY gateway-memory /opt/vs/gateway-memory
-COPY vs-memory-tools.sh /etc/cont-init.d/06-vs-memory-tools
+COPY deploy/gateway-memory /opt/vs/gateway-memory
+COPY deploy/vs-memory-tools.sh /etc/cont-init.d/06-vs-memory-tools
 RUN chmod 0755 /etc/cont-init.d/06-vs-memory-tools
 
 # Entrypoint/CMD are inherited from the official image: the dispatcher

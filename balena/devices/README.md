@@ -9,57 +9,42 @@ Deployed fleet: `g_c_d/vector-sigma`.
 ```
 balena/devices/
 ├── docker-compose.yml        # agent + registrant + tailscale serve edge, shared volume, healthchecks
-├── Dockerfile.agent-hermes   # the agent runtime (j7g.1): official Hermes image + bd 1.2.2 + gate + A2A hook
+├── Dockerfile.agent-hermes   # the agent runtime (j7g.1): official Hermes image + bd 1.2.2 + gate + hooks (repo-root context)
 ├── Dockerfile.tailscale      # the devices' serve edge (j7g.1 serve form): pinned tailscale + baked serve config
 ├── serve-config.json         # fronts :9900 at ${TS_CERT_DOMAIN} (each node's own MagicDNS name)
+├── hermes-agent-defaults.yaml
 ├── agent/
-│   ├── Dockerfile            # the RETIRED placeholder image (kept for history; not built since j7g.1)
-│   ├── gate.sh               # blocks on /data/agent/ready.marker, then execs the image's own entrypoint dispatcher
-│   ├── vs-a2a-wiring.sh      # cont-init 04-: bundle → A2A_* env + config.yaml a2a section (j7g.1)
-│   ├── vs-github-identity.py # GitHub App token wrapper (e5o.5; vendored from scripts/)
-│   ├── vs-github-identity.sh # cont-init 05-: bundle → GIT_CONFIG_* env (e5o.5)
-│   ├── gateway-memory/       # the memory plugin (e5o.3; vendored from deploy/gateway-memory/)
-│   └── vs-memory-tools.sh    # cont-init 06-: installs the plugin + seeds plugins.enabled (e5o.3)
-├── docs/                     # vendored device-environment.md + queue-conventions.md (byte-pinned to docs/; NEVER the master's vs-environment.md — e5o.1)
-├── registrant/               # VENDORED workspace sources (see below)
-│   ├── Dockerfile            # multi-stage: build → runtime (non-root)
-│   ├── package.json          # exact-pinned deps, workspaces: shared
-│   ├── tsconfig.json
-│   ├── shared/               # vendored @vector-sigma/shared (types + zod)
-│   └── src/                  # vendored registrant sources
+│   └── gate.sh               # blocks on /data/agent/ready.marker, then execs the image's own entrypoint dispatcher
 └── README.md
 ```
 
-## Why the sources are vendored
+## Where the images come from
 
-balena build contexts are **confined to the app source dir** —
-`build.context` must point inside the app (`docs.balena.io/reference/
-supervisor/docker-compose`), and this dir is what the release workflow
-builds from at tag-cut. The registrant + shared sources
-therefore cannot reference `../../registrant` the way `deploy/`'s
-compose does.
+Nothing here is vendored. The three device images are `images.json`
+components (`agent`, `registrant`, `tailscale-devices`) that CI builds ONCE
+(`.github/workflows/_images.yml`) from the canonical sources and promotes to
+GHCR after the content gate and the compose E2E pass on those exact bytes:
 
-Instead, the sources live here **byte-for-byte identical** to the
-workspace originals, pinned by `registrant/test/vendored-drift.test.ts`
-in the root test suite (CI fails on drift). To change the registrant:
-edit the workspace copy, then regenerate:
+- `agent` — `Dockerfile.agent-hermes`, built from the repo root: it COPYs
+  the boot hooks from `deploy/` (`vs-a2a-wiring.sh` 04-, `vs-memory-tools.sh`
+  06-, the `gateway-memory/` plugin), the GitHub identity pair from
+  `scripts/` (`vs-github-identity.{py,sh}`, 05-), and the WORKER doc set from
+  `docs/` (`device-environment.md` — NEVER the master's `vs-environment.md`,
+  e5o.1, CI-fatal in `registrar/test/image-build-config.test.ts`).
+- `registrant` — `registrant/Dockerfile` at the repo root (installed from
+  the root `package-lock.json`); the master's `registrant-own` runs the
+  same image.
+- `tailscale-devices` — `Dockerfile.tailscale` here.
 
-```bash
-cp registrant/src/*.ts balena/devices/registrant/src/
-cp registrant/tsconfig.json balena/devices/registrant/tsconfig.json
-cp shared/src/index.ts balena/devices/registrant/shared/src/
-cp shared/tsconfig.json balena/devices/registrant/shared/tsconfig.json
-```
+A `devices-v*` tag runs that pipeline, then
+`scripts/render-release-compose.mjs` swaps every `build:` block in
+`docker-compose.yml` for the promoted arm64 child digest and `balena
+deploy` ships the rendered compose — the balena builder never sees source.
 
-## Why no package-lock.json
-
-Every dependency retained in the vendored manifest is zero-transitive —
-`zod`, `@types/node`, `typescript` resolve to no dependencies of their
-own (verified against the root lockfile), and `@vector-sigma/shared`
-is vendored adjacent as a `file:` workspace. A lockfile would be
-dead weight duplicating what the exact version pins already guarantee;
-`npm install` here is deterministic without one. The drift test pins
-the versions match the root lockfile.
+`balena push` (or `balena deploy --build`) against `docker-compose.yml` is
+**not a supported path**: the `build:` contexts point at the repo root
+(`../..`), which the balena CLI refuses — it confines build contexts to the
+project dir. Ship by pushing a `devices-v*` tag.
 
 ## Runtime configuration
 
@@ -109,9 +94,8 @@ rule).
 
 ## Agent memory (e5o.3)
 
-Both Hermes images bake the `gateway-memory` plugin (vendored at
-`agent/gateway-memory/`, byte-pinned to `deploy/gateway-memory/` by the
-drift test) and the `06-vs-memory-tools` boot hook that installs it into
+Both Hermes images bake the `gateway-memory` plugin (COPYd from
+`deploy/gateway-memory/`) and the `06-vs-memory-tools` boot hook that installs it into
 `$HERMES_HOME/plugins/` and seeds `plugins.enabled` — the PluginManager
 allow-list gate; a copied-but-unlisted plugin registers nothing.
 
@@ -129,4 +113,4 @@ FLEET_MEMORY_BASE_URL=https://<gateway-host>/v1
 
 Operating discipline (list before write, key naming, what never belongs
 in the store): [docs/memory-conventions.md](../../docs/memory-conventions.md)
-— vendored into this app's `docs/` set.
+— baked into the image's `/opt/vs/docs` set.

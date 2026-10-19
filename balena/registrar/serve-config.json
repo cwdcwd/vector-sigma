@@ -1,6 +1,7 @@
 {
   "TCP": {
     "443": { "HTTPS": true },
+    "3326": { "TCPForward": "127.0.0.1:3326" },
     "8443": { "HTTPS": true },
     "8444": { "HTTPS": true }
   },

@@ -28,13 +28,17 @@ Two consequences, both enforced in code rather than in review:
    (the tar is what gets published).
 2. `assemble-and-validate` — builds the local OCI index from only this run's
    scanned-and-passed child digests and validates it.
-3. `all-components-gate` — aggregate, fail-closed: fails if any component or
-   platform job did not succeed.
-4. `promote` — the only job with `packages:write`. Downloads the scanned
+3. `e2e` — loads every component's scanned amd64 tar as
+   `vs-e2e/<component>:ci` (`scripts/e2e-load-images.sh`) and runs
+   `E2E_PREBUILT=1 deploy/e2e.sh --up` against them — the bytes about to be
+   promoted, never a rebuild.
+4. `all-components-gate` — aggregate, fail-closed: fails if any component or
+   platform job, or the E2E, did not succeed.
+5. `promote` — the only job with `packages:write`. Downloads the scanned
    layout tars and runs `scripts/ghcr-promote-run.mjs promote`.
-5. `verify-remote` — no `packages:write`, no credential. Runs
+6. `verify-remote` — no `packages:write`, no credential. Runs
    `scripts/ghcr-promote-run.mjs verify` against the promotion record.
-6. `scan` / `smoke` / `render` / `deploy` — unchanged in shape, now gated
+7. `scan` / `smoke` / `render` / `deploy` — unchanged in shape, now gated
    behind a real `verify-remote` instead of a dormant placeholder.
 
 ## What the promoter does, in order
@@ -98,8 +102,9 @@ explicit human act, but they carry the same variable gate.
 `build-images.yml` exposes a required `workflow_dispatch` choice named
 `component`. Select one component (for example, `registrar`) for the first
 live probe; `all` is the default and is intentionally explicit. The selector
-changes only the `promote` and `verify-remote` matrices. The entire eight-
-component build/scan/index matrix and `all-components-gate` still run, so no
+changes only the `promote` and `verify-remote` matrices. The entire
+`images.json` build/scan/index/E2E graph and `all-components-gate` still run
+(`.github/workflows/_images.yml`), so no
 component can publish before the full repository validation succeeds. A
 single-component dispatch therefore writes only that component's package while
 still enforcing the complete scan gate.
