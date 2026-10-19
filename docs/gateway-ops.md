@@ -455,16 +455,29 @@ upgrade is owner-gated and out of scope for this branch.
    rollback anchor **before** building or swapping anything (for example,
    `docker tag <current-image-id> litellm:rollback-<change-id>`). Do not rely on
    a moving upstream tag as the rollback copy.
-2. Take a custom-format PostgreSQL dump of the LiteLLM database using the
-   deployment's established database credentials (do not put credentials in
-   shell history or this runbook):
+2. Provision a temporary PostgreSQL service file through the approved secret
+   manager into a private directory. Its `[litellm-backup]` entry must contain
+   the database host, port, database, user, and password; do not place the
+   password in a command, shell variable, URI, shell history, or this runbook.
+   Set the file owner to the operator and mode to `0600`; verify the mode
+   without printing the file. Use libpq's service-file authentication so the
+   password is read from that protected file, not exposed in `pg_dump`'s argv:
 
    ```bash
    umask 077
-   pg_dump -Fc --dbname="$DATABASE_URL" --file=litellm-before-upgrade.dump
+   export PGSERVICEFILE=/path/to/private/temporary/pg_service.conf
+   test -f "$PGSERVICEFILE" && test "$(stat -c '%a' "$PGSERVICEFILE")" = 600
+   pg_dump -Fc --dbname='service=litellm-backup' \\
+     --file=litellm-before-upgrade.dump
    chmod 600 litellm-before-upgrade.dump
    pg_restore --list litellm-before-upgrade.dump > litellm-before-upgrade.list
    ```
+
+   Keep the service file in the private directory with the dump, never print or
+   attach it, and remove it after the backup is verified and the database
+   client no longer needs it. Do not pass `DATABASE_URL` to `pg_dump`: URI
+   credentials can appear in process arguments. The dump remains sensitive;
+   keep it access-restricted (mode `0600`) in approved encrypted storage.
 
    Require `pg_dump` and `pg_restore --list` to exit successfully and confirm
    the listing contains the expected LiteLLM schema objects before proceeding.
