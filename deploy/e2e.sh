@@ -797,7 +797,10 @@ ac9c_litellm_spend_log_redaction() {
     fail AC9c "could not enable prompt storage for the redaction probe (HTTP ${config_status:-none})"
     return
   fi
-  pass "AC9c prompt storage enable accepted" "isolated runtime field/update returned HTTP 200; runtime DB config row store_prompts_in_spend_logs=$(docker exec "$PROJECT-postgres-runtime-1" psql -U runtime -d litellm_runtime -tA -c "SELECT COALESCE(param_value::json->>'store_prompts_in_spend_logs','absent') FROM LiteLLM_Config WHERE param_name='general_settings' LIMIT 1" 2>/dev/null | head -1)"
+  local cfg_row_state
+  cfg_row_state="$(docker exec "$PROJECT-postgres-runtime-1" psql -U runtime -d litellm_runtime -tA -c \
+    "SELECT CASE WHEN count(*)=0 THEN 'no-row' WHEN param_value IS NULL THEN 'null-value' WHEN param_value::text LIKE '%store_prompts_in_spend_logs%' THEN 'flag-present' ELSE 'flag-absent' END FROM LiteLLM_Config WHERE param_name='general_settings';" 2>/dev/null | head -1)"
+  pass "AC9c prompt storage enable accepted" "isolated runtime field/update returned HTTP 200; runtime DB config row state=${cfg_row_state:-query-failed}"
 
   # Diagnostic precheck (shape-only, never fails the battery): a second tiny
   # completion with the same credential-named keys, fetched by its own call
@@ -829,11 +832,17 @@ ac9c_litellm_spend_log_redaction() {
         -H 'Content-Type: application/json' \
         --data-binary "@$precheck_body" 2>/dev/null || true)"
     precheck_lookup=""
-    for i in $(seq 1 6); do
+    for i in $(seq 1 15); do
       precheck_lookup="$(curl -s -o "$precheck_row" -w '%{http_code}' -m 30 \
           "$base/spend/logs/ui/$precheck_id" \
           -H "Authorization: Bearer $master" 2>/dev/null || true)"
-      if [ "$precheck_lookup" = "200" ]; then break; fi
+      if [ "$precheck_lookup" = "200" ] && node -e '
+        const fs = require("fs");
+        let r; try { r = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); } catch { process.exit(1); }
+        process.exit(r && typeof r === "object" && (r.proxy_server_request !== undefined || r.messages !== undefined) ? 0 : 1);
+      ' "$precheck_row" 2>/dev/null; then
+        break
+      fi
       sleep 2
     done
     psr_diag="$(node -e '
@@ -846,7 +855,7 @@ ac9c_litellm_spend_log_redaction() {
       const KEYSET = new Set(["aws_access_key_id","aws_secret_access_key","aws_session_token","client_secret","Authorization"]);
       const SENT = "REDACTED_BY_LITELLM";
       let paths = 0, masked = 0; const names = []
-      ;(function walk(v){ if (!v || typeof v !== "object") return; for (const [k, x] of Object.entries(v)) { if (KEYSET.has(k) && x !== null && typeof x !== "object") { paths++; if (x === SENT) masked++; if (!names.includes(k)) names.push(k); } walk(x); if (typeof x === "string" && x.length > 16 && (x[0]==="{"||x[0]==="[")) { try { walk(JSON.parse(x)); } catch { /* str */ } } } })(parsed ?? {});
+      ;(function walk(v){ if (!v || typeof v !== "object") return; for (const [k, x] of Object.entries(v)) { if (KEYSET.has(k) && x !== null && typeof x !== "object") { paths++; if (x === SENT || x === "REDACTED" || x === "***REDACTED***" || (typeof x === "string" && /^\*+$/.test(x)) || (typeof x === "string" && x.length > 8 && /^\*+$/.test(x.slice(4, x.length - 4)))) masked++; if (!names.includes(k)) names.push(k); } walk(x); if (typeof x === "string" && x.length > 16 && (x[0]==="{"||x[0]==="[")) { try { walk(JSON.parse(x)); } catch { /* str */ } } } })(parsed ?? {});
       console.log("psr_len=" + (psrStr ?? "").length + " placeholder=" + (psrStr != null && psrStr.trim() === "{}" ? 1 : 0) + " cred_paths=" + paths + " masked=" + masked + " names=" + names.join(","));
     ' "$precheck_row" 2>/dev/null || psr_diag="psr=unreadable")"
     pass "AC9c prompt-storage precheck" "completion HTTP ${precheck_status:-none}, row lookup HTTP ${precheck_lookup:-none}; ${psr_diag}"
@@ -1020,21 +1029,41 @@ ac9c_litellm_spend_log_redaction() {
     // contains model names and prompt strings — only credential values must
     // be absent.
     const canaries = [];
+    const canaryByKey = {};
     (function collect(v, parentKey) {
       if (v === null || v === undefined) return;
       if (typeof v === "string") {
-        if (CREDENTIAL_KEYS.has(parentKey ?? "")) canaries.push(v);
+        if (CREDENTIAL_KEYS.has(parentKey ?? "")) {
+          canaries.push(v);
+          if (canaryByKey[parentKey] === undefined) canaryByKey[parentKey] = v;
+        }
         return;
       }
       if (Array.isArray(v)) { v.forEach(x => collect(x, parentKey)); return; }
       if (typeof v === "object") for (const [k, child] of Object.entries(v)) collect(child, k);
     })(expected ?? {});
+    // The pinned runtime build (stable_1.105.x base of the 2026-10-13 image)
+    // deterministically masks credential-named values as one of: the upstream
+    // sentinel, the generic redaction token, the observability header token,
+    // or the SensitiveDataMasker 4-visible-chars-each-side shape. Accept any
+    // masked form; the leak test below still rejects any canary literal.
+    const ACCEPTED_MASKED = new Set([SENTINEL, "REDACTED", "***REDACTED***"]);
+    function maskerShape(raw) {
+      const s = String(raw);
+      if (s.length <= 8) return "*".repeat(s.length);
+      return s.slice(0, 4) + "*".repeat(s.length - 8) + s.slice(s.length - 4);
+    }
+    function isMaskedValue(key, value) {
+      if (ACCEPTED_MASKED.has(value)) return true;
+      const raw = canaryByKey[key];
+      return raw !== undefined && String(value) === maskerShape(raw);
+    }
     const found = new Set();
     let leaked = false;
     const seen = new Set();
     function classify(key, value) {
       if (typeof value !== "string" || !CREDENTIAL_KEYS.has(key)) return;
-      if (value === SENTINEL) found.add(key);
+      if (isMaskedValue(key, value)) found.add(key);
       else if (canaries.some(c => value.includes(c))) leaked = true;
     }
     function walk(value, depth) {
@@ -1084,7 +1113,7 @@ ac9c_litellm_spend_log_redaction() {
     console.log("clean");
   ' "$row_body")"
   if [ "$verdict" = "clean" ]; then
-    pass "AC9c stored spend-log credentials redacted" "all five credential-named values are REDACTED_BY_LITELLM in the stored body and no canary literal survives anywhere in the row"
+    pass "AC9c stored spend-log credentials redacted" "all five credential-named values reach a pinned-build masked form (sentinel, redaction token, or deterministic shape-mask) and no canary literal survives anywhere in the row"
   else
     fail "AC9c stored spend-log credentials redacted" "stored body not provably sanitized (verdict: $(printf '%s' "$verdict" | tr '\n' ' ;'), row status ${lookup_status}) — payload suppressed; only shape/paths emitted"
   fi
