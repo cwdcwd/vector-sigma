@@ -383,8 +383,8 @@ the `/key/list` liveness probe already rides the j7g.1 lock.
 
 ### Gateway health
 
-Healthcheck parity with the registrar service (`kill -0 1` process
-liveness — the stock litellm image ships no curl); real HTTP liveliness
+Process liveness only (`kill -0 1` — the stock litellm image ships no
+curl/wget; the registrar, by contrast, probes its own `/healthz`); real HTTP liveliness
 is asserted externally: the deploy E2E smoke (AC9) polls
 `/health/liveliness` for 200 and asserts the explicit model groups in
 `/v1/models`. On-device spot check: `curl -s
