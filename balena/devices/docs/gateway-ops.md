@@ -544,6 +544,7 @@ never key values, authorization headers, or prompt contents):
   compare with the consumer's expectations, and fail soft if the upstream
   shape differs. Do not expose the credential or response contents containing
   sensitive usage details.
+  The `/api/usage` shape is documented in the pricing lane's “Ollama authoritative billing (/api/usage)” section (fleet-ops-1py.16; lands via the ollama-pricing stack PR).
 
 Non-production verification for this branch is CI e2e booting the rebuilt
 gateway on the PR. The battery above is the staged/live operator checklist;
@@ -728,3 +729,55 @@ Content-Type: application/json
 Use the real token only in the authorized request; never put it in docs or
 operational evidence. Budgets also gate MCP calls made with that key. Treat
 LiteLLM budgets as approximate: `/api/usage` is the authoritative bill.
+## Gateway liveness and proxy front (logs, real client IPs, loopback)
+
+Use the Hermes dashboard's public `GET /api/status` as the per-agent health
+surface. Check `gateway_running` and platform states; do not send agents an
+hourly “are you alive?” chat message, which starts a full agent session per
+agent. Scheduled LLM chat pings are forbidden except for at most **one daily
+end-to-end LLM ping**. The compose healthchecks in this repository check
+process/service liveness; they are not LLM chat probes.
+
+There is no live Caddy/reverse-proxy configuration in this repository (the
+Caddy deployment was retired). The following is an **EXAMPLE ONLY**, not a
+deployment config. If adding Caddy in a separate deployment, its default log
+redaction covers `Authorization` and `Cookie`, not the custom
+`X-Litellm-Api-Key` header. Delete that header from logged request fields:
+
+```caddyfile
+:8443 {
+    log {
+        format filter {
+            wrap json
+            fields {
+                request>headers>X-Litellm-Api-Key delete
+            }
+        }
+    }
+    reverse_proxy 127.0.0.1:4000
+}
+```
+
+LiteLLM is configured with `general_settings.use_x_forwarded_for: true` to
+consume forwarded client addresses. Trust XFF **only** when the request can
+arrive through the intended proxy; direct clients must not be able to supply
+trusted forwarding headers. This repository has no in-compose proxy or
+LiteLLM trusted-source allowlist to pin, so the trust boundary cannot be
+implemented here: restrict ingress to the proxy and configure its source-IP
+trust using the mechanism supported by the deployed LiteLLM version before
+relying on forwarded addresses. If a future proxy service is pinned by
+container IP, give it an explicit `ipv4_address` outside the network's dynamic
+`ip_range`; dynamic addresses reshuffle on stack restarts, and a stale pin
+silently disables the trust.
+
+Keep gateway plain-HTTP and database host publishes loopback-only. Compose
+internal service-to-service access remains unchanged. E2E uses the deploy
+compose base (its overlay adds no gateway/database publish) and host probes
+continue to use loopback. The Dolt host publish is loopback-only now; remote
+queue clients cannot reach host port 3326 directly and require a separately
+secured access path.
+
+| Port | File | Before | After |
+|---|---|---|---|
+| LiteLLM HTTP 4000 | `balena/registrar/docker-compose.yml`; `deploy/compose.yaml` | `127.0.0.1:4000:4000` | `127.0.0.1:4000:4000` (already loopback) |
+| Dolt database 3306 (host 3326) | `balena/registrar/docker-compose.yml`; `deploy/compose.yaml` | `3326:3306` | `127.0.0.1:3326:3306` |
