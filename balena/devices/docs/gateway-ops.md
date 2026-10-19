@@ -677,10 +677,15 @@ three new groups (`glm-5.3-flash`, `nemotron-3-super`,
 
 The config contains an inert `auto_router/complexity_router` example for operators
 who want LiteLLM to classify requests into SIMPLE, MEDIUM, COMPLEX, and REASONING
-tiers. Its example aliases map SIMPLE to `ollama-cloud/glm-5.3-flash` (the default
-lane) and MEDIUM/COMPLEX/REASONING to `ollama-cloud/glm-5.3`; replace these with
-model groups that exist in your own deployment. `session_affinity: true` keeps a
-session on one model so it can retain that model's prompt cache.
+tiers. The entry carries `complexity_router_config` with `tiers` — the inline
+complexity-router wiring LiteLLM 1.105.x validates. Its example tiers map SIMPLE
+to `ollama-cloud/glm-5.3-flash` (the default lane) and MEDIUM/COMPLEX/REASONING
+to `ollama-cloud/glm-5.3`; replace these with model groups that exist in your own
+deployment, or the deployment drops and the alias serves 400s with no fallback
+attempted. `session_affinity: true` keeps a session on one model so it can retain
+that model's prompt cache. The key shape matters: `auto_router_config` is a
+different surface — a config-path string for LiteLLM's semantic auto-router —
+and its dict form fails `LiteLLM_Params` validation on 1.105.x.
 
 Sensitive text stays off hosted lanes: if any routed traffic may carry sensitive
 free text, map every tier only to self-hosted model groups (define those groups
@@ -691,27 +696,44 @@ route and must stay commented in shared defaults.
 
 The template presumes the 1.105.1 gateway upgrade (the version carried by the
 1py.17 / PR #73 stack); this behavior is 1.105.x code, not present in the pinned
-1.100.1. Before trusting it, opt in and smoke-test it on the upgraded gateway.
+1.100.1. A non-production 1.105.1 fixture has since validated the enabled shape:
+with the block above active against local mock `ollama_chat` groups, requests
+through the router returned 200 on every exercised tier path (SIMPLE floor,
+classified heavy tiers, escalation keyword) with zero `ModelNotMappedError` and
+zero fallback events, and the failure shapes below were recorded as exact
+validation errors (see PR #88's fixture-evidence comment). Opt in and smoke-test
+on the upgraded gateway before trusting the enabled route in production.
 
-Two pitfalls are important:
+Three pitfalls are important:
 
-1. **Keep `context_compaction: false` whenever any tier uses `ollama_chat/*`.**
+1. **Keep the entry under `complexity_router_config`.** `auto_router_config` is
+   a config-path string for LiteLLM's separate semantic auto-router; on 1.105.1
+   its inline-dict form fails `LiteLLM_Params` validation at deployment
+   creation, the deployment is dropped, and the alias serves every request 400
+   "There are no healthy deployments for this model ... No fallback was
+   attempted."
+2. **Keep `context_compaction: false` whenever any tier uses `ollama_chat/*`.**
    Compaction sizes the selected deployment via a model-map lookup. For models
    absent from LiteLLM's map, that lookup raises `ModelNotMappedError`, which is
-   not caught; every request on that tier silently falls back to the next fallback
-   model, visible only in Prometheus fallback counters. Declaring deployment
-   `model_info` limits did not help in the source fleet's 1.105.1 test because the
-   global map lookup raised first. Smoke-test on the upgraded gateway rather than
-   treating that result as absolute. Topically related upstream discussion:
-   #23054 (closed as not planned; it covers unmapped-model metadata/routing
-   failures generally, not this compaction path). Client-side
-   compression (§3.1) makes router compaction redundant.
-2. **`classification_rubric` is for the LLM-judge classifier.** The heuristic
-   classifier silently ignores it.
+   not caught, and the turn falls to the next fallback model, visible only in
+   Prometheus fallback counters. With compaction false that sizing path never
+   runs — the fixture run above served the enabled tiers with zero
+   `ModelNotMappedError`. On 1.105.1 a bare `context_compaction: true` is
+   itself a validation error (`ContextCompactionConfig | Literal[False]`), so
+   enabling compaction is a deliberate `ContextCompactionConfig` object, not a
+   boolean flip, and the fixture recorded that exact error. Declaring deployment
+   `model_info` limits did not help in the source fleet's earlier 1.105.1 test
+   because the global map lookup raised first. Client-side compression (§3.1)
+   makes router compaction redundant here. Topically related upstream
+   discussion: #23054 (closed as not planned; it covers unmapped-model
+   metadata/routing failures generally, not this compaction path).
+3. **`classification_rubric` nests under `classifier_llm_config` for the
+   LLM-judge classifier.** The heuristic classifier silently ignores it.
 
 To opt in, deliberately uncomment the template, map every tier to an operator-
-configured model group, and validate the resulting config and request/fallback
-behavior against the upgraded gateway. Keep it commented in shared defaults.
+configured model group, validate the resulting config, and smoke-test
+request/fallback behavior against the upgraded gateway. Keep it commented in
+shared defaults until then.
 
 ## Per-key budget caps (weekly example)
 

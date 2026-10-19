@@ -91,10 +91,12 @@ describe('Ollama Cloud native route configuration', () => {
     expect(JSON.stringify(parsed)).not.toMatch(/auto_router|complexity_router/);
     const template = config.slice(config.indexOf('# auto_router template'), config.indexOf('\nrouter_settings:'));
     expect(template).toContain('# - model_name: auto_router/complexity_router');
+    expect(template).toContain('#     complexity_router_config:');
+    expect(template).toContain('#       tiers:');
     expect(template).toContain('#         SIMPLE: ollama-cloud/glm-5.3-flash');
     expect(template).toContain('#       session_affinity: true');
     expect(template).toMatch(/^#\s*context_compaction: false$/m);
-    expect(template).toContain('#       # classification_rubric: <operator rubric>');
+    expect(template).toContain('#       #   classification_rubric: <rubric>');
     expect(template.split('\n').every((line) => line === '' || line.startsWith('#'))).toBe(true);
   });
 

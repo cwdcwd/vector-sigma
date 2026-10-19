@@ -124,24 +124,30 @@ model_list:
 # - model_name: auto_router/complexity_router
 #   litellm_params:
 #     model: auto_router/complexity_router
-#     auto_router_config:
-#       model_group_alias:
+#     complexity_router_config:
+#       tiers:
 #         SIMPLE: ollama-cloud/glm-5.3-flash
 #         MEDIUM: ollama-cloud/glm-5.3
 #         COMPLEX: ollama-cloud/glm-5.3
 #         REASONING: ollama-cloud/glm-5.3
 #       session_affinity: true
 #       context_compaction: false
-#       # Keep compaction false for any ollama_chat/* tier: LiteLLM 1.105.x may
-#       # raise uncaught ModelNotMappedError during model-map sizing; requests
-#       # then fall through to the next fallback (Prometheus fallback counters).
-#       # model_info limits did not help in a source-fleet 1.105.1 test; smoke-test
-#       # on the upgraded gateway. Topically related upstream #23054 (general
-#       # unmapped-model metadata/routing discussion, closed not planned). Client
-#       # compression (§3.1) makes router compaction redundant.
-#       # classification_rubric: <operator rubric>
-#       # classification_rubric is for the LLM-judge classifier; the heuristic
-#       # classifier silently ignores it.
+#       # 1.105.x-validated shape. Do not swap this for `auto_router_config:`:
+#       # on 1.105.1 that key is a config-PATH string for LiteLLM's semantic
+#       # auto-router, and its dict form fails LiteLLM_Params validation at
+#       # deployment creation; a bare `context_compaction: true` also fails
+#       # ComplexityRouterConfig validation. Both drop the deployment, so the
+#       # alias serves 400 "no healthy deployments ... No fallback was
+#       # attempted" instead of serving. With this shape enabled in a
+#       # non-production 1.105.1 fixture, every exercised tier path served 200
+#       # with zero ModelNotMappedError and zero fallback events (see the PR
+#       # evidence comment); the sizing path that could raise uncaught
+#       # ModelNotMappedError never runs with compaction false. Production
+#       # upgrade smoke stays owner-gated. Topically related upstream #23054
+#       # (general unmapped-model metadata/routing discussion, closed not
+#       # planned). Client compression (§3.1) makes router compaction redundant.
+#       # classifier_llm_config:            # LLM-judge classifier only
+#       #   classification_rubric: <rubric> # heuristic classifier ignores it
 
 router_settings:
   fallbacks:
