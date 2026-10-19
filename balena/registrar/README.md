@@ -374,6 +374,22 @@ See [docs/memory-conventions.md](../../docs/memory-conventions.md) for
 the store's operating discipline and
 [docs/gateway-ops.md](../../docs/gateway-ops.md) for the daily pass.
 
+### Model keys — onboarding provisioning (fleet-ops-1py.46)
+
+The device's main serving credential (`GATEWAY_API_KEY` in
+`config/agent.env`) is provisioned by the console **Mint model key**
+action (device page → Actions) with the same scoped key-creator key —
+alias `model-<agent>`, route-locked to completions only
+(`/v1/chat/completions`, `/v1/completions`, `/v1/responses`,
+`/v1/embeddings`, `/v1/models`). Delivery rides the bundle plane; the
+console shows only a SHA-256 fingerprint, never the plaintext. The device
+receives it in `config/agent.env`. The decision table mirrors the mesh enroll:
+MINT a fresh key when the alias is absent; OPEN (nothing re-minted)
+when the alias is live and the bundle already carries the key; REFUSE
+when the alias is live but the bundle is empty — revoke the alias in
+the LiteLLM console and re-run. No new creator-key surface is needed:
+the `/key/list` liveness probe already rides the j7g.1 lock.
+
 ### Gateway health
 
 Healthcheck parity with the registrar service (`kill -0 1` process

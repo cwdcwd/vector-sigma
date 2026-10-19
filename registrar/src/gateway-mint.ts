@@ -54,10 +54,13 @@ export const MEMORY_KEY_ENV_VARS = {
 
 export class MintConfigError extends Error {}
 export class MintCallError extends Error {
+  /** Upstream bodies are deliberately discarded: they may contain credentials. */
+  public readonly body: null = null;
+
   constructor(
     message: string,
     public readonly status: number | null,
-    public readonly body: string | null,
+    _body: string | null,
   ) {
     super(message);
   }
@@ -239,4 +242,149 @@ export async function mintMemoryKeys(
   const shared = await mintKey(cfg, agentName, 'shared', teamId);
   const priv = await mintKey(cfg, agentName, 'private', null);
   return { shared, private: priv };
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Model-key provisioning (fleet-ops-1py.46)
+//
+// The console's third per-device key action: provision the agent's MODEL
+// key — the virtual key a device authenticates LLM completions with,
+// delivered as the GATEWAY_API_KEY line of config/agent.env (the same
+// canonical the structured editor's gateway_api_key field writes). With
+// memory keys (e5o.3) and the mesh identity (j7g.1) this completes
+// onboarding: no hand-minted gateway credential is needed to bring a
+// device online.
+//
+// Auth design reuses the e5o.3 scoped creator key verbatim — the
+// j7g.1 route lock already covers the entire surface this action
+// touches: /key/list (liveness probe), /user/new (user row),
+// /key/generate (mint). No master key anywhere.
+//
+// Decision table (mirrors enrollAgent's MINT/OPEN/REFUSE):
+//   MINT   — alias absent: ensure the agent's user row, mint the key.
+//   OPEN   — alias live AND the bundle already carries a non-empty
+//            GATEWAY_API_KEY: the bundle is the truth; nothing is
+//            re-minted, nothing is mutated (the registrar never learns
+//            the plaintext).
+//   REFUSE — alias live and the bundle carries NOTHING: the plaintext
+//            is unrecoverable; refuse with the exact recovery step
+//            (revoke the alias in the LiteLLM console, re-run the mint)
+//            — never orphan, never silently replace (the j7g.1 ruling).
+//
+// Route lock: completions-only, bare + `/*` belt-and-braces pairs (the
+// memory mint's matching precedent). A model key serves the agent's
+// model calls and nothing else — no key management, no mesh, no memory.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** The completions route lock stamped on every minted model key. */
+export const MODEL_KEY_ALLOWED_ROUTES = [
+  '/v1/chat/completions',
+  '/v1/chat/completions/*',
+  '/v1/completions',
+  '/v1/completions/*',
+  '/v1/responses',
+  '/v1/responses/*',
+  '/v1/embeddings',
+  '/v1/embeddings/*',
+  '/v1/models',
+  '/v1/models/*',
+] as const;
+
+/** Key alias scheme: deterministic per device. */
+export function modelKeyAlias(agentName: string): string {
+  // Same charset/sanitization contract as memoryKeyAlias: key_alias is
+  // validated gateway-side (a-zA-Z0-9_-/.@).
+  const safe = agentName.replace(/[^a-zA-Z0-9_.-]/g, '-');
+  return `model-${safe}`;
+}
+
+/** Env var the minted key is delivered under — the device's main gateway key. */
+export const MODEL_KEY_ENV_VAR = 'GATEWAY_API_KEY';
+
+export interface ModelKeyProvisionResult {
+  alias: string;
+  /** 'mint' = fresh key minted (value set); 'open' = bundle already carries it (value null). */
+  action: 'mint' | 'open';
+  /** The minted key value — for the server-side bundle merge only; never rendered in UI output (no-secret-output). Null on 'open'. */
+  key: string | null;
+}
+
+/**
+ * Alias live at the gateway while the device bundle carries no
+ * GATEWAY_API_KEY — the plaintext is unrecoverable; the caller renders
+ * the message, which names the console-revocation recovery step.
+ */
+export class ModelKeyAliasLiveError extends Error {
+  constructor(
+    public readonly alias: string,
+    public readonly agentName: string,
+  ) {
+    super(
+      `model key alias '${alias}' exists live on the gateway but device '${agentName}'s bundle carries no ${MODEL_KEY_ENV_VAR} — revoke the alias in the gateway console (LiteLLM /ui → Keys) and re-run the mint to provision fresh`,
+    );
+    this.name = 'ModelKeyAliasLiveError';
+  }
+}
+
+/** Exact-alias /key/list probe; true when the alias exists (j7g.1 probe shape). */
+async function findModelKeyRow(cfg: GatewayConfig, alias: string): Promise<boolean> {
+  const res = await gatewayCall(
+    cfg,
+    'GET',
+    `/key/list?key_alias=${encodeURIComponent(alias)}&return_full_object=true`,
+  );
+  if (res.status !== 200) {
+    throw new MintCallError(
+      `gateway /key/list for '${alias}' failed (HTTP ${res.status})`,
+      res.status,
+      null,
+    );
+  }
+  const keys = (res.json as { keys?: unknown[] } | null)?.keys;
+  if (!Array.isArray(keys)) return false;
+  return keys.some((k) => (k as Record<string, unknown>).key_alias === alias);
+}
+
+/** Mint one route-locked model key; plaintext returned ONCE. */
+async function mintModelKey(cfg: GatewayConfig, agentName: string, alias: string): Promise<string> {
+  const res = await gatewayCall(cfg, 'POST', '/key/generate', {
+    key_alias: alias,
+    user_id: `agent-${agentName}`,
+    allowed_routes: [...MODEL_KEY_ALLOWED_ROUTES],
+    metadata: { purpose: 'agent-model', agent: agentName },
+    // team unset: the model key is the agent's PRIVATE serving credential —
+    // the memory key's shared/private split does not apply.
+  });
+  if (res.status !== 200) {
+    throw new MintCallError(`gateway /key/generate for '${alias}' failed`, res.status, res.raw);
+  }
+  const key = res.json?.key;
+  if (typeof key !== 'string' || key === '') {
+    throw new MintCallError(`gateway /key/generate for '${alias}' returned no key`, res.status, res.raw);
+  }
+  return key;
+}
+
+/**
+ * Provision the per-device model key (MINT or OPEN). bundleCarriesKey is
+ * the caller's bundle-truth probe — a non-empty GATEWAY_API_KEY line in
+ * the CURRENT config/agent.env. Throws ModelKeyAliasLiveError on the
+ * REFUSE arm; MintConfigError surfaces the manual fallback. Never
+ * re-mints over a live alias.
+ */
+export async function provisionModelKey(
+  env: Record<string, string | undefined>,
+  agentName: string,
+  bundleCarriesKey: boolean,
+): Promise<ModelKeyProvisionResult> {
+  const cfg = resolveGatewayConfig(env);
+  const alias = modelKeyAlias(agentName);
+  const aliasLive = await findModelKeyRow(cfg, alias);
+  if (!aliasLive) {
+    await ensureUser(cfg, agentName);
+    const key = await mintModelKey(cfg, agentName, alias);
+    return { alias, action: 'mint', key };
+  }
+  if (bundleCarriesKey) return { alias, action: 'open', key: null };
+  throw new ModelKeyAliasLiveError(alias, agentName);
 }

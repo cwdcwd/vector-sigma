@@ -405,6 +405,42 @@ machine-auth trigger instantly; revoking the `key-creator` alias at
 the gateway kills all minting (the registrar refuses with the
 not-configured fallback on the next call). Both are owner actions.
 
+## The model-key plane (fleet-ops-1py.46)
+
+Every device's LLM serving credential — the `GATEWAY_API_KEY` line of
+`config/agent.env` — can be provisioned by the registrar console
+instead of a hand-mint (device page → Actions → **Mint model key**).
+Alias scheme: `model-<agent>` (deterministic, same sanitization as the
+memory scheme). Minted by the same scoped key-creator key as the memory
+keys — its j7g.1 route lock already covers the whole surface (`/key/list`
+probe, `/user/new`, `/key/generate`) — and route-locked at mint time to
+the completions surface only: `/v1/chat/completions`, `/v1/completions`,
+`/v1/responses`, `/v1/embeddings`, `/v1/models` (bare + `/*` pairs). A
+model key serves the agent's model calls and nothing else — no key
+management, no mesh, no memory routes. The minted value reaches the
+device through the bundle plane (0600) and is never shown in the console
+(the no-secret-output rule: registrar UI output renders no key values).
+
+**Decision table (mirrors the mesh-enroll enroll):** MINT when the alias
+is absent (the agent's `agent-<name>` user row is ensured idempotently
+first); OPEN — nothing re-minted, nothing changed — when the alias is
+live and the device bundle already carries a key (the bundle is the
+truth); REFUSE when the alias is live but the bundle carries nothing:
+the plaintext is unrecoverable, so the message names the recovery step
+(revoke the alias in the LiteLLM console, re-run the mint). Never
+re-mint over a live alias.
+
+**Daily pass addition (the model leg):** `GET /key/list` for each
+`model-<agent>` alias → present, `allowed_routes` completions-only. A
+missing alias means the key was deleted at the gateway — re-run the
+console action to mint fresh (the bundle without a live alias is inert;
+delivery needs the provision step again).
+
+**Inventory audit addition:** flag any `model-*` alias whose agent row
+is absent from the registrar, and any key carrying a completions route
+whose alias does NOT match the `model-` scheme — both are drift
+signals, same posture as the memory and mesh audits.
+
 ## Evidence discipline
 
 Whatever lands on the work-tracking thread: aliases, hash prefixes,
