@@ -731,7 +731,9 @@ ac9b_litellm_db_smoke() {
 #     store the proxy request body only when
 #     general_settings.store_prompts_in_spend_logs (or env
 #     STORE_PROMPTS_IN_SPEND_LOGS) is true — default off. The probe toggles
-#     it in this disposable E2E database only and always restores it.
+#     it in this disposable E2E database only (via /config/field/update, the
+#     endpoint that applies the setting to the worker's in-memory store in
+#     1.105.1) and always restores it.
 #   - The stored body passes through _sanitize_request_body_for_spend_logs_
 #     payload(): every string value under a credential-classified key is
 #     replaced, at any nesting depth, with the REDACTED_BY_LITELLM_STRING
@@ -764,25 +766,33 @@ ac9c_litellm_spend_log_redaction() {
   # Prompt storage is off by default. The probe is the only in-battery caller
   # that needs it; restore it on every exit path. A failed restore is itself
   # a hard failure so the disposable DB is never left behind on a changed
-  # setting.
+  # setting. The toggle rides /config/field/update, NOT /config/update: in
+  # the pinned 1.105.1 proxy, /config/update only persists the LiteLLM_Config
+  # row (update_config() never calls proxy_config.settings.apply_db_row),
+  # while the spend writer consults the worker's in-memory general_settings
+  # store (should_store_prompts_and_responses_in_spend_logs()) — so a 200
+  # from /config/update would leave the flag unset and the row would carry
+  # empty placeholder bodies. /config/field/update applies the row to the
+  # in-memory store (apply_db_row), making the flag effective for the
+  # completion logged below.
   ac9c_restore_prompt_storage() {
     config_status="$(curl -s -o /dev/null -w '%{http_code}' -m 30 \
-        -X POST "$base/config/update" \
+        -X POST "$base/config/field/update" \
         -H "Authorization: Bearer $master" \
         -H 'Content-Type: application/json' \
-        -d '{"general_settings":{"store_prompts_in_spend_logs":false}}' 2>/dev/null || true)"
+        -d '{"field_name":"store_prompts_in_spend_logs","field_value":false,"config_type":"general_settings"}' 2>/dev/null || true)"
     if [ "$config_status" != "200" ]; then
-      fail AC9c "could not restore store_prompts_in_spend_logs=false in the disposable E2E DB (HTTP ${config_status:-none})"
+      fail AC9c "could not restore store_prompts_in_spend_logs=false in the isolated runtime (HTTP ${config_status:-none})"
     else
-      pass AC9c "prompt storage restored" "disposable E2E config returned to store_prompts_in_spend_logs=false"
+      pass AC9c "prompt storage restored" "isolated runtime returned to store_prompts_in_spend_logs=false"
     fi
   }
 
   config_status="$(curl -s -o /dev/null -w '%{http_code}' -m 30 \
-      -X POST "$base/config/update" \
+      -X POST "$base/config/field/update" \
       -H "Authorization: Bearer $master" \
       -H 'Content-Type: application/json' \
-      -d '{"general_settings":{"store_prompts_in_spend_logs":true}}' 2>/dev/null || true)"
+      -d '{"field_name":"store_prompts_in_spend_logs","field_value":true,"config_type":"general_settings"}' 2>/dev/null || true)"
   if [ "$config_status" != "200" ]; then
     fail AC9c "could not enable prompt storage for the redaction probe (HTTP ${config_status:-none})"
     return
