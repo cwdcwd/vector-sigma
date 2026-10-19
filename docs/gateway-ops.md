@@ -673,6 +673,93 @@ Deploy e2e AC9's models-list assertion covers `glm-5.3`, `glm-5.2`, and all
 three new groups (`glm-5.3-flash`, `nemotron-3-super`,
 `deepseek-v4.1-flash`).
 
+## Optional auto-router (commented template)
+
+The config contains an inert `auto_router/complexity_router` example for operators
+who want LiteLLM to classify requests into SIMPLE, MEDIUM, COMPLEX, and REASONING
+tiers. The entry carries `complexity_router_config` with `tiers` — the inline
+complexity-router wiring LiteLLM 1.105.x validates. Its example tiers map SIMPLE
+to `ollama-cloud/glm-5.3-flash` (the default lane) and MEDIUM/COMPLEX/REASONING
+to `ollama-cloud/glm-5.3`; replace these with model groups that exist in your own
+deployment, or the deployment drops and the alias serves 400s with no fallback
+attempted. `session_affinity: true` keeps a session on one model so it can retain
+that model's prompt cache. The key shape matters: `auto_router_config` is a
+different surface — a config-path string for LiteLLM's semantic auto-router —
+and its dict form fails `LiteLLM_Params` validation on 1.105.x.
+
+Sensitive text stays off hosted lanes: if any routed traffic may carry sensitive
+free text, map every tier only to self-hosted model groups (define those groups
+first, then opt in). The example tiers here are hosted ollama-cloud lanes, and
+the deployed config's model groups are hosted as well — no self-hosted model
+group is configured, so the template as shipped is not a sensitive-traffic
+route and must stay commented in shared defaults.
+
+The template presumes the 1.105.1 gateway upgrade (the version carried by the
+1py.17 / PR #73 stack); this behavior is 1.105.x code, not present in the pinned
+1.100.1. A non-production 1.105.1 fixture has since validated the enabled shape:
+with the block above active against local mock `ollama_chat` groups, requests
+through the router returned 200 on every exercised tier path (SIMPLE floor,
+classified heavy tiers, escalation keyword) with zero `ModelNotMappedError` and
+zero fallback events, and the failure shapes below were recorded as exact
+validation errors (see PR #88's fixture-evidence comment). Opt in and smoke-test
+on the upgraded gateway before trusting the enabled route in production.
+
+Three pitfalls are important:
+
+1. **Keep the entry under `complexity_router_config`.** `auto_router_config` is
+   a config-path string for LiteLLM's separate semantic auto-router; on 1.105.1
+   its inline-dict form fails `LiteLLM_Params` validation at deployment
+   creation, the deployment is dropped, and the alias serves every request 400
+   "There are no healthy deployments for this model ... No fallback was
+   attempted."
+2. **Keep `context_compaction: false` whenever any tier uses `ollama_chat/*`.**
+   Compaction sizes the selected deployment via a model-map lookup. For models
+   absent from LiteLLM's map, that lookup raises `ModelNotMappedError`, which is
+   not caught, and the turn falls to the next fallback model, visible only in
+   Prometheus fallback counters. With compaction false that sizing path never
+   runs — the fixture run above served the enabled tiers with zero
+   `ModelNotMappedError`. On 1.105.1 a bare `context_compaction: true` is
+   itself a validation error (`ContextCompactionConfig | Literal[False]`), so
+   enabling compaction is a deliberate `ContextCompactionConfig` object, not a
+   boolean flip, and the fixture recorded that exact error. Declaring deployment
+   `model_info` limits did not help in the source fleet's earlier 1.105.1 test
+   because the global map lookup raised first. Client-side compression (§3.1)
+   makes router compaction redundant here. Topically related upstream
+   discussion: #23054 (closed as not planned; it covers unmapped-model
+   metadata/routing failures generally, not this compaction path).
+3. **`classification_rubric` nests under `classifier_llm_config` for the
+   LLM-judge classifier.** The heuristic classifier silently ignores it.
+
+To opt in, deliberately uncomment the template, map every tier to an operator-
+configured model group, validate the resulting config, and smoke-test
+request/fallback behavior against the upgraded gateway. Keep it commented in
+shared defaults until then.
+
+## Per-key budget caps (weekly example)
+
+A weekly cap can be set on an agent key with LiteLLM's `max_budget` and
+`budget_duration: 7d`. For example, include these fields in the per-key
+`/key/generate` request (the values below are illustrative):
+
+```yaml
+# max_budget: 25
+# budget_duration: 7d
+```
+
+The cap is checked against the key's running spend, which only resets at
+`budget_reset_at`. When adding a cap to an existing key, reset its spend or the
+key may be blocked immediately based on lifetime spend:
+
+```http
+POST /key/{token}/reset_spend
+Content-Type: application/json
+
+{"reset_to": 0}
+```
+
+Use the real token only in the authorized request; never put it in docs or
+operational evidence. Budgets also gate MCP calls made with that key. Treat
+LiteLLM budgets as approximate: `/api/usage` is the authoritative bill.
 ## Gateway liveness and proxy front (logs, real client IPs, loopback)
 
 Use the Hermes dashboard's public `GET /api/status` as the per-agent health

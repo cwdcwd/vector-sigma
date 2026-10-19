@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { parse as parseYaml } from 'yaml';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const config = readFileSync(path.join(repoRoot, 'images/litellm/litellm-config.yaml'), 'utf8');
@@ -82,5 +83,43 @@ describe('Ollama Cloud native route configuration', () => {
     expect(explicitGroup('glm-5.3')).toMatch(/model_info:\s*\n\s+max_input_tokens: 1000000/);
     expect(explicitGroup('glm-5.2')).toMatch(/# TODO:.*glm-5.2 context limit; do not guess/);
     expect(explicitGroup('glm-5.2')).not.toContain('max_input_tokens');
+  });
+
+  it('keeps the auto-router template comments-only and the YAML parseable', () => {
+    const parsed = parseYaml(config) as Record<string, unknown>;
+    expect(parsed).toBeDefined();
+    expect(JSON.stringify(parsed)).not.toMatch(/auto_router|complexity_router/);
+    const template = config.slice(config.indexOf('# auto_router template'), config.indexOf('\nrouter_settings:'));
+    expect(template).toContain('# - model_name: auto_router/complexity_router');
+    expect(template).toContain('#     complexity_router_config:');
+    expect(template).toContain('#       tiers:');
+    expect(template).toContain('#         SIMPLE: ollama-cloud/glm-5.3-flash');
+    expect(template).toContain('#       session_affinity: true');
+    expect(template).toMatch(/^#\s*context_compaction: false$/m);
+    expect(template).toContain('#       #   classification_rubric: <rubric>');
+    expect(template.split('\n').every((line) => line === '' || line.startsWith('#'))).toBe(true);
+  });
+
+  it('documents weekly budgets in the gateway ops docs', () => {
+    const canonical = readFileSync(path.join(repoRoot, 'docs/gateway-ops.md'), 'utf8');
+    expect(canonical).toContain('## Per-key budget caps (weekly example)');
+    expect(canonical).toContain('budget_duration: 7d');
+    expect(canonical).toContain('budget_reset_at');
+    expect(canonical).toContain('POST /key/{token}/reset_spend');
+    expect(canonical).toContain('{"reset_to": 0}');
+    expect(canonical).toContain('Budgets also gate MCP calls');
+  });
+
+  it('keeps the sensitive-text constraint stated in the docs and template', () => {
+    const canonical = readFileSync(path.join(repoRoot, 'docs/gateway-ops.md'), 'utf8');
+    expect(canonical).toContain('if any routed traffic may carry sensitive');
+    expect(canonical).toContain('map every tier only to self-hosted model groups');
+    expect(canonical).toContain('hosted ollama-cloud lanes');
+    expect(canonical).toContain('no self-hosted model');
+    const template = config.slice(config.indexOf('# auto_router template'), config.indexOf('\nrouter_settings:'));
+    expect(template).toContain('# Sensitive text: if routed traffic may carry sensitive free text, map every tier');
+    expect(template).toContain('# only to self-hosted model groups');
+    expect(template).toContain('# self-hosted model group, so this template must stay commented in shared defaults.');
+    expect(template.split('\n').every((line) => line === '' || line.startsWith('#'))).toBe(true);
   });
 });
