@@ -797,6 +797,60 @@ ac9c_litellm_spend_log_redaction() {
     fail AC9c "could not enable prompt storage for the redaction probe (HTTP ${config_status:-none})"
     return
   fi
+  pass AC9c "prompt storage enable accepted" "isolated runtime field/update returned HTTP 200; runtime DB config row store_prompts_in_spend_logs=$(docker exec "$PROJECT-postgres-runtime-1" psql -U runtime -d litellm_runtime -tA -c "SELECT COALESCE(param_value::json->>'store_prompts_in_spend_logs','absent') FROM LiteLLM_Config WHERE param_name='general_settings' LIMIT 1" 2>/dev/null | head -1)"
+
+  # Diagnostic precheck (shape-only, never fails the battery): a second tiny
+  # completion with the same credential-named keys, fetched by its own call
+  # id. Prints ONLY whether the stored proxy_server_request is the "{}"
+  # placeholder or a populated body and masked/credential counts — this
+  # separates "flag did not reach the writer" from "sanitizer dropped keys".
+  local precheck_body=/tmp/e2e-ac9c-precheck-request.json
+  local precheck_row=/tmp/e2e-ac9c-precheck-row.json
+  local precheck_id="e2e-redaction-pre-$(date +%s)-$$"
+  local precheck_status precheck_lookup psr_diag
+  node -e '
+    const fs = require("fs");
+    const body = {
+      model: "runtime-spendlogs-test",
+      messages: [{ role: "user", content: "synthetic precheck" }],
+      aws_access_key_id: "AKIACANARY_E2E_ONLY",
+      aws_secret_access_key: "SECRETCANARY_E2E_ONLY",
+      aws_session_token: "TOKENCANARY_E2E_ONLY",
+      extra_body: { client_secret: "NESTEDCANARY_E2E_ONLY" },
+      extra_headers: { Authorization: "Bearer HEADERCANARY_E2E_ONLY" }
+    };
+    fs.writeFileSync(process.argv[1], JSON.stringify(body), { mode: 0o600 });
+  ' "$precheck_body" || true
+  if [ -s "$precheck_body" ]; then
+    precheck_status="$(curl -s -o /dev/null -w '%{http_code}' -m 30 \
+        -X POST "$base/v1/chat/completions" \
+        -H "Authorization: Bearer $master" \
+        -H "x-litellm-call-id: $precheck_id" \
+        -H 'Content-Type: application/json' \
+        --data-binary "@$precheck_body" 2>/dev/null || true)"
+    precheck_lookup=""
+    for i in $(seq 1 6); do
+      precheck_lookup="$(curl -s -o "$precheck_row" -w '%{http_code}' -m 30 \
+          "$base/spend/logs/ui/$precheck_id" \
+          -H "Authorization: Bearer $master" 2>/dev/null || true)"
+      if [ "$precheck_lookup" = "200" ]; then break; fi
+      sleep 2
+    done
+    psr_diag="$(node -e '
+      const fs = require("fs");
+      let root; try { root = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); } catch { console.log("psr=unreadable"); process.exit(0); }
+      const psr = root && root.proxy_server_request;
+      const psrStr = typeof psr === "string" ? psr : (psr === undefined || psr === null ? String(psr) : JSON.stringify(psr));
+      let parsed = null; try { parsed = typeof psr === "string" ? JSON.parse(psr) : psr; } catch { parsed = null; }
+      const KEYSET = new Set(["aws_access_key_id","aws_secret_access_key","aws_session_token","client_secret","Authorization"]);
+      const SENT = "REDACTED_BY_LITELLM";
+      let paths = 0, masked = 0; const names = []
+      ;(function walk(v){ if (!v || typeof v !== "object") return; for (const [k, x] of Object.entries(v)) { if (KEYSET.has(k) && x !== null && typeof x !== "object") { paths++; if (x === SENT) masked++; if (!names.includes(k)) names.push(k); } walk(x); if (typeof x === "string" && x.length > 16 && (x[0]==="{"||x[0]==="[")) { try { walk(JSON.parse(x)); } catch { /* str */ } } } })(parsed ?? {});
+      console.log("psr_len=" + (psrStr ?? "").length + " placeholder=" + (psrStr != null && psrStr.trim() === "{}" ? 1 : 0) + " cred_paths=" + paths + " masked=" + masked + " names=" + names.join(","));
+    ' "$precheck_row" 2>/dev/null || psr_diag="psr=unreadable")"
+    pass AC9c "prompt-storage precheck" "completion HTTP ${precheck_status:-none}, row lookup HTTP ${precheck_lookup:-none}; ${psr_diag}"
+    rm -f "$precheck_body" "$precheck_row"
+  fi
 
   # Synthetic canaries only, body written without echoing it. An extra auth
   # header rides in extra_headers so the stored-header path is covered too:
@@ -956,13 +1010,32 @@ ac9c_litellm_spend_log_redaction() {
     walk(root, 0);
     const missing = [...CREDENTIAL_KEYS].filter(k => !found.has(k));
     if (leaked) { console.log("leaked"); process.exit(0); }
-    if (missing.length) { console.log("missing::" + missing.join(",")); process.exit(0); }
+    if (missing.length) {
+      // Shape-only diagnostics: paths where credential KEY NAMES occur,
+      // lengths, and whether the body is the "{}" placeholder. No values.
+      const psr = root.proxy_server_request;
+      const psrStr = typeof psr === "string" ? psr : (psr === undefined || psr === null ? String(psr) : JSON.stringify(psr));
+      let parsed = null; try { parsed = typeof psr === "string" ? JSON.parse(psr) : psr; } catch { parsed = null; }
+      const pathCount = {}; const sentinelHits = [];
+      (function walk(v) {
+        if (!v || typeof v !== "object") return;
+        for (const [k, x] of Object.entries(v)) {
+          if (CREDENTIAL_KEYS.has(k) && x !== null && typeof x !== "object") pathCount[k] = (pathCount[k] ?? 0) + 1;
+          if (typeof x === "string" && x.indexOf(SENTINEL) >= 0) sentinelHits.push(k);
+          walk(x);
+          if (typeof x === "string" && x.length > 16 && (x[0] === "{" || x[0] === "[")) {
+            try { walk(JSON.parse(x)); } catch { /* plain string */ }
+          }
+        }
+      })(parsed ?? {});
+      console.log("diag::rowkeys=" + Object.keys(root).join("|") + ";psr_len=" + (psrStr ?? "").length + ";psr_placeholder=" + (psrStr != null && psrStr.trim() === "{}" ? 1 : 0) + ";psr_topkeys=" + (parsed && typeof parsed === "object" ? Object.keys(parsed).join("|") : "") + ";cred_name_paths=" + JSON.stringify(pathCount) + ";sentinel_hits=" + JSON.stringify(sentinelHits));
+      console.log("missing::" + missing.join(",")); process.exit(0); }
     console.log("clean");
   ' "$row_body")"
   if [ "$verdict" = "clean" ]; then
     pass "AC9c stored spend-log credentials redacted" "all five credential-named values are REDACTED_BY_LITELLM in the stored body and no canary literal survives anywhere in the row"
   else
-    fail "AC9c stored spend-log credentials redacted" "stored body not provably sanitized (verdict kind: ${verdict%%::*}, row status ${lookup_status}) — payload suppressed"
+    fail "AC9c stored spend-log credentials redacted" "stored body not provably sanitized (verdict: $(printf '%s' "$verdict" | tr '\n' ' ;'), row status ${lookup_status}) — payload suppressed; only shape/paths emitted"
   fi
   ac9c_restore_prompt_storage
   rm -f "$request_body" "$row_body" "$list_body"
