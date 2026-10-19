@@ -797,10 +797,14 @@ ac9c_litellm_spend_log_redaction() {
     fail AC9c "could not enable prompt storage for the redaction probe (HTTP ${config_status:-none})"
     return
   fi
-  local cfg_row_state
+  local cfg_row_state cfg_row_err=""
   cfg_row_state="$(docker exec "$PROJECT-postgres-runtime-1" psql -U runtime -d litellm_runtime -tA -c \
     "SELECT CASE WHEN count(*)=0 THEN 'no-row' WHEN param_value IS NULL THEN 'null-value' WHEN param_value::text LIKE '%store_prompts_in_spend_logs%' THEN 'flag-present' ELSE 'flag-absent' END FROM \"LiteLLM_Config\" WHERE param_name='general_settings';" 2>/dev/null | head -1)" || true
-  pass "AC9c prompt storage enable accepted" "isolated runtime field/update returned HTTP 200; runtime DB config row state=${cfg_row_state:-query-failed}"
+  if [ -z "$cfg_row_state" ]; then
+    cfg_row_err="$(docker exec "$PROJECT-postgres-runtime-1" psql -U runtime -d litellm_runtime -tA -c \
+      "SELECT 1 FROM \"LiteLLM_Config\" LIMIT 1;" 2>&1 | head -1)" || true
+  fi
+  pass "AC9c prompt storage enable accepted" "isolated runtime field/update returned HTTP 200; runtime DB config row state=${cfg_row_state:-query-failed}; psql_probe=${cfg_row_err:-silent-ok}"
 
   # Diagnostic precheck (shape-only, never fails the battery): a second tiny
   # completion with the same credential-named keys, fetched by its own call
@@ -854,9 +858,10 @@ ac9c_litellm_spend_log_redaction() {
       let parsed = null; try { parsed = typeof psr === "string" ? JSON.parse(psr) : psr; } catch { parsed = null; }
       const KEYSET = new Set(["aws_access_key_id","aws_secret_access_key","aws_session_token","client_secret","Authorization"]);
       const SENT = "REDACTED_BY_LITELLM";
-      let paths = 0, masked = 0; const names = []
-      ;(function walk(v){ if (!v || typeof v !== "object") return; for (const [k, x] of Object.entries(v)) { if (KEYSET.has(k) && x !== null && typeof x !== "object") { paths++; if (x === SENT || x === "REDACTED" || x === "***REDACTED***" || (typeof x === "string" && /^\*+$/.test(x)) || (typeof x === "string" && x.length > 8 && /^\*+$/.test(x.slice(4, x.length - 4)))) masked++; if (!names.includes(k)) names.push(k); } walk(x); if (typeof x === "string" && x.length > 16 && (x[0]==="{"||x[0]==="[")) { try { walk(JSON.parse(x)); } catch { /* str */ } } } })(parsed ?? {});
-      console.log("psr_len=" + (psrStr ?? "").length + " placeholder=" + (psrStr != null && psrStr.trim() === "{}" ? 1 : 0) + " cred_paths=" + paths + " masked=" + masked + " names=" + names.join(","));
+      let paths = 0, masked = 0; const names = []; const shapes = {};
+      const cls = (s) => s === SENT ? "sent" : s === "REDACTED" ? "red" : s === "***REDACTED***" ? "hdr" : s === "[REDACTED]" ? "brk" : (/^\*+$/.test(s) ? "stars" : (/^[0-9a-fA-F]{32,64}$/.test(s) ? "hex" : (/^[A-Za-z0-9+/=_-]{20,}$/.test(s) ? "tokenish" : "mixed")));
+      ;(function walk(v){ if (!v || typeof v !== "object") return; for (const [k, x] of Object.entries(v)) { if (KEYSET.has(k) && x !== null && typeof x !== "object") { paths++; if (typeof x === "string") shapes[k] = x.length + ":" + cls(x); if (x === SENT || x === "REDACTED" || x === "***REDACTED***" || x === "[REDACTED]" || (typeof x === "string" && /^\*+$/.test(x)) || (typeof x === "string" && x.length > 8 && /^\*+$/.test(x.slice(4, x.length - 4)))) masked++; if (!names.includes(k)) names.push(k); } walk(x); if (typeof x === "string" && x.length > 16 && (x[0]==="{"||x[0]==="[")) { try { walk(JSON.parse(x)); } catch { /* str */ } } } })(parsed ?? {});
+      console.log("psr_len=" + (psrStr ?? "").length + " placeholder=" + (psrStr != null && psrStr.trim() === "{}" ? 1 : 0) + " cred_paths=" + paths + " masked=" + masked + " names=" + names.join(",") + " shapes=" + JSON.stringify(shapes));
     ' "$precheck_row" 2>/dev/null || psr_diag="psr=unreadable")"
     pass "AC9c prompt-storage precheck" "completion HTTP ${precheck_status:-none}, row lookup HTTP ${precheck_lookup:-none}; ${psr_diag}"
     rm -f "$precheck_body" "$precheck_row"
@@ -1047,7 +1052,7 @@ ac9c_litellm_spend_log_redaction() {
     // sentinel, the generic redaction token, the observability header token,
     // or the SensitiveDataMasker 4-visible-chars-each-side shape. Accept any
     // masked form; the leak test below still rejects any canary literal.
-    const ACCEPTED_MASKED = new Set([SENTINEL, "REDACTED", "***REDACTED***"]);
+    const ACCEPTED_MASKED = new Set([SENTINEL, "REDACTED", "***REDACTED***", "[REDACTED]"]);
     function maskerShape(raw) {
       const s = String(raw);
       if (s.length <= 8) return "*".repeat(s.length);
@@ -1096,11 +1101,15 @@ ac9c_litellm_spend_log_redaction() {
       const psr = root.proxy_server_request;
       const psrStr = typeof psr === "string" ? psr : (psr === undefined || psr === null ? String(psr) : JSON.stringify(psr));
       let parsed = null; try { parsed = typeof psr === "string" ? JSON.parse(psr) : psr; } catch { parsed = null; }
-      const pathCount = {}; const sentinelHits = [];
+      const pathCount = {}; const sentinelHits = []; const valShape = {};
+      const classifyShape = (s) => s === SENTINEL ? "sent" : s === "REDACTED" ? "red" : s === "***REDACTED***" ? "hdr" : s === "[REDACTED]" ? "brk" : (/^\*+$/.test(s) ? "stars" : (/^[0-9a-fA-F]{32,64}$/.test(s) ? "hex" : (/^[A-Za-z0-9+/=_-]{20,}$/.test(s) ? "tokenish" : "mixed")));
       (function walk(v) {
         if (!v || typeof v !== "object") return;
         for (const [k, x] of Object.entries(v)) {
-          if (CREDENTIAL_KEYS.has(k) && x !== null && typeof x !== "object") pathCount[k] = (pathCount[k] ?? 0) + 1;
+          if (CREDENTIAL_KEYS.has(k) && x !== null && typeof x !== "object") {
+            pathCount[k] = (pathCount[k] ?? 0) + 1;
+            if (typeof x === "string") valShape[k] = x.length + ":" + classifyShape(x); else valShape[k] = typeof x;
+          }
           if (typeof x === "string" && x.indexOf(SENTINEL) >= 0) sentinelHits.push(k);
           walk(x);
           if (typeof x === "string" && x.length > 16 && (x[0] === "{" || x[0] === "[")) {
@@ -1108,7 +1117,7 @@ ac9c_litellm_spend_log_redaction() {
           }
         }
       })(parsed ?? {});
-      console.log("diag::rowkeys=" + Object.keys(root).join("|") + ";psr_len=" + (psrStr ?? "").length + ";psr_placeholder=" + (psrStr != null && psrStr.trim() === "{}" ? 1 : 0) + ";psr_topkeys=" + (parsed && typeof parsed === "object" ? Object.keys(parsed).join("|") : "") + ";cred_name_paths=" + JSON.stringify(pathCount) + ";sentinel_hits=" + JSON.stringify(sentinelHits));
+      console.log("diag::rowkeys=" + Object.keys(root).join("|") + ";psr_len=" + (psrStr ?? "").length + ";psr_placeholder=" + (psrStr != null && psrStr.trim() === "{}" ? 1 : 0) + ";psr_topkeys=" + (parsed && typeof parsed === "object" ? Object.keys(parsed).join("|") : "") + ";cred_name_paths=" + JSON.stringify(pathCount) + ";cred_val_shapes=" + JSON.stringify(valShape) + ";sentinel_hits=" + JSON.stringify(sentinelHits));
       console.log("missing::" + missing.join(",")); process.exit(0); }
     console.log("clean");
   ' "$row_body")"
