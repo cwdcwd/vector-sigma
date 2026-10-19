@@ -95,8 +95,10 @@ services:
 
   registrar:
     build:
-      context: ./registrar
-      dockerfile: Dockerfile
+      # Repo-root context: releases never build here — CI builds images.json's
+      # component once and the release renderer swaps this block for its digest.
+      context: ../..
+      dockerfile: registrar/Dockerfile
     environment:
       # Structural (fleet-ops-f57.8): the registrar builds DATABASE_URL
       # from POSTGRES_USER/POSTGRES_PASSWORD/POSTGRES_DB/DB_HOST/DB_PORT
@@ -335,11 +337,10 @@ services:
     # the config-only queue join + the environment docs + the boot
     # hook. Owner ruling: primus must be fully rebuildable from the
     # repo + a fresh registrar release with zero manual steps. One
-    # artifact: deploy/compose.yaml builds the SAME Dockerfile — no
-    # twin drift (the FROM pin stays the parity pin both sides share).
+    # artifact: deploy/compose.yaml runs the SAME GHCR image.
     build:
-      context: .
-      dockerfile: Dockerfile.hermes
+      context: ../..
+      dockerfile: balena/registrar/Dockerfile.hermes
     # The image's CMD default is a bare `hermes` REPL — it exits on EOF
     # when stdin closes (compose up -d). The upstream reference compose's
     # canonical long-run form (run-3 lesson): `gateway run`.
@@ -404,16 +405,16 @@ services:
     stop_signal: SIGTERM
     restart: always
 
-  # f57.14: the master device's OWN registrant (vendored twin of the
-  # devices app's registrant — same sources, same image shape). Polls the
+  # f57.14: the master device's OWN registrant (the same registrant
+  # image the devices fleet runs). Polls the
   # compose-internal registrar over http (pre-TLS per the bead's contract:
   # never leaves the composition network) and applies the primus bundle to
   # the shared primus-data volume, writing /data/primus/ready.marker last
   # — the hermes service's gate.
   registrant-own:
     build:
-      context: ./registrant-own
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: registrant/Dockerfile
     environment:
       # The master's own balena device UUID (BALENA_DEVICE_UUID) and the
       # REGISTRAR_KEY for the primus row are balenaCloud DEVICE variables

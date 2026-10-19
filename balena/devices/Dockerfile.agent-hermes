@@ -15,7 +15,7 @@
 #      so the official bootstrap chain (s6 /init -> cont-init.d ->
 #      main-wrapper) runs ONLY once identity exists — the same marker gate
 #      as the placeholder, now guarding the real runtime.
-#   3. The A2A mesh wiring hook (agent/vs-a2a-wiring.sh as
+#   3. The A2A mesh wiring hook (deploy/vs-a2a-wiring.sh as
 #      /etc/cont-init.d/04-vs-a2a-wiring — the j7g.1 CODE contract):
 #      derives the runtime env (model route, gateway URL+key, A2A
 #      identity/trusted-peers/public-url/peer-tokens, TLS CA) from the
@@ -30,12 +30,15 @@
 #      an N-device image. NEVER a device-side bd init (the 2026-09-09
 #      lockout class).
 #   5. The device environment map + queue conventions + A2A dispatch
-#      discipline + the gateway ops runbook at /opt/vs/docs (vendored
-#      at build time — the vendored-drift pattern; docs/ at the repo
-#      root is the source of truth). e5o.1: the devices environment map
-#      is device-environment.md (the WORKER map) — NEVER the master's
+#      discipline + the gateway ops runbook at /opt/vs/docs, copied
+#      straight from docs/. e5o.1: the devices environment map is
+#      device-environment.md (the WORKER map) — NEVER the master's
 #      vs-environment.md (wrong-map regression, CI-fatal in
-#      registrant/test/vendored-drift.test.ts).
+#      registrar/test/image-build-config.test.ts).
+#
+# Built from the REPO ROOT context (docker build -f balena/devices/
+# Dockerfile.agent-hermes .): CI builds it once, scans it, E2Es those
+# bytes and promotes them to GHCR; balena pulls the published digest.
 
 FROM nousresearch/hermes-agent:v2026.9.21
 
@@ -46,11 +49,10 @@ FROM nousresearch/hermes-agent:v2026.9.21
 # mints short-lived installation tokens from the agent's OWN App
 # private key (delivered via the registrar bundle, never baked); the
 # 05- boot hook derives the GIT_CONFIG_* env lines that make plain git
-# authenticate as <slug>[bot]. Byte-pinned vendored copies of
-# scripts/vs-github-identity.{py,sh} (the drift guard test enforces
-# parity; docs/vs-github.md is the usage doc).
-COPY agent/vs-github-identity.py /usr/local/bin/vs-github-identity
-COPY agent/vs-github-identity.sh /etc/cont-init.d/05-vs-github-identity
+# authenticate as <slug>[bot]. Sources: scripts/vs-github-identity.{py,sh}
+# (docs/vs-github.md is the usage doc).
+COPY scripts/vs-github-identity.py /usr/local/bin/vs-github-identity
+COPY scripts/vs-github-identity.sh /etc/cont-init.d/05-vs-github-identity
 RUN chmod 0755 /usr/local/bin/vs-github-identity /etc/cont-init.d/05-vs-github-identity
 
 # ── bd 1.2.2: prebuilt release binary (Dockerfile.scotty/harness pattern) ──
@@ -77,26 +79,31 @@ RUN arch="$(uname -m)" \
     && rm -f "/tmp/${tarball}" /tmp/checksums.txt
 
 # ── The identity gate (the placeholder image's own contract, kept) ────────
-COPY agent/gate.sh /usr/local/bin/gate.sh
+COPY balena/devices/agent/gate.sh /usr/local/bin/gate.sh
 RUN chmod 0755 /usr/local/bin/gate.sh
 
 # ── The A2A wiring hook (cont-init, AFTER stage2's 01-hermes-setup) ──────
-COPY agent/vs-a2a-wiring.sh /etc/cont-init.d/04-vs-a2a-wiring
+COPY deploy/vs-a2a-wiring.sh /etc/cont-init.d/04-vs-a2a-wiring
 RUN chmod 0755 /etc/cont-init.d/04-vs-a2a-wiring
 
-# ── Docs (vendored; source of truth = docs/ at the repo root) ─────────────
-COPY docs /opt/vs/docs
-COPY hermes-agent-defaults.yaml /opt/vs/hermes-agent-defaults.yaml
+# ── Docs: the WORKER environment map + the shared conventions ─────────────
+COPY docs/queue-conventions.md \
+     docs/device-environment.md \
+     docs/a2a-conventions.md \
+     docs/gateway-ops.md \
+     docs/memory-conventions.md \
+     docs/vs-github.md \
+     /opt/vs/docs/
+COPY balena/devices/hermes-agent-defaults.yaml /opt/vs/hermes-agent-defaults.yaml
 
 # ── The gateway-memory plugin + install hook (fleet-ops-e5o.3) ────────────
-# Byte-pinned to deploy/gateway-memory/ (the drift test enforces parity
-# with the vendored copy this Dockerfile's context already carries). The
-# 06- hook installs it into $HERMES_HOME/plugins/ and seeds
+# Source: deploy/gateway-memory/ (sha-stamped by provenance-sha256.txt).
+# The 06- hook installs it into $HERMES_HOME/plugins/ and seeds
 # plugins.enabled on every boot (PluginManager's allow-list gate — a
 # copied-but-unlisted plugin registers NOTHING). Memory KEYS arrive via
 # the bundle's extra_env, never baked. Lexically after 05-, fail-soft.
-COPY agent/gateway-memory /opt/vs/gateway-memory
-COPY agent/vs-memory-tools.sh /etc/cont-init.d/06-vs-memory-tools
+COPY deploy/gateway-memory /opt/vs/gateway-memory
+COPY deploy/vs-memory-tools.sh /etc/cont-init.d/06-vs-memory-tools
 RUN chmod 0755 /etc/cont-init.d/06-vs-memory-tools
 
 # ── The identity gate as ENTRYPOINT ────────────────────────────────────────

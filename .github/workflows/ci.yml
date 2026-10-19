@@ -1,5 +1,7 @@
 name: CI
 
+# Unit tests + typecheck. The compose E2E runs in build-images.yml, against
+# the exact images CI built and scanned (.github/workflows/_images.yml).
 on:
   pull_request:
   push:
@@ -20,13 +22,3 @@ jobs:
         run: npm run build
       - name: Unit tests
         run: npm test
-
-  e2e:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Compose-simulated device E2E
-        run: deploy/e2e.sh --up
-      - name: Teardown
-        if: always()
-        run: deploy/e2e.sh --down

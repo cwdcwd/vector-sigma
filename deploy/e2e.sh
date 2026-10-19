@@ -4,6 +4,10 @@
 #
 # Usage:
 #   deploy/e2e.sh --up      # fresh stack (down -v, build, up), wait ready, assert all ACs
+#   E2E_PREBUILT=1 deploy/e2e.sh --up
+#                           # same, but NEVER builds: every VS image must already
+#                           # be tagged vs-e2e/<component>:ci (CI loads the
+#                           # exact scanned OCI tars — the bytes it promotes)
 #   deploy/e2e.sh           # assert against an already-running stack
 #   deploy/e2e.sh --down    # teardown (removes volumes)
 #
@@ -118,8 +122,19 @@ stack_up() {
 
   # lnf (j7g phase 2): single-phase bring-up - no caddy wait, no CA
   # extraction pass, no tls-gate (the overlay no longer defines one).
-  $COMPOSE up -d --build \
-    || { note "compose up failed"; exit 1; }
+  # E2E_PREBUILT=1: assert the preloaded images, never a rebuild — a
+  # missing vs-e2e/<component>:ci tag fails here instead of silently
+  # testing freshly built bytes. The seed harness is test tooling, not a
+  # shipped image, so it is the one service built in either mode.
+  if [ "${E2E_PREBUILT:-0}" = "1" ]; then
+    note "prebuilt mode: building the seed harness only; every VS image is preloaded"
+    $COMPOSE build seed || { note "seed harness build failed"; exit 1; }
+    $COMPOSE up -d --no-build \
+      || { note "compose up failed (prebuilt mode: is every vs-e2e/<component>:ci image loaded?)"; exit 1; }
+  else
+    $COMPOSE up -d --build \
+      || { note "compose up failed"; exit 1; }
+  fi
 
   note "waiting for cold bootstrap (seed gate → device → ready marker)..."
   if ! wait_marker; then
@@ -1548,7 +1563,7 @@ ac10_tls_edge() {
 
 # AC12 (f57.14): the primus dogfood — the coordinator self-bootstraps through
 # the SAME chain every device uses. The overlay's primus-registrant (the REAL
-# vendored registrant) fetches the seeded primus bundle from the REAL
+# registrant image) fetches the seeded primus bundle from the REAL
 # registrar over compose-internal http and applies it to the shared
 # primus-data volume; the REAL official Hermes image's entrypoint gates on
 # the ready marker. Assertions:

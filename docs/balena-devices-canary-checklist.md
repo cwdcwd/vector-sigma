@@ -6,7 +6,7 @@ For fleet/release policy context see [balena-architecture.md](balena-architectur
 
 ## 1. Before the tag
 
-- [ ] CI green on the PR that touched `balena/devices/` (test + e2e jobs).
+- [ ] CI green on the PR that touched `balena/devices/` (`ci.yml` tests + `build-images.yml` validate: scan + E2E).
 - [ ] PR reviewed and approved; merged by the submitter (merge convention 2026-09-19).
 - [ ] Vendored-source drift test green (it runs in the unit-test job).
 - [ ] `balena/devices/README.md` still matches the shipped compose shape.

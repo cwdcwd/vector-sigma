@@ -29,6 +29,9 @@
  *   5. Every job that depends on real published GHCR bytes is switched back
  *      ON (no `if: false`), because the thing those jobs were waiting for
  *      now exists.
+ *
+ * The publish graph lives once, in the reusable .github/workflows/_images.yml
+ * (PIPELINE below); the release workflows call it and keep only their tail.
  */
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -40,6 +43,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '../..');
 const read = (rel: string): string => readFileSync(path.join(repoRoot, rel), 'utf8');
 
+const PIPELINE = '.github/workflows/_images.yml';
 const RELEASE_WORKFLOWS = ['.github/workflows/release-registrar.yml', '.github/workflows/release-devices.yml'] as const;
 
 interface WfJob {
@@ -66,7 +70,7 @@ function needsList(job: WfJob): string[] {
 }
 
 describe('exact-byte promotion: no builder anywhere in the publish path', () => {
-  for (const wf of RELEASE_WORKFLOWS) {
+  for (const wf of [PIPELINE]) {
     it(`${wf}: promote contains NO docker/build-push-action and no "push: true"`, () => {
       const text = stepsText(loadWf(wf).jobs.promote);
       expect(text, `${wf} promote must not rebuild the image`).not.toContain('docker/build-push-action');
@@ -101,21 +105,22 @@ describe('exact-byte promotion: no builder anywhere in the publish path', () => 
 });
 
 describe('exact-byte promotion: one index-assembly path (promote-manifest retired)', () => {
-  for (const wf of RELEASE_WORKFLOWS) {
+  for (const wf of [PIPELINE, ...RELEASE_WORKFLOWS]) {
     it(`${wf}: there is no promote-manifest job left`, () => {
       expect(loadWf(wf).jobs['promote-manifest'], `${wf} must not keep a second buildx index-assembly path`).toBeUndefined();
     });
 
-    it(`${wf}: the promoter script — not buildx — does the index assembly`, () => {
-      const text = stepsText(loadWf(wf).jobs.promote);
-      expect(text).toContain('scripts/ghcr-promote-run.mjs');
-      expect(text).not.toContain('imagetools');
-    });
   }
+
+  it(`${PIPELINE}: the promoter script — not buildx — does the index assembly`, () => {
+    const text = stepsText(loadWf(PIPELINE).jobs.promote);
+    expect(text).toContain('scripts/ghcr-promote-run.mjs');
+    expect(text).not.toContain('imagetools');
+  });
 });
 
 describe('exact-byte promotion: verify-remote is credential-free and fail-closed', () => {
-  for (const wf of RELEASE_WORKFLOWS) {
+  for (const wf of [PIPELINE]) {
     it(`${wf}: verify-remote carries NO packages:write`, () => {
       const perms = loadWf(wf).jobs['verify-remote'].permissions;
       expect(perms?.packages, `${wf} verify-remote must not hold write scope`).not.toBe('write');
@@ -131,25 +136,37 @@ describe('exact-byte promotion: verify-remote is credential-free and fail-closed
 
 describe('exact-byte promotion: live publishing is behind an explicit owner switch', () => {
   // Merging a green PR pipeline must never, by itself, become a live GHCR
-  // write. The promote job is therefore gated on a repo Actions variable
-  // that is unset in this repo: promote (and everything needing it) skips,
-  // so push-to-main with a green gate publishes nothing until the owner
-  // deliberately flips the switch. See docs/ghcr-promotion-runbook.md.
-  const ALL_WORKFLOWS = ['.github/workflows/build-images.yml', ...RELEASE_WORKFLOWS] as const;
+  // write. The pipeline's promote runs only on publish: true, and every
+  // caller derives that input from a repo Actions variable that is unset in
+  // this repo: push-to-main with a green gate publishes nothing until the
+  // owner deliberately flips the switch. See docs/ghcr-promotion-runbook.md.
+  it(`${PIPELINE}: promote runs only when the caller passes publish: true`, () => {
+    expect(loadWf(PIPELINE).jobs.promote.if).toBe('inputs.publish');
+  });
 
-  for (const wf of ALL_WORKFLOWS) {
-    it(`${wf}: promote requires vars.VS_GHCR_PUBLISH_ENABLED`, () => {
-      const jobIf = loadWf(wf).jobs.promote.if;
-      expect(typeof jobIf, `${wf} promote must carry an if: guard`).toBe('string');
-      expect(jobIf, `${wf} promote must be gated on the owner switch`).toContain(
-        "vars.VS_GHCR_PUBLISH_ENABLED == 'true'",
-      );
+  for (const wf of ['.github/workflows/build-images.yml', ...RELEASE_WORKFLOWS]) {
+    it(`${wf}: every pipeline call publishes only via vars.VS_GHCR_PUBLISH_ENABLED (or never)`, () => {
+      const calls = Object.values(loadWf(wf).jobs).filter(
+        (job) => (job as { uses?: string }).uses === './.github/workflows/_images.yml',
+      ) as Array<{ with?: { publish?: unknown } }>;
+      expect(calls.length).toBeGreaterThan(0);
+      for (const call of calls) {
+        const publish = call.with?.publish;
+        expect(
+          publish === false || String(publish).includes("vars.VS_GHCR_PUBLISH_ENABLED == 'true'"),
+          `${wf}: publish input must be false or the owner switch, got ${String(publish)}`,
+        ).toBe(true);
+      }
     });
   }
 });
 
 describe('exact-byte promotion: downstream jobs are switched back ON', () => {
-  const DOWNSTREAM_JOBS = ['verify-remote', 'scan', 'smoke', 'render', 'deploy'] as const;
+  const DOWNSTREAM_JOBS = ['scan', 'smoke', 'render', 'deploy'] as const;
+
+  it(`${PIPELINE}: verify-remote is not switched off`, () => {
+    expect(loadWf(PIPELINE).jobs['verify-remote'].if).not.toBe(false);
+  });
 
   for (const wf of RELEASE_WORKFLOWS) {
     for (const jobId of DOWNSTREAM_JOBS) {

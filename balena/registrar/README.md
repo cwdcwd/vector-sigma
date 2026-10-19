@@ -19,40 +19,24 @@ Deployed fleet: `g_c_d/vector-sigma-master`.
 ```
 balena/registrar/
 ├── docker-compose.yml        # registrar + postgres + gateway + queue + primus + tailscale (the serve edge)
-├── README.md
-└── registrar/                 # VENDORED workspace sources (context dir)
-    ├── Dockerfile            # multi-stage: build → runtime (non-root)
-    ├── package.json          # exact-pinned deps, workspaces: shared
-    ├── tsconfig.json
-    ├── drizzle/              # migrations (MIGRATE_ON_START=true)
-    ├── shared/               # vendored @vector-sigma/shared
-    └── src/                  # vendored registrar sources
+├── Dockerfile.hermes         # primus (repo-root context: COPYs docs/, deploy/, scripts/)
+├── Dockerfile.{postgres,litellm,scotty,tailscale}  # wrappers (this dir is their context)
+├── queue-join/, vs-queue-join.sh, bd-readonly, … # inputs only these images use
+└── README.md
 ```
 
-## Why the sources are vendored
+## Where the images come from
 
-Same constraint as [balena/devices/](../devices/README.md): balena
-build contexts are confined to the app source dir, so the registrar +
-shared sources live here byte-for-byte identical to the workspace
-originals, pinned by `registrant/test/vendored-drift.test.ts` in the
-root test suite. Regenerate on upstream change:
-
-```bash
-cp -f registrar/package.json balena/registrar/registrar/package.json  # then re-pin versions to the lockfile
-cp -f registrar/tsconfig.json balena/registrar/registrar/tsconfig.json
-cp -f shared/tsconfig.json balena/registrar/registrar/shared/tsconfig.json
-cp -f shared/src/index.ts balena/registrar/registrar/shared/src/index.ts
-cp -f registrar/src/*.ts balena/registrar/registrar/src/        # flat src/
-cp -f registrar/src/db/*.ts balena/registrar/registrar/src/db/
-cp -f registrar/drizzle/*.sql balena/registrar/registrar/drizzle/
-cp -f registrar/drizzle/meta/* balena/registrar/registrar/drizzle/meta/
-```
-
-Note: the vendored `package.json` is NOT byte-identical to the
-workspace one (the workspace manifest carries vitest/pg-mem/drizzle-kit
-dev tooling the image does not need, and `workspaces` is scoped to the
-vendored `shared/`); the drift test pins its dependency versions to
-the root lockfile instead.
+Nothing here is vendored. Every image is an `images.json` component that CI
+builds ONCE (`.github/workflows/_images.yml`) from the canonical sources —
+`registrar/Dockerfile` and `registrant/Dockerfile` at the repo root, the
+Dockerfiles in this dir — scans it, runs the compose E2E on those exact
+bytes and promotes them to GHCR. A `registrar-v*` tag runs that pipeline,
+then `scripts/render-release-compose.mjs` turns every `build:` block in
+`docker-compose.yml` into `image: ghcr.io/…/<component>@sha256:<arm64
+child digest>` and `balena deploy` ships the rendered compose. The
+`build:` blocks here are that render's input (and the repo-root build
+recipe) — the balena builder never sees source.
 
 ## Runtime configuration
 
@@ -519,8 +503,8 @@ the coordinator bootstraps through the SAME chain every device uses:
 registrar (started) → registrant-own (fetch + apply bundle) → hermes (started)
 ```
 
-- **`registrant-own`** — a vendored twin of the devices app's registrant
-  (byte-pinned by `registrant/test/vendored-drift.test.ts`). It polls the
+- **`registrant-own`** — the same `registrant` image every device runs.
+  It polls the
   compose-internal registrar (`http://registrar:3000` — pre-TLS by the
   bead's contract; the https flip rides the same sequencing as the
   devices fleet) and applies the primus bundle to the shared
@@ -584,7 +568,7 @@ never clobbered by a container update.
    key — f57.8 pattern).
 4. Tag the release; the chain self-bootstraps. The deploy E2E (AC12)
    proves the chain end-to-end in CI: the REAL official image + the REAL
-   vendored registrant + the seeded full bundle.
+   registrant image + the seeded full bundle.
 
 ### primus health
 

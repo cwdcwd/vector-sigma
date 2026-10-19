@@ -1,9 +1,15 @@
 # Vector Sigma — self-host deploy example.
 #
 # Quickstart (see deploy/README.md):
-#   cp deploy/.env.example deploy/.env   # edit: set real secrets
-#   docker compose -f deploy/compose.yaml up -d --build
+#   cp deploy/.env.example deploy/.env   # edit: set real secrets + VS_IMAGE_TAG
+#   docker compose -f deploy/compose.yaml up -d
 #   curl http://127.0.0.1:3000/healthz   # loopback publish (lnf phase 2)
+#
+# Images: every VS-built service runs the SAME GHCR image the balena fleets
+# run — CI builds each images.json component once, scans it, E2Es those
+# bytes and promotes them, tagged with the commit SHA. VS_IMAGE_TAG pins
+# that SHA (no floating tag exists); VS_IMAGE_REGISTRY points at a mirror.
+# Nothing here builds from source (deploy/compose.e2e.yaml does, for CI).
 #
 # Interpolation is fail-closed: every ${VAR:?} aborts `compose config` when
 # deploy/.env does not define it — no silent defaults for secrets.
@@ -19,14 +25,12 @@
 # with the internal CA.
 
 services:
-  # postgres: the stock 16-alpine image WRAPPED (fleet-ops-anc) — same image
-  # the balena app builds, one-artifact/no-twin-drift contract. The wrapper
+  # postgres: the stock 16-alpine image WRAPPED (fleet-ops-anc) — the same
+  # published image the balena app runs. The wrapper
   # provisions the gateway's role + database on every boot (idempotent, safe
   # on the live volume); the retired one-shot litellm-init service is gone.
   postgres:
-    build:
-      context: ../balena/registrar
-      dockerfile: Dockerfile.postgres
+    image: ${VS_IMAGE_REGISTRY:-ghcr.io/cwdcwd/vector-sigma}/postgres:${VS_IMAGE_TAG:?set in deploy/.env — the commit SHA of a published build}
     environment:
       POSTGRES_USER: ${POSTGRES_USER:?set in deploy/.env}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in deploy/.env}
@@ -51,15 +55,11 @@ services:
   # gateway — same image as the balena app (config baked by Dockerfile.litellm),
   # same env contract (passwords via .env here, balenaCloud fleet variables on
   # the device). DATABASE_URL is assembled by the image's entrypoint shim from
-  # the parts below. Build context = balena/registrar (relative to this compose
-  # file) — same context root as the balena app build, so the Dockerfile bytes
-  # never fork. The gateway's role + database are provisioned by the postgres
+  # the parts below. The gateway's role + database are provisioned by the postgres
   # service's own wrapper image on every boot — no ordering dependency needed
   # (the litellm entrypoint retry-cycles its DB connection).
   litellm:
-    build:
-      context: ../balena/registrar
-      dockerfile: Dockerfile.litellm
+    image: ${VS_IMAGE_REGISTRY:-ghcr.io/cwdcwd/vector-sigma}/litellm:${VS_IMAGE_TAG:?set in deploy/.env — the commit SHA of a published build}
     environment:
       LITELLM_PG_USER: litellm
       LITELLM_PG_HOST: postgres
@@ -87,9 +87,7 @@ services:
     restart: unless-stopped
 
   registrar:
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile
+    image: ${VS_IMAGE_REGISTRY:-ghcr.io/cwdcwd/vector-sigma}/registrar:${VS_IMAGE_TAG:?set in deploy/.env — the commit SHA of a published build}
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       PORT: "3000"
@@ -163,13 +161,8 @@ services:
     restart: unless-stopped
 
   scotty:
-    # Self-host builds the same patched image; build context is repo-root
-    # relative to THIS compose file (context: ../balena/registrar — the
-    # f57.12 e5b6905 lesson: compose build contexts resolve against the
-    # compose file's dir).
-    build:
-      context: ../balena/registrar
-      dockerfile: Dockerfile.scotty
+    # The same patched image the balena master runs.
+    image: ${VS_IMAGE_REGISTRY:-ghcr.io/cwdcwd/vector-sigma}/scotty:${VS_IMAGE_TAG:?set in deploy/.env — the commit SHA of a published build}
     environment:
       SCOTTY_READ_ONLY: "1"
       BEADS_REPO: /queue-join
@@ -208,14 +201,9 @@ services:
     # create/close/claim beads; not scotty's bd-readonly posture) + the
     # config-only queue join + the environment docs + the boot hook.
     # Owner ruling: fully rebuildable from the repo with zero manual
-    # steps. Byte-parity with the balena app compose: same Dockerfile,
-    # same tag pin, same volume/env contract — one artifact, no twin
-    # drift. Build context is balena/registrar (repo-root-relative to
-    # THIS compose file — the f57.12 e5b6905 lesson: compose build
-    # contexts resolve against the compose file's dir).
-    build:
-      context: ../balena/registrar
-      dockerfile: Dockerfile.hermes
+    # steps. Parity with the balena app compose: the same published
+    # image, same volume/env contract — one artifact.
+    image: ${VS_IMAGE_REGISTRY:-ghcr.io/cwdcwd/vector-sigma}/hermes:${VS_IMAGE_TAG:?set in deploy/.env — the commit SHA of a published build}
     # The image's CMD default is a bare REPL — exits on EOF with closed
     # stdin (run-3 lesson). Canonical long-run form per the upstream
     # reference compose: `gateway run`.
@@ -247,14 +235,11 @@ services:
       retries: 3
     restart: unless-stopped
 
-  # f57.14: the master's own registrant (build context = balena/registrar
-  # — the vendored registrant-own/ tree lives beside the other app sources;
-  # same context-root discipline as the litellm/scotty builds).
-  # REGISTRAR_KEY is a secret (.env); the UUID + URL are structural.
+  # f57.14: the master's own registrant — the same registrant image every
+  # device runs. REGISTRAR_KEY is a secret (.env); the UUID + URL are
+  # structural.
   registrant-own:
-    build:
-      context: ../balena/registrar/registrant-own
-      dockerfile: Dockerfile
+    image: ${VS_IMAGE_REGISTRY:-ghcr.io/cwdcwd/vector-sigma}/registrant:${VS_IMAGE_TAG:?set in deploy/.env — the commit SHA of a published build}
     environment:
       BALENA_DEVICE_UUID: ${PRIMUS_DEVICE_UUID:?set in deploy/.env — the master device UUID}
       REGISTRAR_URL: http://registrar:3000

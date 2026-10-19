@@ -53,11 +53,24 @@ function walk(root: string, dir: string, excludeDirs: Set<string>, out: string[]
  * Scans every regular file under `rootDir`. Returns one finding per
  * (pattern, file) pair — never the matched value, never a byte offset
  * into the file.
+ *
+ * `rootDir` may also be a single regular file (an image's COPY input
+ * list mixes files and directories): that file alone is scanned and
+ * findings carry its basename. A path that is neither throws — an
+ * unreadable input must never read as a clean scan.
  */
 export function scanSourceTree(rootDir: string, opts: ScanSourceTreeOptions = {}): SourceTreeFinding[] {
   const excludeDirs = new Set([...DEFAULT_EXCLUDE_DIRS, ...(opts.excludeDirs ?? [])]);
   const files: string[] = [];
-  walk(rootDir, rootDir, excludeDirs, files);
+  const rootStat = statSync(rootDir);
+  if (rootStat.isFile()) {
+    files.push(rootDir);
+    rootDir = path.dirname(rootDir);
+  } else if (rootStat.isDirectory()) {
+    walk(rootDir, rootDir, excludeDirs, files);
+  } else {
+    throw new Error(`scanSourceTree: ${rootDir} is neither a file nor a directory`);
+  }
 
   const findings: SourceTreeFinding[] = [];
   for (const filePath of files) {

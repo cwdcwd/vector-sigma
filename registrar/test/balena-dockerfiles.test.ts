@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { loadCatalog } from '../../scripts/image-catalog.mjs';
 
 /**
  * Balena Dockerfile builder-contract guard (fleet-ops-f57.21).
@@ -17,7 +18,9 @@ import { describe, expect, it } from 'vitest';
  * (note linux_ with the EMPTY arch). The fix derives the arch at build
  * time from uname -m instead. This guard pins the contract: NO
  * TARGETARCH/TARGETPLATFORM token may appear (declared or interpolated)
- * in ANY Dockerfile under balena/** — present or future.
+ * in ANY Dockerfile under balena/** or named by images.json — present or
+ * future. (Releases now ship CI-built prebuilts, but the arch derivation
+ * stays builder-agnostic so any image can still build under either.)
  *
  * Full-line comments are stripped before scanning: documentation comments
  * legitimately mention these tokens (this file's own history lives in the
@@ -51,14 +54,18 @@ function collectDockerfiles(dir: string): string[] {
   return out.sort();
 }
 
-const dockerfiles = collectDockerfiles(balenaDir);
+const catalogDockerfiles = Object.values(
+  loadCatalog(repoRoot).components as Record<string, { dockerfile: string }>,
+).map((c) => path.join(repoRoot, c.dockerfile));
+const dockerfiles = [...new Set([...collectDockerfiles(balenaDir), ...catalogDockerfiles])].sort();
 
 describe('balena builder contract: Dockerfile inventory', () => {
-  it('guards a non-empty set of balena Dockerfiles (guard is not vacuous)', () => {
-    // 8 Dockerfiles exist at f57.21; if this drops to zero the recursion or
-    // the repo layout changed and the per-file guard below would silently
-    // stop covering anything.
-    expect(dockerfiles.length).toBeGreaterThanOrEqual(8);
+  it('guards every image Dockerfile (guard is not vacuous)', () => {
+    // 9 catalog images from 9 Dockerfiles; if the inventory shrinks below
+    // the catalog, the per-file guard below would silently stop covering
+    // a shipped image.
+    expect(dockerfiles.length).toBeGreaterThanOrEqual(9);
+    for (const df of catalogDockerfiles) expect(dockerfiles).toContain(df);
   });
 });
 

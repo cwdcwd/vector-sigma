@@ -1,13 +1,13 @@
-# Vector Sigma registrar — self-host deploy example image.
+# deploy/Dockerfile — the E2E seed harness (deploy/compose.e2e.yaml `seed`).
 #
-# One image, three entrypoints (see deploy/README.md):
-#   registrar:  node registrar/dist/index.js
-#   seed:       node --import tsx deploy/seed/seed.ts   (E2E harness only)
-#   device:     node registrant/dist/index.js  (compose-simulated device)
+# Test tooling only, never published: the seed provisions the deterministic
+# E2E devices, bundles and keys straight into the registrar's database, so it
+# needs the full workspace sources + dev dependencies (tsx). Every service
+# that SHIPS runs its own images.json image (registrar/Dockerfile,
+# registrant/Dockerfile, the balena/ Dockerfiles) — in CI, the exact scanned
+# bytes that get promoted.
 #
-# Context is the REPO ROOT (docker compose sets it via build.context),
-# because the seed needs registrar/ sources and the image needs all three
-# workspaces built by the root npm workspaces install.
+# Context is the REPO ROOT (compose.e2e.yaml sets build.context: ..).
 FROM node:22-bookworm-slim
 
 WORKDIR /app
@@ -24,28 +24,8 @@ COPY registrar/ registrar/
 COPY registrant/ registrant/
 COPY deploy/tsconfig.json deploy/
 COPY deploy/seed/ deploy/seed/
-COPY deploy/vs-entrypoint.sh /usr/local/bin/vs-entrypoint.sh
-RUN chmod 0755 /usr/local/bin/vs-entrypoint.sh
 
 RUN npm run build
 
-# registrar listens here; the compose file publishes 127.0.0.1-only.
-EXPOSE 3000
-
-# Non-root runtime user: the ready marker + bundle files live on a volume
-# owned by this uid/gid pair. The official node image already ships a `node`
-# user at uid/gid 1000, so we reuse it — provisioning a second user at the
-# same id can only ever fail (groupadd -g 1000: GID 1000 exists, exit 4).
-# The device data volume mounts here. The mountpoint must exist in the image
-# owned by node: a fresh named volume initializes from the image path's
-# ownership (root-owned otherwise — the non-root registrant could not write
-# its bundle).
-RUN mkdir -p /data/agent && chown -R node:node /data/agent
 USER node
-
-# f57.13: CA shim entrypoint — decodes VS_CA_CERT_B64 (or uses VS_CA_CERT)
-# into NODE_EXTRA_CA_CERTS before exec'ing the service command. No-op when
-# no CA variables are set; the registrant's config layer enforces the
-# https-with-CA contract separately (fail-loud at loadConfig).
-ENTRYPOINT ["/usr/local/bin/vs-entrypoint.sh"]
-CMD ["node", "registrar/dist/index.js"]
+CMD ["node", "--import", "tsx", "deploy/seed/seed.ts"]

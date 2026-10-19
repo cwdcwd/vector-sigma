@@ -1,18 +1,23 @@
 # E2E overlay — compose-simulated device against the local registrar.
 #
 # Run (from the repo root, on a compose-capable host):
-#   docker compose --env-file deploy/.env.e2e --env-file deploy/.env.e2e.tls \
-#     -f deploy/compose.yaml -f deploy/compose.e2e.yaml -p vector-sigma-e2e up -d --build
-#   deploy/e2e.sh
-#   deploy/e2e.sh --down   # teardown when done
+#   deploy/e2e.sh --up              # build every VS image from source, then assert
+#   E2E_PREBUILT=1 deploy/e2e.sh --up
+#                                   # assert the images already tagged
+#                                   # vs-e2e/<component>:ci (CI loads the exact
+#                                   # scanned OCI tars first — the bytes that
+#                                   # get promoted); never builds
+#   deploy/e2e.sh --down            # teardown when done
 #
-# OR simply: deploy/e2e.sh --up   (this script drives the full cycle and
-# generates deploy/.env.e2e.tls — the throwaway E2E CA + leaf — on the way)
+# Images: every VS-built service runs vs-e2e/<component>:ci, the images.json
+# component the base compose pulls from GHCR. The build: blocks below are the
+# source-build fallback for local runs — the same Dockerfiles and contexts CI
+# builds (scripts/image-catalog.mjs), so local and CI test one shape.
 #
 # Adds three services to the self-host example:
 #   seed  — provisions the deterministic device + bundle + short-rearm slot,
 #           exits 0 (gate: device waits for service_completed_successfully)
-#   device— runs the REAL registrant (registrant/dist/index.js) as a
+#   device— runs the REAL registrant image (the one balena devices run) as a
 #           simulated device: bootstrap, atomic bundle apply, ready marker,
 #           resident rotation watcher — exactly the balenaOS device shape,
 #           minus the platform env injection (compose provides it).
@@ -32,6 +37,31 @@
 # construction.
 
 services:
+  # ── The VS-built images (images.json components) ──────────────────────────
+  postgres:
+    image: vs-e2e/postgres:ci
+    build:
+      context: ../balena/registrar
+      dockerfile: Dockerfile.postgres
+
+  litellm:
+    image: vs-e2e/litellm:ci
+    build:
+      context: ../balena/registrar
+      dockerfile: Dockerfile.litellm
+
+  scotty:
+    image: vs-e2e/scotty:ci
+    build:
+      context: ../balena/registrar
+      dockerfile: Dockerfile.scotty
+
+  registrant-own:
+    image: vs-e2e/registrant:ci
+    build:
+      context: ..
+      dockerfile: registrant/Dockerfile
+
   # 1py.15: isolated LiteLLM runtime fixture. All model traffic terminates at
   # the local mock; this stack never calls Ollama Cloud or production.
   ollama-mock:
@@ -88,11 +118,18 @@ services:
   # pass regardless of the exact suffix — only the "configured at all"
   # gate was missing.
   registrar:
+    image: vs-e2e/registrar:ci
+    build:
+      context: ..
+      dockerfile: registrar/Dockerfile
     environment:
       VS_MESH_TAILNET_SUFFIX: .e2e-tailnet.ts.net
       VS_MESH_EDGE_HOST: vsigma-master.e2e-tailnet.ts.net
 
+  # seed is E2E-only test tooling (deploy/Dockerfile, a source-tree
+  # harness), never a shipped image — it always builds from source.
   seed:
+    image: vs-e2e/seed:ci
     build:
       context: ..
       dockerfile: deploy/Dockerfile
@@ -127,10 +164,10 @@ services:
 
 
   device:
+    image: vs-e2e/registrant:ci
     build:
       context: ..
-      dockerfile: deploy/Dockerfile
-    command: ["node", "registrant/dist/index.js"]
+      dockerfile: registrant/Dockerfile
     depends_on:
       registrar:
         condition: service_healthy
@@ -167,10 +204,10 @@ services:
   # f57.13: stays on the compose-internal http path (its job is the grace
   # path, not the TLS path; the TLS contract has its own dedicated AC).
   grace-device:
+    image: vs-e2e/registrant:ci
     build:
       context: ..
-      dockerfile: deploy/Dockerfile
-    command: ["node", "registrant/dist/index.js"]
+      dockerfile: registrant/Dockerfile
     environment:
       BALENA_DEVICE_UUID: ${E2E_GRACE_UUID:?set in deploy/.env.e2e}
       REGISTRAR_URL: http://registrar:3000
@@ -192,18 +229,22 @@ services:
     restart: "no"
 
   # f57.14: primus — the compose-simulated coordinator self-bootstrap. The
-  # REAL official Hermes image + the REAL vendored registrant, riding the
+  # REAL primus Hermes image + the REAL registrant image, riding the
   # same registrar the device uses. The overlay's job: deterministic env
   # (UUID/key from .env.e2e, seeded row) + the shared primus-data volume.
   # Assertions (e2e.sh AC12) ride the ready marker + bundle files on the
   # volume — the dogfood proof is the BOOTSTRAP CHAIN, not a live model
   # call (the seeded bundle's gateway key is a simulation value).
-  # b1r: the base compose now BUILDS the custom hermes image (bd 1.2.2 +
-  # queue join + docs + boot hook) — the overlay inherits the build. The
+  # b1r: the custom hermes image (bd 1.2.2 + queue join + docs + boot
+  # hook) — vs-e2e/hermes:ci, the bytes the base compose pulls. The
   # queue env deterministically arrives here (the base's ${VAR:?} is
   # satisfied from .env.e2e's simulation value either way; the explicit
   # entry documents the AC13 surface).
   hermes:
+    image: vs-e2e/hermes:ci
+    build:
+      context: ..
+      dockerfile: balena/registrar/Dockerfile.hermes
     environment:
       # CI determinism: the image's stage2 hook seeds config.yaml only when
       # absent; a fresh volume per run keeps the boot identical.
@@ -225,15 +266,14 @@ services:
         condition: service_healthy
     restart: "no"
 
-  # f57.14: the overlay's primus registrant (the deploy image's
-  # registrant-own service, renamed to keep the base service's default
-  # command; the base compose defines the build, this overlay overrides
-  # the env deterministically from .env.e2e). Compose-internal http —
-  # the pre-TLS contract.
+  # f57.14: the overlay's primus registrant (the registrant image, with the
+  # env set deterministically from .env.e2e). Compose-internal http — the
+  # pre-TLS contract.
   primus-registrant:
+    image: vs-e2e/registrant:ci
     build:
-      context: ../balena/registrar/registrant-own
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: registrant/Dockerfile
     environment:
       BALENA_DEVICE_UUID: ${PRIMUS_DEVICE_UUID:?set in deploy/.env.e2e}
       REGISTRAR_URL: http://registrar:3000

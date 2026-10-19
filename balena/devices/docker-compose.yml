@@ -26,8 +26,8 @@ services:
     # node heartbeat) is RETIRED by this lane: the engineering spec's
     # "real runtime is a fleet PR" clause resolves HERE.
     build:
-      context: .
-      dockerfile: Dockerfile.agent-hermes
+      context: ../..
+      dockerfile: balena/devices/Dockerfile.agent-hermes
     # The canonical long-run form (the upstream reference compose's shape,
     # the b1r run-3 lesson — a bare REPL exits on EOF with closed stdin).
     command: ["gateway", "run"]
@@ -88,8 +88,8 @@ services:
 
   registrant:
     build:
-      context: ./registrant
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: registrant/Dockerfile
     volumes:
       - agent-data:/data/agent
     # j7g phase 1b (fleet-ops-lrb): the SAME static hosts pin as the agent

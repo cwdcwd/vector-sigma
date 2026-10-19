@@ -178,12 +178,12 @@ describe('smoke assertions vs real bake sources (findings 4-5 classes)', () => {
     // prints nothing and the needle grep fails. (The file carries the
     // probe inside a double-quoted bash string, so the inner quotes are
     // backslash-escaped bytes — assert the byte-exact form.)
-    expect(smoke).toContain('require(\\"/app/dist/config.js\\").loadConfig()');
-    expect(smoke).not.toContain('require(\\"/app/dist/config.js\\")}catch');
+    expect(smoke).toContain('require(\\"/app/registrar/dist/config.js\\").loadConfig()');
+    expect(smoke).not.toContain('require(\\"/app/registrar/dist/config.js\\")}catch');
   });
 
   it('the registrant probe runs the entrypoint — and that works because registrant/src/index.ts calls loadConfig() at module scope', () => {
-    const smokeCmdRegistrar = 'node /app/dist/index.js 2>&1 | head -3';
+    const smokeCmdRegistrar = 'node /app/registrant/dist/index.js 2>&1 | head -3';
     expect(smoke).toContain(smokeCmdRegistrar);
     const registrantIndex = read('registrant/src/index.ts');
     expect(

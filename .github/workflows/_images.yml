@@ -1,0 +1,331 @@
+name: Image pipeline (reusable)
+
+# The ONE build/scan/E2E/promote graph for every vector-sigma image. Called by
+# build-images.yml (PRs + main), release-registrar.yml and release-devices.yml
+# — each used to carry its own hand-copied matrix; images.json is now the only
+# component list (scripts/image-catalog.mjs turns it into matrices).
+#
+# Build once, test those bytes, ship those bytes:
+#
+#   plan               — catalog -> build matrix (EVERY component, both
+#                        platforms) + the promote list for this caller.
+#   stage-and-scan     — per component/platform: credential-only scan of the
+#                        image's exact build inputs (its Dockerfile + every
+#                        COPY source — not the whole repo-root context), then
+#                        buildx --output type=oci to a LOCAL layout tar (no
+#                        push, no registry auth, no cache-from/cache-to —
+#                        fleet-ops-1py.12 section 4), then the slice-4 content
+#                        gate (registrar/src/oci-gate) on that tar.
+#   assemble-and-validate — per component: local OCI index from ONLY this
+#                        run's scanned-and-passed digests.
+#   e2e                — loads every component's scanned amd64 tar as
+#                        vs-e2e/<component>:ci and runs the compose E2E
+#                        against them (E2E_PREBUILT=1: no rebuild, a missing
+#                        image fails). Every component is built on every
+#                        call so the E2E always runs scanned bytes, whatever
+#                        subset the caller promotes.
+#   all-components-gate — aggregate, fail-closed: every stage/scan, index
+#                        and E2E job succeeded.
+#   promote            — ONLY job with packages:write; runs only when the
+#                        caller passes publish: true. Publishes the EXACT
+#                        scanned OCI-layout bytes (scripts/ghcr-promote-run.mjs
+#                        — no rebuild, no buildx), tagged with the commit SHA.
+#   verify-remote      — re-fetches every published digest anonymously and
+#                        fails closed on any byte difference.
+#
+# Callers download the promoted-<component> records (same workflow run) for
+# their release tail (trivy, smoke, render, balena deploy).
+on:
+  workflow_call:
+    inputs:
+      publish:
+        description: Promote the scanned bytes to GHCR after every gate passes
+        type: boolean
+        default: false
+      promote_fleet:
+        description: Fleet whose components are promoted (all | registrar | devices)
+        type: string
+        default: all
+      promote_only:
+        description: Narrow promotion to one component (all = the whole fleet)
+        type: string
+        default: all
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Plan (images.json)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      components: ${{ steps.plan.outputs.components }}
+      promote: ${{ steps.plan.outputs.promote }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - id: plan
+        env:
+          PROMOTE_FLEET: ${{ inputs.promote_fleet }}
+          PROMOTE_ONLY: ${{ inputs.promote_only }}
+        run: |
+          set -euo pipefail
+          {
+            echo "matrix=$(node scripts/image-catalog.mjs matrix)"
+            echo "components=$(node scripts/image-catalog.mjs components)"
+            echo "promote=$(node scripts/image-catalog.mjs components --fleet "$PROMOTE_FLEET" --only "$PROMOTE_ONLY")"
+          } | tee -a "$GITHUB_OUTPUT"
+
+  stage-and-scan:
+    name: Stage + scan ${{ matrix.component }} (${{ matrix.platform }})
+    needs: plan
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: docker/setup-buildx-action@v3
+      # NO docker/login-action anywhere in this job — stage-and-scan never
+      # authenticates to any registry, on any event.
+      - name: Install gate runtime deps
+        run: npm ci
+      - name: Build (typecheck) so the gate dist/ exists
+        run: npm run build
+      - name: Credential-only scan of this image's build inputs (fleet-ops-1py.14 slice 6)
+        env:
+          COMPONENT: ${{ matrix.component }}
+        run: |
+          set -euo pipefail
+          args=()
+          while IFS= read -r input; do args+=(--context "$input"); done \
+            < <(node scripts/image-catalog.mjs inputs "$COMPONENT")
+          node scripts/credential-scan-run.mjs "${args[@]}"
+      - name: Build candidate to a local OCI layout (no push, no cache)
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platform }}
+          push: false
+          outputs: type=oci,dest=${{ runner.temp }}/${{ matrix.component }}-${{ matrix.arch_tag }}.tar
+          # Hard requirement (fleet-ops-1py.14 slice 5 design): zero
+          # cache-from/cache-to on any candidate build, on any event.
+          # Do not add one back "temporarily" — see docs/ghcr-image-
+          # exposure-plan.md section B and fleet-ops-1py.12 section 4.
+      - name: Run the slice-4 content gate on this platform's layout
+        run: |
+          set -euo pipefail
+          node scripts/oci-gate-run.mjs scan \
+            --component "${{ matrix.component }}" \
+            --platform "${{ matrix.platform }}" \
+            --tar "${{ runner.temp }}/${{ matrix.component }}-${{ matrix.arch_tag }}.tar" \
+            --out "${{ runner.temp }}/${{ matrix.component }}-${{ matrix.arch_tag }}.descriptor.json"
+      - name: Upload scanned descriptor for index assembly
+        uses: actions/upload-artifact@v4
+        with:
+          name: descriptor-${{ matrix.component }}-${{ matrix.arch_tag }}
+          path: ${{ runner.temp }}/${{ matrix.component }}-${{ matrix.arch_tag }}.descriptor.json
+          retention-days: 1
+      # The layout tar itself: E2E runs these bytes and promote publishes
+      # them (fleet-ops-r3v) — never a rebuild.
+      - name: Upload the scanned OCI layout (the exact bytes E2E runs and promote publishes)
+        uses: actions/upload-artifact@v4
+        with:
+          name: layout-${{ matrix.component }}-${{ matrix.arch_tag }}
+          path: ${{ runner.temp }}/${{ matrix.component }}-${{ matrix.arch_tag }}.tar
+          retention-days: 1
+
+  assemble-and-validate:
+    name: Assemble + validate local index (${{ matrix.component }})
+    needs: [plan, stage-and-scan]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        component: ${{ fromJSON(needs.plan.outputs.components) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install gate runtime deps
+        run: npm ci
+      - name: Build (typecheck) so the oci-gate dist/ exists
+        run: npm run build
+      - name: Download scanned descriptors (amd64 + arm64)
+        uses: actions/download-artifact@v4
+        with:
+          pattern: descriptor-${{ matrix.component }}-*
+          path: ${{ runner.temp }}/descriptors
+          merge-multiple: true
+      - name: Assemble local OCI index from scanned digests only
+        run: |
+          set -euo pipefail
+          node scripts/oci-gate-run.mjs assemble \
+            --component "${{ matrix.component }}" \
+            --out "${{ runner.temp }}/${{ matrix.component }}-index.json" \
+            --descriptors "${{ runner.temp }}/descriptors/${{ matrix.component }}-amd64.descriptor.json" \
+                          "${{ runner.temp }}/descriptors/${{ matrix.component }}-arm64.descriptor.json"
+      - name: Upload validated local index
+        uses: actions/upload-artifact@v4
+        with:
+          name: index-${{ matrix.component }}
+          path: ${{ runner.temp }}/${{ matrix.component }}-index.json
+          retention-days: 1
+
+  e2e:
+    name: Compose E2E on the scanned amd64 images
+    needs: stage-and-scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Download the scanned amd64 layouts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: layout-*-amd64
+          path: ${{ runner.temp }}/layouts
+          merge-multiple: true
+      - name: Load the ones the E2E runs as vs-e2e/<component>:ci
+        run: |
+          set -euo pipefail
+          scripts/e2e-load-images.sh "${{ runner.temp }}/layouts"
+          rm -rf "${{ runner.temp }}/layouts"   # the rest (agent, tailscale) frees disk
+      - name: Compose-simulated device E2E (prebuilt — no rebuild)
+        run: E2E_PREBUILT=1 deploy/e2e.sh --up
+      - name: Teardown
+        if: always()
+        run: deploy/e2e.sh --down
+
+  all-components-gate:
+    name: All-components gate (scan + index + E2E, fail-closed)
+    if: always()
+    needs: [stage-and-scan, assemble-and-validate, e2e]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every stage/scan, index and E2E job to have succeeded
+        run: |
+          set -euo pipefail
+          for pair in "stage-and-scan=${{ needs.stage-and-scan.result }}" \
+                      "assemble-and-validate=${{ needs.assemble-and-validate.result }}" \
+                      "e2e=${{ needs.e2e.result }}"; do
+            if [ "${pair#*=}" != "success" ]; then
+              echo "${pair%%=*} did not succeed (result: ${pair#*=})" >&2
+              exit 1
+            fi
+          done
+          echo "all-components-gate: every stage/scan, index-assembly and E2E job passed"
+
+  # ---------------------------------------------------------------------
+  # promote + verify-remote run ONLY when the caller passes publish: true
+  # (build-images.yml never does on pull_request). Only promote carries
+  # packages:write. fleet-ops-r3v: no rebuild — the exact scanned tars are
+  # pushed through scripts/ghcr-promote-run.mjs (in-repo OCI Distribution
+  # client); every blob/manifest is read back before any release tag is
+  # applied. The GITHUB_TOKEN reaches the client only via GHCR_TOKEN.
+  # ---------------------------------------------------------------------
+  promote:
+    name: Promote ${{ matrix.component }} (GHCR write, exact scanned bytes)
+    if: inputs.publish
+    needs: [plan, all-components-gate]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        component: ${{ fromJSON(needs.plan.outputs.promote) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install gate runtime deps
+        run: npm ci
+      - name: Build (typecheck) so the registry promoter dist/ exists
+        run: npm run build
+      - name: Download validated local index
+        uses: actions/download-artifact@v4
+        with:
+          name: index-${{ matrix.component }}
+          path: ${{ runner.temp }}
+      - name: Download the exact scanned OCI layouts (amd64 + arm64)
+        uses: actions/download-artifact@v4
+        with:
+          pattern: layout-${{ matrix.component }}-*
+          path: ${{ runner.temp }}/layouts
+          merge-multiple: true
+      - name: Promote the exact scanned bytes to GHCR (no rebuild, no buildx)
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          node scripts/ghcr-promote-run.mjs promote \
+            --registry ghcr.io \
+            --repository "${{ github.repository }}/${{ matrix.component }}" \
+            --tag "${GITHUB_SHA}" \
+            --layout "linux/amd64=${{ runner.temp }}/layouts/${{ matrix.component }}-amd64.tar" \
+            --layout "linux/arm64=${{ runner.temp }}/layouts/${{ matrix.component }}-arm64.tar" \
+            --token-env GHCR_TOKEN \
+            --actor "${GHCR_ACTOR}" \
+            --record "${{ runner.temp }}/promoted-${{ matrix.component }}.json"
+      - name: Upload the promotion record (index + per-arch digests)
+        uses: actions/upload-artifact@v4
+        with:
+          name: promoted-${{ matrix.component }}
+          path: ${{ runner.temp }}/promoted-${{ matrix.component }}.json
+          retention-days: 1
+
+  verify-remote:
+    name: Verify remote digests (${{ matrix.component }})
+    if: inputs.publish
+    needs: [plan, promote]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        component: ${{ fromJSON(needs.plan.outputs.promote) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install gate runtime deps
+        run: npm ci
+      - name: Build (typecheck) so the registry verifier dist/ exists
+        run: npm run build
+      - name: Download the promotion record
+        uses: actions/download-artifact@v4
+        with:
+          name: promoted-${{ matrix.component }}
+          path: ${{ runner.temp }}
+      # Anonymous re-read: no packages:write and no credential, so the
+      # proof that the published bytes are intact does not depend on the
+      # writer's token.
+      - name: Re-fetch by digest and compare (fails closed on any mismatch)
+        run: |
+          set -euo pipefail
+          node scripts/ghcr-promote-run.mjs verify \
+            --registry ghcr.io \
+            --record "${{ runner.temp }}/promoted-${{ matrix.component }}.json"

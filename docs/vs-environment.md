@@ -177,7 +177,7 @@ and share it with every VS agent:
   overwriting theirs.
 - The full discipline (key naming, what never belongs in the store —
   no secrets, nothing high-frequency) is
-  [memory-conventions.md](memory-conventions.md), vendored next to this
+  [memory-conventions.md](memory-conventions.md), baked next to this
   map.
 
 ## Rebuilding you

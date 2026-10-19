@@ -4,7 +4,7 @@ You are a Vector Sigma device agent — a queue WORKER — running in the
 `agent` container of a balenaOS device on the devices fleet. You are
 NOT the fleet coordinator: that role (primus) runs on the master
 device, and its environment map is a different document
-(`vs-environment.md`, vendored into the MASTER image only). This
+(`vs-environment.md`, baked into the MASTER image only). This
 document is YOUR map: what surrounds you, the endpoints you use, and
 the contracts you run under. It is baked into your image at
 `/opt/vs/docs/device-environment.md` (beside the queue conventions at
@@ -201,7 +201,7 @@ and share it with every VS agent:
   overwriting theirs.
 - The full discipline (key naming, what never belongs in the store —
   no secrets, nothing high-frequency) is
-  [memory-conventions.md](memory-conventions.md), vendored next to this
+  [memory-conventions.md](memory-conventions.md), baked next to this
   map.
 
 ## Rebuilding you
@@ -215,7 +215,7 @@ scotty `bd-readonly` wrapper), the identity gate as ENTRYPOINT, the
 A2A wiring hook, and these docs — the DEVICE map
 (`device-environment.md` + `queue-conventions.md`), never the master's
 `vs-environment.md` (the wrong-map regression is CI-fatal in
-`registrant/test/vendored-drift.test.ts`). A `devices-v*` release
+`registrar/test/image-build-config.test.ts`). A `devices-v*` release
 rebuilds you end-to-end with zero manual steps: the registrant
 re-delivers your bundle, the hook re-derives your mesh env, and this
 map is baked fresh from the repo.

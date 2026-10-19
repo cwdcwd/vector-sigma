@@ -6,7 +6,7 @@
 #   balena/devices/Dockerfile.agent-hermes  (every device agent)
 #
 # WHAT THIS HOOK DOES — installs the VS-repo copy of the gateway-memory
-# plugin (deploy/gateway-memory/, byte-pinned by the vendored-drift test)
+# plugin (deploy/gateway-memory/, COPYd straight into both Hermes images)
 # into the runtime's $HERMES_HOME/plugins/ and seeds the PluginManager
 # allow-list so the plugin's tools actually load:
 #

@@ -11,7 +11,7 @@ Everything here is a UI-only, one-time-per-device workflow on the balenaCloud da
 | Service | Image | Role |
 |---|---|---|
 | `agent` | built from `balena/devices/Dockerfile.agent-hermes` (the real Hermes runtime since j7g.1 — the pinned official image + bd 1.2.2 + the A2A wiring hook) | Your agent runtime. The gate blocks on `/data/agent/ready.marker` — no identity, no start — then boots Hermes (`gateway run`) through the image's own cont-init chain; the 04-vs-a2a-wiring hook derives the mesh env + config.yaml from the delivered bundle on every boot. |
-| `registrant` | built from `balena/devices/registrant/` (vendored workspace sources) | Bootstraps identity: clock gate → registrar fetch → 0600 bundle write → ready marker → resident rotation watcher. |
+| `registrant` | the `registrant` GHCR image (`registrant/Dockerfile`, built once by CI — the same image the master's `registrant-own` runs) | Bootstraps identity: clock gate → registrar fetch → 0600 bundle write → ready marker → resident rotation watcher. |
 | `tailscale` | `tailscale/tailscale:v1.102.5` (pinned official image) | The VS tailnet overlay (j7g phase 1a): joins the device to the private tailnet — off-LAN devices reach the master's endpoints, and the device is reachable from the tailnet. Host network namespace, publishes nothing; funnel is ACL-denied. See [tailscale-runbook.md](tailscale-runbook.md). |
 
 Both share the named volume `agent-data`, mounted at `/data/agent`. Identity lives on the data partition: a reflash re-fetches and the device is itself again.

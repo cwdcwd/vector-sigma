@@ -12,12 +12,9 @@
 # fleet advance; the bundle never carried them).
 #
 # The shim itself REMAINS as the image-carried entrypoint point (a plain
-# exec pass-through): the deploy/ image, the devices registrant image and
-# the registrar's registrant-own image all ship it as ENTRYPOINT, and
-# keeping the pass-through preserves the one-file-three-targets contract
-# (registrant/test/vendored-drift.test.ts byte-pins all three copies).
-# Removing the ENTRYPOINT instead would fork the three images' shapes
-# for zero gain.
+# exec pass-through): the registrant image (registrant/Dockerfile — every
+# device and the master's registrant-own) ships it as ENTRYPOINT, keeping
+# a stable hook point should the boot path ever need one again.
 #
 # No inputs. Exec the service command unchanged.
 
