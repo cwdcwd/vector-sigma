@@ -64,25 +64,7 @@ done
 # two descriptors, one linux/amd64 + one linux/arm64, each pointing at that
 # platform's scanned digest. Containment is not enough — an extra entry would
 # make an unscanned image reachable through the published index.
-node -e '
-const [file, amd, arm] = process.argv.slice(1);
-const fail = (m) => { console.error(m); process.exit(1); };
-let idx;
-try { idx = JSON.parse(require("fs").readFileSync(file, "utf8")); } catch (e) { fail(`not JSON: ${e.message}`); }
-if (idx.mediaType !== "application/vnd.oci.image.index.v1+json") fail(`mediaType ${idx.mediaType} is not an OCI index`);
-const m = Array.isArray(idx.manifests) ? idx.manifests : fail("no manifests array");
-if (m.length !== 2) fail(`expected exactly 2 descriptors, found ${m.length}`);
-const want = { "linux/amd64": amd, "linux/arm64": arm };
-const seen = new Set();
-for (const d of m) {
-  const plat = `${d?.platform?.os}/${d?.platform?.architecture}`;
-  if (!(plat in want)) fail(`unexpected platform ${plat} (digest ${d?.digest})`);
-  if (seen.has(plat)) fail(`duplicate ${plat} descriptor`);
-  seen.add(plat);
-  if (d.digest !== want[plat]) fail(`${plat} descriptor is ${d.digest}, scanned digest is ${want[plat]}`);
-  if (d.mediaType !== "application/vnd.oci.image.manifest.v1+json") fail(`${plat} descriptor mediaType ${d.mediaType} is not an image manifest`);
-}
-' "$index_file" "$digest_amd64" "$digest_arm64" 2>"${work}/index-check" \
+node "$(dirname "$0")/check-index.mjs" "$index_file" "$digest_amd64" "$digest_arm64" 2>"${work}/index-check" \
   || die "index ${index_file} is not exactly the two scanned manifests: $(cat "${work}/index-check")"
 
 # 1. Scanned bytes, by digest.

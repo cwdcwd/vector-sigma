@@ -50,11 +50,12 @@ devices, amd64 for CI and the E2E). The per-image steps fan out:
 | Stage + scan | 18 (9 × 2) | Builds without pushing, scans the exact bytes |
 | E2E | 1 | Boots the stack from the scanned amd64 images |
 | Gate | 1 | One pass/fail for everything; assembles each image's multi-arch index |
-| Promote | 9 (main and releases only) | Copies the scanned bytes to GHCR by digest, then tags |
-| Verify | 1 (main and releases only) | Anonymous re-read and compare of every image |
+| Promote | 9 (main only) | Copies the scanned bytes to GHCR by digest, then tags |
+| Verify | 1 (main only) | Anonymous re-read and compare of every image |
 
 That's **22 jobs on a pull request** (including the unit tests) and **32 on
-main**. A pull request never publishes anything.
+main**. A pull request never publishes anything. A **release** runs no build
+at all, only its resolve, verify and deploy jobs (below).
 
 ## The tools
 
@@ -74,22 +75,41 @@ main**. A pull request never publishes anything.
 |---|---|
 | `.github/workflows/build-images.yml` | Pull requests (validate only) and main (publish) |
 | `.github/workflows/_images.yml` | Build, scan, E2E, gate: shared by every caller |
-| `.github/workflows/_promote.yml` | Publish + verify: shared by main and both releases |
-| `.github/workflows/release-*.yml` | Tag-triggered releases: publish, then pin the fleet to the digests |
+| `.github/workflows/_promote.yml` | Publish + verify (main only) |
+| `.github/workflows/_resolve.yml` | Releases: reuse main's verified images for the commit |
+| `.github/workflows/release-*.yml` | Tag-triggered releases: resolve, then pin the fleet to the digests |
 | `images.json` | The image list every workflow reads |
+
+## Releases: build once, deploy many
+
+A release **never rebuilds**. Every push to main already builds, scans, E2Es,
+publishes and verifies that commit's images. A release is cut from such a
+commit (`registrar-v*` / `devices-v*` tag), so it reuses them:
+
+```mermaid
+flowchart LR
+  T["Push release tag"] --> W["Wait for main's pipeline<br/>for this commit to succeed"]
+  W --> R["Bind to main's verified record<br/>(tags must still match it)"]
+  R --> V["Re-verify anonymously"]
+  V --> S["trivy + smoke<br/>(by digest)"]
+  S --> D["Render digest-pinned compose<br/>→ balena deploy"]
+```
+
+The release waits for main's run if it is still going (so you can tag right
+after merging), and refuses if main's pipeline for that commit failed or never
+ran. It then takes the digests from **the promotion record main's run wrote**
+(kept 90 days), not from tags: every tag must still point at the recorded
+digest, so a tag moved after main's run fails the release instead of being
+deployed. It holds no registry write permission at all. Devices are pinned to exact
+digests, so the images a device runs are byte-for-byte the ones main scanned
+and tested.
 
 ## Tags
 
-Every image is published **by digest** first; tags are added last, as labels:
-
-- a push to **main** tags `<commit-sha>`, `<commit-sha>-amd64`, `<commit-sha>-arm64`
-- a **release** (`registrar-v*` / `devices-v*`) tags with the release name
-  instead: `registrar-v1.5.1`, `registrar-v1.5.1-amd64`, `-arm64`
-
-Releases are cut from commits main has already published, and builds are not
-byte-reproducible, so a release reusing the commit SHA would have to *move*
-main's tags onto different bytes. Devices never use tags anyway: a release
-pins every service to its exact digest.
+Images are published **by digest** first; tags are labels added last, on
+main only: `<commit-sha>` (the multi-arch index), `<commit-sha>-amd64`,
+`<commit-sha>-arm64`. A release reads those tags to find the digests and then
+uses the digests only.
 
 ## The switches
 

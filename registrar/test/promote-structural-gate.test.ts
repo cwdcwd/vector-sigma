@@ -126,9 +126,7 @@ describe('exact-byte promotion: no builder anywhere in the publish path', () => 
   });
 
   it('promotion is still gated behind the whole pipeline (scan, gate and E2E must pass first)', () => {
-    for (const wf of ['.github/workflows/build-images.yml', ...RELEASE_WORKFLOWS]) {
-      expect(needsList(loadWf(wf).jobs.publish), wf).toEqual(['images']);
-    }
+    expect(needsList(loadWf('.github/workflows/build-images.yml').jobs.publish)).toEqual(['images']);
   });
 });
 
@@ -164,14 +162,65 @@ describe('exact-byte promotion: one index-assembly path (promote-manifest retire
   });
 });
 
-describe('exact-byte promotion: a release never moves main\'s tags', () => {
-  it(`${PROMOTE}: releases tag with the release name, main with the commit SHA`, () => {
-    const steps = (loadWf(PROMOTE).jobs.promote.steps ?? []) as Array<{ run?: string; env?: Record<string, string> }>;
-    const publish = steps.find((s) => (s.run ?? '').includes('scripts/publish-image.sh'));
-    expect(publish, 'publish step').toBeDefined();
-    expect(publish!.run).toContain('--tag "${PROMOTE_TAG}"');
-    expect(publish!.run).not.toContain('GITHUB_SHA');
-    expect(publish!.env?.PROMOTE_TAG).toBe("${{ github.ref_type == 'tag' && github.ref_name || github.sha }}");
+describe('build once, deploy many: releases reuse main\'s verified images', () => {
+  const RESOLVE = '.github/workflows/_resolve.yml';
+  for (const wf of RELEASE_WORKFLOWS) {
+    it(`${wf}: never builds, scans or publishes — publish calls _resolve.yml`, () => {
+      const doc = loadWf(wf);
+      expect(doc.jobs.publish.uses).toBe('./.github/workflows/_resolve.yml');
+      expect(doc.jobs.images, 'no build job in a release').toBeUndefined();
+      expect(read(wf)).not.toContain('_images.yml');
+      expect(read(wf)).not.toContain('_promote.yml');
+      for (const [id, job] of Object.entries(doc.jobs)) {
+        expect((job as { permissions?: Record<string, string> }).permissions?.packages, `${wf} ${id}`).not.toBe('write');
+      }
+    });
+  }
+
+  it(`${RESOLVE}: requires main's successful build-images run for the commit BEFORE resolving`, () => {
+    const doc = loadWf(RESOLVE);
+    expect(needsList(doc.jobs.resolve)).toContain('require-main-success');
+    const gate = stepsText(doc.jobs['require-main-success']);
+    expect(gate).toContain('actions/workflows/build-images.yml/runs?head_sha=${GITHUB_SHA}&branch=main');
+    expect(gate).toContain('select(.event == \\"push\\")');
+    expect(gate).toMatch(/conclusion.*= success/);
+  });
+
+  it(`${RESOLVE}: binds to the record MAIN'S RUN wrote (by run id), never to a mutable tag (PR #99 review)`, () => {
+    const doc = loadWf(RESOLVE);
+    const steps = (doc.jobs.resolve.steps ?? []) as Array<{ uses?: string; run?: string; with?: Record<string, string> }>;
+    const dl = steps.find((s) => (s.uses ?? '').startsWith('actions/download-artifact'));
+    expect(dl, 'downloads main-run record').toBeDefined();
+    expect(dl!.with?.['run-id']).toBe('${{ needs.require-main-success.outputs.run_id }}');
+    expect(dl!.with?.name).toBe('promoted-${{ matrix.component }}');
+    const bind = steps.find((s) => (s.run ?? '').includes('scripts/resolve-published.sh'));
+    expect(bind!.run).toContain('main-record/promoted-${{ matrix.component }}.json');
+    // The resolver compares every tag against the recorded digest and fails
+    // on any difference — a moved tag is refused, not followed.
+    const resolver = readFileSync(path.join(repoRoot, 'scripts/resolve-published.sh'), 'utf8');
+    expect(resolver).toContain('refusing to deploy bytes main did not scan');
+    expect(resolver).toMatch(/\[ "\$got" = "\$want" \] \|\| die/);
+    // main keeps the record long enough for a release to bind to it.
+    const promote = loadWf('.github/workflows/_promote.yml');
+    const upload = ((promote.jobs.promote.steps ?? []) as Array<{ with?: Record<string, unknown> }>).find((s) =>
+      String(s.with?.name ?? '').startsWith('promoted-'),
+    );
+    expect(Number(upload?.with?.['retention-days'])).toBeGreaterThanOrEqual(90);
+  });
+
+  it(`${RESOLVE}: resolves with the shared exact-index rule and re-verifies anonymously; no write anywhere`, () => {
+    const doc = loadWf(RESOLVE);
+    expect(stepsText(doc.jobs.resolve)).toContain('scripts/resolve-published.sh');
+    expect(stepsText(doc.jobs['verify-remote'])).toContain('scripts/verify-published.sh');
+    expect(needsList(doc.jobs['verify-remote'])).toContain('resolve');
+    for (const [id, job] of Object.entries(doc.jobs)) {
+      expect((job as { permissions?: Record<string, string> }).permissions?.packages, id).not.toBe('write');
+    }
+    expect(read(RESOLVE)).not.toContain('registry login');
+    const resolver = readFileSync(path.join(repoRoot, 'scripts/resolve-published.sh'), 'utf8');
+    expect(resolver).toContain('check-index.mjs');
+    expect(resolver).toMatch(/HOME="\$anon_home" regctl/);
+    expect(readFileSync(path.join(repoRoot, 'scripts/publish-image.sh'), 'utf8')).toContain('check-index.mjs');
   });
 });
 
@@ -203,13 +252,18 @@ describe('exact-byte promotion: live publishing is behind an explicit owner swit
   // repo Actions variable that is unset in this repo: push-to-main with a
   // green gate publishes nothing until the owner deliberately flips the
   // switch. See docs/ghcr-promotion-runbook.md.
-  for (const wf of ['.github/workflows/build-images.yml', ...RELEASE_WORKFLOWS]) {
+  for (const wf of ['.github/workflows/build-images.yml']) {
     it(`${wf}: every _promote.yml call requires vars.VS_GHCR_PUBLISH_ENABLED`, () => {
       const calls = Object.values(loadWf(wf).jobs).filter(
         (job) => (job as { uses?: string }).uses === './.github/workflows/_promote.yml',
       );
       expect(calls.length).toBe(1);
       expect(String(calls[0].if)).toContain("vars.VS_GHCR_PUBLISH_ENABLED == 'true'");
+    });
+  }
+  for (const wf of RELEASE_WORKFLOWS) {
+    it(`${wf}: the release is gated on the same switch`, () => {
+      expect(String(loadWf(wf).jobs.publish.if)).toContain("vars.VS_GHCR_PUBLISH_ENABLED == 'true'");
     });
   }
 });

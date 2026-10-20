@@ -1,0 +1,152 @@
+name: Release image resolution (reusable)
+
+# Build once, deploy many. Every push to main already builds, scans, E2Es,
+# publishes and verifies that commit's images (build-images.yml). A release is
+# cut from such a commit, so it REUSES those exact verified images instead of
+# rebuilding them — no build, scan or E2E here, and no GHCR write at all.
+#
+#   require-main-success — build-images.yml must have succeeded for this
+#                          commit on main (waits while it is still running, so
+#                          a tag pushed right after a merge works).
+#   resolve              — per component of the fleet: downloads the promotion
+#                          record MAIN'S RUN wrote (the digests it scanned, E2E'd
+#                          and verified) and checks the registry against it —
+#                          every tag must still resolve to the recorded digest
+#                          (a moved tag FAILS the release), and the recorded
+#                          index must be exactly its two platform manifests
+#                          (scripts/resolve-published.sh). Never reads digests
+#                          from a mutable tag.
+#   verify-remote        — the same anonymous re-read publishing uses
+#                          (scripts/verify-published.sh) over those records.
+#
+# Callers download the promoted-<component> records for their release tail
+# (ledger, trivy, smoke, render, balena deploy) exactly as before.
+on:
+  workflow_call:
+    inputs:
+      fleet:
+        description: Fleet whose components the release deploys (registrar | devices)
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  require-main-success:
+    name: Require main's verified pipeline for this commit
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      run_id: ${{ steps.wait.outputs.run_id }}
+    steps:
+      - name: Wait for build-images on main at this commit to succeed (fail closed)
+        id: wait
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 90); do
+            run="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/build-images.yml/runs?head_sha=${GITHUB_SHA}&branch=main&per_page=20" \
+              --jq '[.workflow_runs[] | select(.event == "push")] | sort_by(.created_at) | last // empty | "\(.status) \(.conclusion) \(.id) \(.html_url)"')"
+            if [ -z "$run" ]; then
+              echo "::error::no build-images run on main for ${GITHUB_SHA} — releases must be cut from a commit main has built and published"
+              exit 1
+            fi
+            read -r status conclusion run_id url <<< "$run"
+            if [ "$status" = completed ]; then
+              if [ "$conclusion" = success ]; then
+                echo "main's pipeline for ${GITHUB_SHA} succeeded: ${url}"
+                echo "run_id=${run_id}" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              echo "::error::main's build-images run for ${GITHUB_SHA} concluded '${conclusion}' (${url}) — fix or re-run it, then re-run this release"
+              exit 1
+            fi
+            echo "main's build-images run for ${GITHUB_SHA} is ${status} (${url}) — waiting (${attempt}/90)"
+            sleep 30
+          done
+          echo "::error::timed out after 45 minutes waiting for main's build-images run for ${GITHUB_SHA}"
+          exit 1
+
+  plan:
+    name: Plan (images.json fleet)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      components: ${{ steps.plan.outputs.components }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - id: plan
+        env:
+          FLEET: ${{ inputs.fleet }}
+        run: |
+          set -euo pipefail
+          echo "components=$(node scripts/image-catalog.mjs components --fleet "$FLEET")" | tee -a "$GITHUB_OUTPUT"
+
+  resolve:
+    name: Resolve main's verified ${{ matrix.component }} images
+    needs: [require-main-success, plan]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        component: ${{ fromJSON(needs.plan.outputs.components) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned regctl (sha256-verified)
+        run: scripts/install-regctl.sh "${{ runner.temp }}" && echo "${{ runner.temp }}" >> "$GITHUB_PATH"
+      - name: Download the promotion record main's verified run wrote
+        uses: actions/download-artifact@v4
+        with:
+          name: promoted-${{ matrix.component }}
+          path: ${{ runner.temp }}/main-record
+          run-id: ${{ needs.require-main-success.outputs.run_id }}
+          github-token: ${{ github.token }}
+      - name: Bind to main's recorded digests; check the registry against them (anonymous)
+        run: |
+          set -euo pipefail
+          scripts/resolve-published.sh \
+            "${{ runner.temp }}/main-record/promoted-${{ matrix.component }}.json" \
+            "${{ matrix.component }}" "${GITHUB_SHA}" \
+            "${{ runner.temp }}/promoted-${{ matrix.component }}.json"
+      - name: Upload the promotion record (index + per-arch digests)
+        uses: actions/upload-artifact@v4
+        with:
+          name: promoted-${{ matrix.component }}
+          path: ${{ runner.temp }}/promoted-${{ matrix.component }}.json
+          retention-days: 1
+
+  verify-remote:
+    name: Verify remote digests (every component)
+    needs: [plan, resolve]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned regctl (sha256-verified)
+        run: scripts/install-regctl.sh "${{ runner.temp }}" && echo "${{ runner.temp }}" >> "$GITHUB_PATH"
+      - name: Download every promotion record
+        uses: actions/download-artifact@v4
+        with:
+          pattern: promoted-*
+          path: ${{ runner.temp }}/records
+          merge-multiple: true
+      - name: Re-read every digest anonymously and compare (fails closed)
+        env:
+          COMPONENTS: ${{ needs.plan.outputs.components }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2046
+          scripts/verify-published.sh "${{ runner.temp }}/records" \
+            $(node -e 'for (const c of JSON.parse(process.env.COMPONENTS)) console.log(c)')
