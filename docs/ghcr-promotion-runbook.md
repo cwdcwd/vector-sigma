@@ -128,7 +128,7 @@ node scripts/ghcr-promote-run.mjs promote \
   --record "$TMP/promoted-registrar.json"
 ```
 
-Verify (no credential needed for a public package):
+Verify (no credential needed for a public package — the verifier fetches an anonymous pull token, as GHCR requires):
 
 ```
 node scripts/ghcr-promote-run.mjs verify \

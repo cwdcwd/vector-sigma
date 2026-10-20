@@ -35,6 +35,8 @@ class LocalRegistry {
   failNext?: string;
   private server?: Server;
   origin = '';
+  /** Issued bearer tokens -> what they may do. */
+  readonly tokens = new Map<string, 'pull' | 'push'>();
 
   private readBody(req: IncomingMessage): Promise<Buffer> {
     return new Promise((resolve, reject) => {
@@ -70,6 +72,29 @@ class LocalRegistry {
     }
 
     const body = await this.readBody(req);
+
+    // GHCR's auth contract: every /v2 request needs a bearer token from
+    // /token. With Basic credentials the token can push; without, GHCR still
+    // issues one, pull-only — an anonymous read of a PUBLIC package is
+    // "fetch an anonymous token, then GET", never a header-less GET (the bug
+    // that 401'd the first live verify).
+    if (p === '/token') {
+      const anonymous = !req.headers.authorization?.startsWith('Basic ');
+      const token = `${anonymous ? 'anon' : 'push'}-${this.tokens.size}`;
+      this.tokens.set(token, anonymous ? 'pull' : 'push');
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ token }));
+      return;
+    }
+    const bearer = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+    const grant = bearer ? this.tokens.get(bearer) : undefined;
+    const isWrite = req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH';
+    if (!grant || (isWrite && grant !== 'push')) {
+      res.writeHead(401, { 'www-authenticate': `Bearer realm="http://${this.origin}/token",service="${this.origin}"` });
+      res.end();
+      return;
+    }
+
     const blob = p.match(/^\/v2\/(.+)\/blobs\/(.+)$/);
     if (blob) {
       const rest = blob[2]!;
@@ -134,6 +159,9 @@ class LocalRegistry {
   }
 }
 
+/** What CI hands the promote step: a push-capable credential. */
+const PUSH_ENV = { GHCR_TOKEN: 'ghs_test-push-credential' };
+
 let reg: LocalRegistry;
 let dir: string;
 let amdTar: string;
@@ -193,7 +221,7 @@ describe('ghcr-promote-run.mjs: the real CI promote command', () => {
       recordPath,
       '--scheme',
       'http',
-    ]);
+    ], PUSH_ENV);
     expect(status, `promote must exit 0 — got output:\n${stdout}`).toBe(0);
 
     const record = JSON.parse(readFileSync(recordPath, 'utf8'));
@@ -222,6 +250,14 @@ describe('ghcr-promote-run.mjs: the real CI promote command', () => {
     expect(stdout).toContain('VERIFIED');
   });
 
+  it('verify with NO credential reads anonymously via a pull-only token (the CI shape)', async () => {
+    const before = [...reg.tokens.values()].filter((g) => g === 'pull').length;
+    const env = { GHCR_TOKEN: '' };
+    const { status, stdout } = await runScript(['verify', '--registry', reg.origin, '--record', recordPath, '--scheme', 'http'], env);
+    expect(status, `anonymous verify must exit 0 — got output:\n${stdout}`).toBe(0);
+    expect([...reg.tokens.values()].filter((g) => g === 'pull').length).toBeGreaterThan(before);
+  });
+
   it('a registry failure makes promote exit nonzero (fail-closed) with a ::error:: line', async () => {
     // A FRESH registry: the shared one already holds these exact blobs from
     // the earlier promote, so blobExists would short-circuit the upload and
@@ -246,7 +282,7 @@ describe('ghcr-promote-run.mjs: the real CI promote command', () => {
         path.join(dir, 'fail.json'),
         '--scheme',
         'http',
-      ]);
+      ], PUSH_ENV);
       expect(status).not.toBe(0);
       expect(stdout).toMatch(/::error::|RegistryClientError|500/);
       // The failed promotion must not have advertised a release tag.
