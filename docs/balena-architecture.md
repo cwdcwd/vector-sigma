@@ -40,22 +40,28 @@ Every release is cut by pushing a git tag:
 - `registrar-v*` → builds a **final** release for the `registrar` fleet
 - `devices-v*` → builds a **final** release for the `devices` fleet
 
-No PR-draft releases. Canaries are done by pinning, not by drafts:
+No PR-draft releases. **Pushing a release tag is the decision to release and
+deploy** (owner, 2026-10-20): once every gate passes, the release workflow's
+deploy job creates the **final** balena release and then **advances the fleet
+pin to it** (`balena fleet pin <FLEET_SLUG> <COMMIT>`, read back to confirm).
+Every device not individually pinned updates. Do not push a `registrar-v*` /
+`devices-v*` tag you do not want running on the fleet.
 
-1. The new release is built as **final** by the tag push.
-2. Pin the canary device to it: `balena device pin <UUID> <COMMIT>`
-   (a device pin overrides the fleet target — only that device moves).
-3. Verify on the canary (including the SIGTERM/WAL evidence standard).
-4. Advance the fleet: `balena fleet pin <FLEET_SLUG> <COMMIT>` — every
-   device not itself pinned updates to the pinned release.
-5. Clear the canary's pin so it rejoins fleet policy:
-   `balena device track-fleet <UUID>` — a left-behind device pin keeps
-   that device on the old release and blocks the next canary cycle.
+To canary a release on one device first, pin that device to the CURRENT
+release before tagging (`balena device pin <UUID> <COMMIT>` overrides the
+fleet target), then afterwards return it to fleet policy with
+`balena device track-fleet <UUID>` — a left-behind device pin keeps that
+device on the old release.
+
+Rollback: re-pin the fleet to the previous release
+(`balena fleet pin <FLEET_SLUG> <PREVIOUS_COMMIT>`; `balena fleet pin
+<FLEET_SLUG>` with no commit prints the current pin). Never move a git tag.
 
 Release policy: the **fleet** is pinned, never the individual devices.
-A fresh balena fleet auto-tracks `latest` — switch that off at
-provisioning time with `balena fleet pin <FLEET_SLUG> <COMMIT>`, so no
-built release deploys without the pin being advanced deliberately.
+A fresh balena fleet auto-tracks `latest` — switch that off at provisioning
+time with `balena fleet pin <FLEET_SLUG> <COMMIT>`, so only a tagged release
+that passed every gate (and the workflow's own pin advance) changes what the
+fleet runs.
 
 Tag scheme is per-fleet so either side ships independently: a registrar
 patch never rebuilds or redeploys device apps, and vice versa.

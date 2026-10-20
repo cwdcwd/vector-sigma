@@ -290,6 +290,7 @@ jobs:
           printf 'ghcr.io:\n  username: %s\n  password: %s\n' \
             "${{ github.actor }}" "${{ secrets.GITHUB_TOKEN }}" > /tmp/registry-secrets.yml
       - name: Deploy prebuilt images to ${{ vars.REGISTRAR_FLEET }}
+        id: deploy
         run: |
           set -euo pipefail
           cd release/registrar
@@ -297,4 +298,25 @@ jobs:
             --source . \
             --registry-secrets /tmp/registry-secrets.yml \
             --release-tag "git-tag" "${GITHUB_REF_NAME}" \
-            --note "vector-sigma ${GITHUB_REF_NAME} — prebuilt images at ${GITHUB_SHA} (1py.14 slice 5)"
+            --note "vector-sigma ${GITHUB_REF_NAME} — prebuilt images at ${GITHUB_SHA} (1py.14 slice 5)" \
+            2>&1 | tee /tmp/balena-deploy.log
+          # The release this deploy created — the one to advance the fleet to.
+          commit="$(grep -oE 'Release: [0-9a-f]{32}' /tmp/balena-deploy.log | tail -1 | cut -d' ' -f2)"
+          [ -n "$commit" ] || { echo "::error::balena deploy printed no release commit"; exit 1; }
+          echo "release=${commit}" >> "$GITHUB_OUTPUT"
+          echo "created release ${commit}"
+      # Pushing a release tag IS the decision to release and deploy (owner,
+      # 2026-10-20): once every gate passed, advance the fleet pin to the
+      # release just created, so every device not individually pinned
+      # updates. Read back: the fleet must now target exactly that commit.
+      - name: Advance ${{ vars.REGISTRAR_FLEET }} to the new release
+        env:
+          RELEASE: ${{ steps.deploy.outputs.release }}
+        run: |
+          set -euo pipefail
+          /opt/balena/bin/balena fleet pin "${{ vars.REGISTRAR_FLEET }}" "$RELEASE"
+          pinned="$(/opt/balena/bin/balena fleet pin "${{ vars.REGISTRAR_FLEET }}" 2>&1)"
+          echo "$pinned"
+          printf '%s' "$pinned" | grep -q "${RELEASE:0:7}" \
+            || { echo "::error::fleet ${{ vars.REGISTRAR_FLEET }} is not pinned to ${RELEASE} after advancing"; exit 1; }
+          echo "fleet ${{ vars.REGISTRAR_FLEET }} advanced to ${RELEASE} (${GITHUB_REF_NAME})"

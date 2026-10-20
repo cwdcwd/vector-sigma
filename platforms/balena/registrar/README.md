@@ -118,8 +118,9 @@ which `serve-config.json` forwards as raw TCP to the loopback publish. See docs/
 > fleet variables already point at the MagicDNS names this release
 > serves, and Let's Encrypt needs no CA staging. The owner checklist
 > now: (1) enable tailnet HTTPS (admin console — once); (2) tag
-> `registrar-v*`; (3) canary from a tailnet client; (4) advance the
-> fleet; (5) tag `devices-v*`; (6) delete the retired fleet variables
+> `registrar-v*` (the release workflow advances the fleet pin itself once
+> every gate passes); (3) check from a tailnet client; (4) roll back by
+> re-pinning if needed; (5) tag `devices-v*`; (6) delete the retired fleet variables
 > (`VS_CA_CERT_B64`, `SCOTTY_BASIC_AUTH_HASH`, `TLS_HOSTNAME`,
 > `TS_MASTER_DNS`). Full sequence: docs/tailscale-runbook.md § phase 2.
 
