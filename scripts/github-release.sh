@@ -12,6 +12,8 @@
 # Assets (the ledger, the rendered compose, ...) are attached as-is.
 # Idempotent: re-running a release updates the notes and replaces the assets.
 # Needs GH_TOKEN with contents: write.
+# DRY_RUN=1 makes every read call (tags, generate-notes) and prints the notes,
+# but creates and edits nothing.
 set -euo pipefail
 
 repo="${1:?usage: github-release.sh <owner/repo> <tag> <balena-release> <release-evidence.json> [asset...]}"
@@ -49,8 +51,15 @@ for (const [name, c] of Object.entries(l.components)) {
   echo
   echo "Full digests: \`release-evidence.json\` (attached)."
   echo
-  gh api "repos/${repo}/releases/generate-notes" -f tag_name="$tag" ${prev:+-f previous_tag_name="$prev"} --jq .body
+  # POST-only endpoint: explicit, though gh api already POSTs when -f is given.
+  gh api --method POST "repos/${repo}/releases/generate-notes" -f tag_name="$tag" ${prev:+-f previous_tag_name="$prev"} --jq .body
 } > "$notes"
+
+if [ "${DRY_RUN:-}" = 1 ]; then
+  cat "$notes"
+  echo "github-release: DRY_RUN — would $(gh release view "$tag" -R "$repo" >/dev/null 2>&1 && echo update || echo create) ${tag}${prev:+ (changes since ${prev})}; assets: $*"
+  exit 0
+fi
 
 if gh release view "$tag" -R "$repo" >/dev/null 2>&1; then
   gh release edit "$tag" -R "$repo" --title "$tag" --notes-file "$notes"
