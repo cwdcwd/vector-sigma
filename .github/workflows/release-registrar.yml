@@ -257,6 +257,8 @@ jobs:
     name: balena deploy (prebuilts -> balenaCloud registry)
     needs: render
     runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.deploy.outputs.release }}
     permissions:
       contents: read
       packages: read
@@ -320,3 +322,36 @@ jobs:
           printf '%s' "$pinned" | grep -q "${RELEASE:0:7}" \
             || { echo "::error::fleet ${{ vars.REGISTRAR_FLEET }} is not pinned to ${RELEASE} after advancing"; exit 1; }
           echo "fleet ${{ vars.REGISTRAR_FLEET }} advanced to ${RELEASE} (${GITHUB_REF_NAME})"
+
+  # Record the deployed tag as a GitHub Release (owner, 2026-10-20): only
+  # after the fleet advance succeeded, so the Releases page lists exactly the
+  # tags that shipped. The ONLY job in a release with contents: write.
+  github-release:
+    name: GitHub Release (notes + digests)
+    needs: [deploy, release-evidence]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download the release-evidence ledger
+        uses: actions/download-artifact@v4
+        with:
+          name: release-evidence
+          path: ${{ runner.temp }}/evidence
+      - name: Download rendered compose
+        uses: actions/download-artifact@v4
+        with:
+          name: registrar-release-compose
+          path: ${{ runner.temp }}/compose
+      - name: Create or update the GitHub Release for ${{ github.ref_name }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BALENA_RELEASE: ${{ needs.deploy.outputs.release }}
+        run: |
+          set -euo pipefail
+          scripts/github-release.sh "${GITHUB_REPOSITORY}" "${GITHUB_REF_NAME}" "${BALENA_RELEASE}" \
+            "${RUNNER_TEMP}/evidence/release-evidence.json" \
+            "${RUNNER_TEMP}/evidence/release-evidence.json" \
+            "${RUNNER_TEMP}/compose/docker-compose.yml#registrar docker-compose.yml (digest-pinned)" \
+            "${RUNNER_TEMP}/compose/registrar.release.json"
