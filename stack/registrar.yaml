@@ -108,11 +108,12 @@ services:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
       # Probe the role + database we actually create: pg_isready against the
-      # defaults prints "role does not exist" FATAL noise every 5s. On balena
-      # the shell expands these at probe time from the service environment;
-      # compose interpolates them from .env (single-$ ${VAR} works in both
-      # dialects — never $$, see compose-dialect.test.ts).
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      # defaults prints "role does not exist" FATAL noise every 5s. `$$`
+      # defers expansion to the in-container shell on BOTH platforms: docker
+      # compose and `balena deploy` (compose-go) interpolate a single `$` at
+      # deploy time from the deployer's environment — on the release runner
+      # that is empty (compose-dialect.test.ts).
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 3s
       retries: 24
@@ -261,18 +262,16 @@ services:
       # client flags as GLOBAL flags BEFORE the sql subcommand (the CLI
       # rejects them after it — proven live against dolt 2.3.5). The
       # password expands in the container's shell at probe time from the
-      # service's own environment; a missing variable fails the check.
-      test: ["CMD-SHELL", "dolt --host 127.0.0.1 --port 3306 --no-tls -u vs -p \"$DOLT_PASSWORD\" sql -q 'select current_timestamp();'"]
+      # service's own environment; a missing variable fails the check. `$$`
+      # on both platforms: compose-go (docker compose AND `balena deploy`)
+      # would otherwise interpolate it at deploy time — to "" on the release
+      # runner (registrar-v1.5.2/1.5.3: dolt restart-looped every ~5 min) or
+      # to the secret itself in `docker inspect` output.
+      test: ["CMD-SHELL", "dolt --host 127.0.0.1 --port 3306 --no-tls -u vs -p \"$$DOLT_PASSWORD\" sql -q 'select current_timestamp();'"]
       interval: 10s
       timeout: 5s
       retries: 30
       start_period: 30s
-    x-compose:
-      healthcheck:
-        # `$$` defers expansion to the in-container shell: compose
-        # config-time interpolation would bake the secret into
-        # `docker inspect` output.
-        test: ["CMD-SHELL", "dolt --host 127.0.0.1 --port 3306 --no-tls -u vs -p \"$$DOLT_PASSWORD\" sql -q 'select current_timestamp();'"]
     stop_grace_period: 60s
 
   scotty:

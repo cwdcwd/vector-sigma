@@ -4,38 +4,37 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 /**
- * Compose-dialect guard for healthcheck probes (fleet-ops-1py.3;
- * REWORKED fleet-ops-lnf, j7g phase 2 — the caddy healthcheck is gone
- * with the caddy service).
+ * Compose-dialect guard for runtime-expanded values (fleet-ops-1py.3;
+ * REWRITTEN for the prebuilt `balena deploy` pipeline, registrar-v1.5.4).
  *
- * The two composes are written in DIFFERENT dialects on purpose:
+ * Every compose this repo ships is now parsed by compose-go before it
+ * reaches a container:
  *
- *  - platforms/compose/compose.yaml is driven by docker compose, which de-escapes
- *    `$$` -> `$` at config time. Its `$$` is the documented, correct way
- *    to defer expansion to the in-container shell.
+ *  - platforms/compose/compose.yaml — docker compose (compose-go).
+ *  - platforms/balena/{registrar,devices}/docker-compose.yml — the release
+ *    workflows `balena deploy` them; balena-cli 25 parses with
+ *    @balena/compose-parser, which wraps compose-go with the OS env and
+ *    .env. A single `$VAR` / `${VAR}` is interpolated at DEPLOY time from
+ *    the release runner's environment, where it is unset — so it ships as
+ *    "". registrar-v1.5.2/1.5.3 shipped the dolt probe as `-p ""`: dolt
+ *    never went healthy and the supervisor restarted it every ~5 min. The
+ *    postgres probe lost -U/-d the same way (silently: pg_isready passes
+ *    without them). `$$` is compose-go's escape: it reaches the container
+ *    as a single `$`, which the CMD-SHELL probe expands at probe time.
  *
- *  - platforms/balena/registrar/docker-compose.yml is built by balena's remote
- *    builder, which does NOT de-escape `$$` — it is stored literally,
- *    the CMD-SHELL probe expands it to the shell PID, and the
- *    supervisor restart-loops the service ~every 95s. Proven live on
- *    release 4370090 (master device 13681815, the caddy TLS probe).
+ * (The old rule here — "no $$ on balena" — was right for the retired
+ * `balena push` remote builder, which stored `$$` literally; release
+ * 4370090. That builder is no longer in the path.)
  *
- * lnf removed the caddy service (and with it the $$ healthcheck that
- * this guard originally pinned), but the DIALECT CONTRACT still binds
- * every runtime-expanded probe in the balena compose — postgres
- * (${POSTGRES_USER}) and dolt ($DOLT_PASSWORD) carry it today. This
- * guard pins:
+ * This guard pins:
+ *   1. the balena composes: NO single-$ interpolation anywhere — there is
+ *      no deploy-time environment to interpolate from; every `$` is `$$`.
+ *   2. compose.yaml: every healthcheck probe uses `$$` (a single `$` would
+ *      bake values — DOLT_PASSWORD included — into `docker inspect`).
+ *      Config-time ${VAR:?...} for service environment stays allowed.
  *
- *   1. platforms/balena/registrar/docker-compose.yml: NO `$$` anywhere — every
- *      runtime-expanded healthcheck must use single-$ / ${VAR} shapes,
- *      the form proven on-device.
- *   2. platforms/compose/compose.yaml: the dolt probe KEEPS its `$$` (docker
- *      compose de-escapes; single-$ would let the ${VAR} interpolation
- *      parser eat DOLT_PASSWORD at config time — a secret leak into
- *      `docker inspect` output).
- *
- * Full-line comments are stripped before scanning; both files carry
- * documentation comments that legitimately mention `$$` in prose.
+ * Full-line comments are stripped before scanning; the files carry
+ * documentation comments that mention `$` forms in prose.
  */
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '../..');
@@ -48,32 +47,46 @@ function stripComments(raw: string): string {
     .join('\n');
 }
 
-describe('compose dialect guard: platforms/balena/registrar/docker-compose.yml', () => {
-  const code = stripComments(
-    readFileSync(
-      path.join(repoRoot, 'platforms/balena/registrar/docker-compose.yml'),
-      'utf8',
-    ),
-  );
+/** Lines that still carry a `$` once every escaped `$$` is removed. */
+function singleDollarLines(code: string): string[] {
+  return code.split('\n').filter((l) => l.replaceAll('$$', '').includes('$'));
+}
 
-  it('carries no $$ (balena builder stores it literally -> restart-loop; fleet-ops-1py.3)', () => {
-    expect(code).not.toContain('$$');
+const read = (rel: string) => stripComments(readFileSync(path.join(repoRoot, rel), 'utf8'));
+
+for (const rel of [
+  'platforms/balena/registrar/docker-compose.yml',
+  'platforms/balena/devices/docker-compose.yml',
+]) {
+  describe(`compose dialect guard: ${rel}`, () => {
+    it('carries no single-$ interpolation (balena deploy would expand it to "" on the release runner)', () => {
+      expect(singleDollarLines(read(rel))).toEqual([]);
+    });
   });
+}
+
+describe('compose dialect guard: the registrar probes', () => {
+  for (const rel of ['platforms/balena/registrar/docker-compose.yml', 'platforms/compose/compose.yaml']) {
+    const code = read(rel);
+    it(`${rel}: dolt probe defers DOLT_PASSWORD to the container shell ($$)`, () => {
+      const probe = code.split('\n').find((l) => l.includes('dolt --host'));
+      expect(probe).toBeDefined();
+      expect(probe!).toContain('-p \\"$$DOLT_PASSWORD\\"');
+    });
+    it(`${rel}: postgres probe defers its role + database to the container shell ($$)`, () => {
+      const probe = code.split('\n').find((l) => l.includes('pg_isready'));
+      expect(probe).toBeDefined();
+      expect(probe!).toContain('-U $${POSTGRES_USER} -d $${POSTGRES_DB}');
+    });
+  }
 });
 
 describe('compose dialect guard: platforms/compose/compose.yaml', () => {
-  const code = stripComments(
-    readFileSync(path.join(repoRoot, 'platforms/compose/compose.yaml'), 'utf8'),
-  );
-
-  it('dolt healthcheck keeps $$ (runtime expansion of DOLT_PASSWORD must not leak through config-time interpolation)', () => {
-    // The raw file carries the literal $$ bytes (comment lines may
-    // legitimately mention $$ in prose, so scan only the live probe
-    // line): find the dolt probe line in the comment-stripped code
-    // and assert its expansion shape directly.
-    const probe = code.split('\n').find((l) => l.includes('dolt --host'));
-    expect(probe).toBeDefined();
-    expect(probe!).toContain('\$\$DOLT_PASSWORD');
-    expect(probe!).not.toContain('\${DOLT_PASSWORD}');
+  it('every healthcheck probe is free of config-time interpolation', () => {
+    const probes = read('platforms/compose/compose.yaml')
+      .split('\n')
+      .filter((l) => l.includes('CMD-SHELL'));
+    expect(probes.length).toBeGreaterThan(0);
+    expect(singleDollarLines(probes.join('\n'))).toEqual([]);
   });
 });
