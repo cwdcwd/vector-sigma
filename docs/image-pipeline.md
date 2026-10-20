@@ -78,6 +78,19 @@ main**. A pull request never publishes anything.
 | `.github/workflows/release-*.yml` | Tag-triggered releases: publish, then pin the fleet to the digests |
 | `images.json` | The image list every workflow reads |
 
+## Tags
+
+Every image is published **by digest** first; tags are added last, as labels:
+
+- a push to **main** tags `<commit-sha>`, `<commit-sha>-amd64`, `<commit-sha>-arm64`
+- a **release** (`registrar-v*` / `devices-v*`) tags with the release name
+  instead: `registrar-v1.5.1`, `registrar-v1.5.1-amd64`, `-arm64`
+
+Releases are cut from commits main has already published, and builds are not
+byte-reproducible, so a release reusing the commit SHA would have to *move*
+main's tags onto different bytes. Devices never use tags anyway: a release
+pins every service to its exact digest.
+
 ## The switches
 
 - Publishing only happens when the repository variable

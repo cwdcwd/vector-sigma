@@ -164,6 +164,17 @@ describe('exact-byte promotion: one index-assembly path (promote-manifest retire
   });
 });
 
+describe('exact-byte promotion: a release never moves main\'s tags', () => {
+  it(`${PROMOTE}: releases tag with the release name, main with the commit SHA`, () => {
+    const steps = (loadWf(PROMOTE).jobs.promote.steps ?? []) as Array<{ run?: string; env?: Record<string, string> }>;
+    const publish = steps.find((s) => (s.run ?? '').includes('scripts/publish-image.sh'));
+    expect(publish, 'publish step').toBeDefined();
+    expect(publish!.run).toContain('--tag "${PROMOTE_TAG}"');
+    expect(publish!.run).not.toContain('GITHUB_SHA');
+    expect(publish!.env?.PROMOTE_TAG).toBe("${{ github.ref_type == 'tag' && github.ref_name || github.sha }}");
+  });
+});
+
 describe('exact-byte promotion: verify-remote is credential-free and fail-closed', () => {
   for (const wf of [PROMOTE]) {
     it(`${wf}: verify-remote carries NO packages:write`, () => {

@@ -70,7 +70,10 @@ STAGING (any failure here leaves the registry with **zero** tags):
 TAGGING (only reachable once every staging check passed):
 
 4. Tag each platform manifest, then the index; each tag is read back and must
-   resolve to the digest it was given.
+   resolve to the digest it was given. Tag names: the commit SHA on main
+   (`<sha>`, `<sha>-amd64`, `<sha>-arm64`), the release name on a release run
+   (`registrar-v1.5.1`, …) so a release never moves main's tags onto rebuilt
+   bytes (registrar-v1.5.0 failed on exactly that).
 5. Write the promotion record (`promoted-<component>.json`) — the same format
    the release tail (`render-release-compose.mjs`, `release-ledger.mjs`)
    consumes.
