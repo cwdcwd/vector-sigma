@@ -18,16 +18,17 @@ name: Image pipeline (reusable)
 #                        push, no registry auth, no cache-from/cache-to —
 #                        fleet-ops-1py.12 section 4), then the slice-4 content
 #                        gate (registrar/src/oci-gate) on that tar.
-#   assemble-and-validate — per component: local OCI index from ONLY this
-#                        run's scanned-and-passed digests.
 #   e2e                — loads every component's scanned amd64 tar as
 #                        vs-e2e/<component>:ci and runs the compose E2E
 #                        against them (E2E_PREBUILT=1: no rebuild, a missing
 #                        image fails). Every component is built on every
 #                        call so the E2E always runs scanned bytes, whatever
 #                        subset the caller promotes.
-#   all-components-gate — aggregate, fail-closed: every stage/scan, index
-#                        and E2E job succeeded. The call fails unless it does.
+#   all-components-gate — aggregate, fail-closed: every stage/scan and E2E
+#                        job succeeded; then assembles + validates each
+#                        component's local OCI index from ONLY this run's
+#                        scanned-and-passed digests. The call fails unless
+#                        all of it does.
 #
 # The scanned layouts + indexes stay as run artifacts for _promote.yml.
 on:
@@ -123,46 +124,6 @@ jobs:
           path: ${{ runner.temp }}/${{ matrix.component }}-${{ matrix.arch_tag }}.tar
           retention-days: 1
 
-  assemble-and-validate:
-    name: Assemble + validate local index (${{ matrix.component }})
-    needs: [plan, stage-and-scan]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        component: ${{ fromJSON(needs.plan.outputs.components) }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Install gate runtime deps
-        run: npm ci
-      - name: Build (typecheck) so the oci-gate dist/ exists
-        run: npm run build
-      - name: Download scanned descriptors (amd64 + arm64)
-        uses: actions/download-artifact@v4
-        with:
-          pattern: descriptor-${{ matrix.component }}-*
-          path: ${{ runner.temp }}/descriptors
-          merge-multiple: true
-      - name: Assemble local OCI index from scanned digests only
-        run: |
-          set -euo pipefail
-          node scripts/oci-gate-run.mjs assemble \
-            --component "${{ matrix.component }}" \
-            --out "${{ runner.temp }}/${{ matrix.component }}-index.json" \
-            --descriptors "${{ runner.temp }}/descriptors/${{ matrix.component }}-amd64.descriptor.json" \
-                          "${{ runner.temp }}/descriptors/${{ matrix.component }}-arm64.descriptor.json"
-      - name: Upload validated local index
-        uses: actions/upload-artifact@v4
-        with:
-          name: index-${{ matrix.component }}
-          path: ${{ runner.temp }}/${{ matrix.component }}-index.json
-          retention-days: 1
-
   e2e:
     name: Compose E2E on the scanned amd64 images
     needs: stage-and-scan
@@ -191,21 +152,60 @@ jobs:
         if: always()
         run: test/e2e/e2e.sh --down
 
+  # One job, after everything: inspects every dep's result (fail-closed on
+  # failure, cancel or skip), then assembles + validates each component's
+  # local OCI index from ONLY this run's scanned-and-passed descriptors.
+  # (Was a 9-job matrix; assembly is a fast node step, so one runner does it.)
   all-components-gate:
-    name: All-components gate (scan + index + E2E, fail-closed)
+    name: All-components gate (scan + E2E + index assembly, fail-closed)
     if: always()
-    needs: [stage-and-scan, assemble-and-validate, e2e]
+    needs: [plan, stage-and-scan, e2e]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - name: Require every stage/scan, index and E2E job to have succeeded
+      - name: Require every stage/scan and E2E job to have succeeded
         run: |
           set -euo pipefail
-          for pair in "stage-and-scan=${{ needs.stage-and-scan.result }}" \
-                      "assemble-and-validate=${{ needs.assemble-and-validate.result }}" \
+          for pair in "plan=${{ needs.plan.result }}" \
+                      "stage-and-scan=${{ needs.stage-and-scan.result }}" \
                       "e2e=${{ needs.e2e.result }}"; do
             if [ "${pair#*=}" != "success" ]; then
               echo "${pair%%=*} did not succeed (result: ${pair#*=})" >&2
               exit 1
             fi
           done
-          echo "all-components-gate: every stage/scan, index-assembly and E2E job passed"
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install gate runtime deps
+        run: npm ci
+      - name: Build (typecheck) so the oci-gate dist/ exists
+        run: npm run build
+      - name: Download every scanned descriptor
+        uses: actions/download-artifact@v4
+        with:
+          pattern: descriptor-*
+          path: ${{ runner.temp }}/descriptors
+          merge-multiple: true
+      - name: Assemble + validate each component's local OCI index from scanned digests only
+        env:
+          COMPONENTS: ${{ needs.plan.outputs.components }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${{ runner.temp }}/indexes"
+          for c in $(node -e 'for (const c of JSON.parse(process.env.COMPONENTS)) console.log(c)'); do
+            node scripts/oci-gate-run.mjs assemble \
+              --component "$c" \
+              --out "${{ runner.temp }}/indexes/$c-index.json" \
+              --descriptors "${{ runner.temp }}/descriptors/$c-amd64.descriptor.json" \
+                            "${{ runner.temp }}/descriptors/$c-arm64.descriptor.json"
+          done
+          echo "all-components-gate: every stage/scan and E2E job passed; every component's index assembled from scanned digests"
+      - name: Upload the validated local indexes
+        uses: actions/upload-artifact@v4
+        with:
+          name: indexes
+          path: ${{ runner.temp }}/indexes
+          retention-days: 1

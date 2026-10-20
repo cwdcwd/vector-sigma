@@ -26,26 +26,34 @@ Two consequences, both enforced in code rather than in review:
    to a local tar, no registry auth, no cache. Runs `scripts/oci-gate-run.mjs
    scan` on the raw tar. Uploads **both** the descriptor and the layout tar
    (the tar is what gets published).
-2. `assemble-and-validate` — builds the local OCI index from only this run's
-   scanned-and-passed child digests and validates it.
-3. `e2e` — loads every component's scanned amd64 tar as
+2. `e2e` — loads every component's scanned amd64 tar as
    `vs-e2e/<component>:ci` (`scripts/e2e-load-images.sh`) and runs
    `E2E_PREBUILT=1 test/e2e/e2e.sh --up` against them — the bytes about to be
    promoted, never a rebuild.
-4. `all-components-gate` — aggregate, fail-closed: fails if any component or
-   platform job, or the E2E, did not succeed.
-5. `promote` — the only job with `packages:write`. Downloads the scanned
-   layout tars and runs `scripts/ghcr-promote-run.mjs promote`.
-6. `verify-remote` — no `packages:write`, no credential. Runs
-   `scripts/ghcr-promote-run.mjs verify` against the promotion record.
-7. `scan` / `smoke` / `render` / `deploy` — unchanged in shape, now gated
+3. `all-components-gate` — aggregate, fail-closed: fails if any component or
+   platform job, or the E2E, did not succeed; then, in the same job, builds
+   and validates every component's local OCI index from only this run's
+   scanned-and-passed child digests (one runner, not one per component).
+4. `promote` (one job per component) — the only job with `packages:write`.
+   Downloads the scanned layout tars and runs `scripts/ghcr-promote-run.mjs
+   promote`.
+5. `verify-remote` — ONE job, no `packages:write`, no credential. Runs
+   `scripts/ghcr-promote-run.mjs verify` against every component's
+   promotion record, and fails if any one fails. Kept separate from
+   `promote` on purpose: the proof never runs where a write-capable token
+   exists.
+6. `scan` / `smoke` / `render` / `deploy` — unchanged in shape, now gated
    behind a real `verify-remote` instead of a dormant placeholder.
 
 ## What the promoter does, in order
 
 STAGING (any failure here leaves the registry with **zero** tags):
 
-1. Upload every blob the manifest references (skipped when already present).
+1. Upload every blob the manifest references (skipped when HEAD reports it
+   present), then GET it back and compare byte-for-byte. HEAD is only a hint:
+   a GET 404 after a skipped upload re-uploads the scanned bytes, a GET 404
+   right after an upload is retried with backoff, and a blob that never
+   becomes readable fails the promotion (`blob_unreadable`, no tags).
 2. PUT each per-arch manifest **by digest** — a digest reference is
    content-addressed, so it can only ever point at those exact bytes.
 3. GET it back and compare byte-for-byte, then re-hash it.
