@@ -301,6 +301,18 @@ describe('release gates: CVE policy and device-arch smoke', () => {
       }
     });
 
+    it(`${wf}: deploy advances the fleet pin to the release it just created, and reads it back`, () => {
+      const steps = (loadWf(wf).jobs.deploy.steps ?? []) as Array<{ id?: string; run?: string; env?: Record<string, string> }>;
+      const deploy = steps.findIndex((s) => (s.run ?? '').includes('balena deploy'));
+      const advance = steps.findIndex((s) => (s.run ?? '').includes('balena fleet pin'));
+      expect(deploy, 'deploy step').toBeGreaterThanOrEqual(0);
+      expect(advance, 'advance runs after deploy').toBeGreaterThan(deploy);
+      expect(steps[deploy]!.id).toBe('deploy');
+      expect(steps[deploy]!.run).toContain('release=${commit}');
+      expect(steps[advance]!.env?.RELEASE).toBe('${{ steps.deploy.outputs.release }}');
+      expect(steps[advance]!.run).toContain('grep -q "${RELEASE:0:7}"');
+    });
+
     it(`${wf}: the smoke runs the arm64 device bytes under QEMU emulation`, () => {
       const steps = (loadWf(wf).jobs.smoke.steps ?? []) as Array<{ uses?: string; run?: string; with?: Record<string, string> }>;
       const qemu = steps.findIndex((s) => (s.uses ?? '').startsWith('docker/setup-qemu-action'));
