@@ -83,7 +83,7 @@ component (9 of them); one reusable pipeline builds them all:
   when `VS_GHCR_PUBLISH_ENABLED` is set). `platforms/compose/compose.yaml` runs these
   SHA-tagged images.
 - **`release-registrar.yml`** — tag `registrar-v*`: the pipeline, promoting
-  the 7 registrar-app components → trivy CRITICAL/HIGH gate → boot-path
+  the 7 registrar-app components → trivy gate (fixable CRITICAL blocks; HIGH reported) → boot-path
   smoke gate → render the digest-pinned compose (arm64 child digests) →
   `balena deploy` of the prebuilt images to the registrar fleet. No source
   leaves the repo for builds.

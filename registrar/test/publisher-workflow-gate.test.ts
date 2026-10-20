@@ -280,6 +280,38 @@ describe('publisher workflow graph: stage-and-scan never authenticates to any re
   });
 });
 
+describe('release gates: CVE policy and device-arch smoke', () => {
+  // Owner decision 2026-10-20: a FIXABLE CRITICAL blocks a release; fixable
+  // HIGHs are reported but do not block.
+  for (const [wf] of RELEASES) {
+    it(`${wf}: trivy blocks on fixable CRITICAL and reports HIGH without blocking, for both arches`, () => {
+      const steps = (loadWf(wf).jobs.scan.steps ?? []) as Array<{ uses?: string; with?: Record<string, string> }>;
+      const trivy = steps.filter((s) => (s.uses ?? '').startsWith('aquasecurity/trivy-action'));
+      const blocking = trivy.filter((s) => s.with?.['exit-code'] === '1');
+      const report = trivy.filter((s) => s.with?.['exit-code'] === '0');
+      expect(blocking).toHaveLength(2);
+      expect(report).toHaveLength(2);
+      for (const s of blocking) {
+        expect(s.with?.severity).toBe('CRITICAL');
+        expect(s.with?.['ignore-unfixed']).toBe(true);
+      }
+      for (const s of report) expect(s.with?.severity).toBe('HIGH');
+      for (const digest of ['AMD64_DIGEST', 'ARM64_DIGEST']) {
+        expect(blocking.some((s) => (s.with?.['image-ref'] ?? '').includes(digest)), digest).toBe(true);
+      }
+    });
+
+    it(`${wf}: the smoke runs the arm64 device bytes under QEMU emulation`, () => {
+      const steps = (loadWf(wf).jobs.smoke.steps ?? []) as Array<{ uses?: string; run?: string; with?: Record<string, string> }>;
+      const qemu = steps.findIndex((s) => (s.uses ?? '').startsWith('docker/setup-qemu-action'));
+      const smoke = steps.findIndex((s) => (s.run ?? '').includes('scripts/release-smoke.sh'));
+      expect(qemu, 'QEMU set up').toBeGreaterThanOrEqual(0);
+      expect(steps[qemu]!.with?.platforms).toContain('arm64');
+      expect(smoke).toBeGreaterThan(qemu);
+    });
+  }
+});
+
 describe('publisher workflow graph: component sets match the design (7/3, union 9)', () => {
   it('the catalog names the 9 families; the pipeline builds all of them', () => {
     expect(Object.keys(catalog.components).sort()).toEqual(

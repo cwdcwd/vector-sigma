@@ -42,6 +42,19 @@
 
 FROM nousresearch/hermes-agent:v2026.9.21
 
+# Release CVE gate (trivy, fixable CRITICAL blocks) — the upstream base's
+# pending fixes, in the image we ship:
+#   - Debian security updates (perl, mbedtls, kernel UAPI headers, docker-cli)
+#   - PyJWT / anyio in the Hermes venv (patch-level, pinned)
+#   - npm 11.21.1 (same major as the base): its bundled tar is patched. npm is
+#     kept, not removed — Hermes may launch npx-based MCP servers at runtime.
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && apt-get clean && rm -rf /var/lib/apt/lists/* \
+    && uv pip install --no-cache --python /opt/hermes/.venv/bin/python 'PyJWT==2.14.0' 'anyio==4.14.2' \
+    && npm install -g --no-audit --no-fund --cache /tmp/.npm-cve-cache npm@11.21.1 \
+    && rm -rf /tmp/.npm-cve-cache /root/.npm
+
 # ── GitHub App identity wrapper + wiring hook (fleet-ops-e5o.5) ────────
 # The pinned official image ships git + openssl + the runtime venv
 # python (with PyJWT) but NO GitHub tooling of any kind — a device

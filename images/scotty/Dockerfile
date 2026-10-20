@@ -95,6 +95,9 @@ FROM node:26.4.0-alpine AS builder
 WORKDIR /app
 COPY --from=source /scotty/src/package.json /scotty/src/package-lock.json ./
 RUN npm ci
+# Release CVE gate: next 16.3.4 (scotty's upstream lock at cc55734) carries a
+# fixable CRITICAL; 16.3.6 is the patch release that fixes it.
+RUN npm install --no-audit --no-fund --save-exact next@16.3.6
 COPY --from=source /scotty/src/ ./
 # Standalone output is opt-in upstream (next.config.ts); the image runs the
 # standalone server. NEXT_STANDALONE=1 mirrors the upstream Dockerfile.
@@ -104,6 +107,14 @@ RUN npm run build
 # ── Runner: upstream shape + our wrapper layer ───────────────────────────────
 FROM node:26.4.0-slim AS runner
 WORKDIR /app
+# Release CVE gate: the base image's pending Debian security fixes, and no
+# npm/corepack in the runtime (it runs `node server.js`; npm's own bundled
+# packages carry the base image's npm-side CVEs).
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && apt-get clean && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+              /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
 ENV NODE_ENV=production
 ENV PORT=3306
 ENV HOSTNAME=0.0.0.0

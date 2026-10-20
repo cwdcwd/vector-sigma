@@ -347,6 +347,10 @@ export const UPSTREAM_IMAGE_ALLOWLIST: readonly UpstreamFileEntry[] = [
     occurrences: [{ literal: "token: 'deadbeefcafebad'" }, { literal: "password: 'bm90IG15IHJlYWwgcGFzc3dvcmQ='" }, { literal: "token: 'myregistrytoken'" }, { literal: "token: 'my-auth-token-here'" }, { literal: "token: 'i-am-the-worst'" }],
   },
   {
+    // 2026-10-20 (release CVE remediation): npm 11.21.1 bundles ip-address@10.7.2,
+    // whose dist/ipv4.js adds the JSDoc example '10.0.1.0/24' (nextNetwork()).
+    // Provenance: byte-identical to the npm registry tarball ip-address@10.7.2
+    // (dist/ipv4.js sha256 0742519101a535235423fedda41f6347e7acee870b16dba480fd6623d698b253).
     name: "npm-ip-address-package",
     patterns: ["rfc1918_private_ip"],
     matchKind: 'suffix',
@@ -355,7 +359,7 @@ export const UPSTREAM_IMAGE_ALLOWLIST: readonly UpstreamFileEntry[] = [
     fileSha256s: null,
     markers: null,
     markerFn: 'ipAddressDocShape',
-    occurrences: [{ literal: "192.168.1.5" }, { literal: "192.168.1.1" }, { literal: "10.0.0.1" }, { literal: "192.168.0.1" }, { literal: "192.168.1.0" }, { literal: "10.0.0.0" }, { literal: "172.16.0.0" }, { literal: "192.168.0.0" }],
+    occurrences: [{ literal: "10.0.1.0" }, { literal: "192.168.1.5" }, { literal: "192.168.1.1" }, { literal: "10.0.0.1" }, { literal: "192.168.0.1" }, { literal: "192.168.1.0" }, { literal: "10.0.0.0" }, { literal: "172.16.0.0" }, { literal: "192.168.0.0" }],
   },
   {
     name: "cpython-ipaddress-stdlib-real",

@@ -219,10 +219,13 @@ case "$APP" in
     expect_grep  "registrant fail-loud config" "$(IMG registrant)" \
       "node /app/registrant/dist/index.js 2>&1 | head -3" "invalid registrant configuration"
 
-    # tailscale (master bake): literal MagicDNS serve config
+    # tailscale (master bake): the serve config keys every Web origin on the
+    # ${TS_CERT_DOMAIN} placeholder (containerboot fills in the node's own
+    # MagicDNS name at runtime; no live FQDN is baked into the public image —
+    # image-content-exposure.test.ts). Assert the placeholder, not a name.
     expect_file  "master tailscale serve config" "$(IMG tailscale)" /serve-config.json
     expect_grep  "master serve config names" "$(IMG tailscale)" \
-      "cat /serve-config.json" "vector-sigma.tailb7207e.ts.net"
+      "cat /serve-config.json" '${TS_CERT_DOMAIN}:443'
     ;;
   devices)
     for c in agent registrant tailscale-devices; do
