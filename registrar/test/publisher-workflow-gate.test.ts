@@ -151,11 +151,20 @@ describe('publisher workflow graph: zero cache-from/cache-to in candidate build 
   }
 });
 
-describe('publisher workflow graph: aggregate gate covers every stage/scan, index and E2E job', () => {
+describe('publisher workflow graph: aggregate gate covers every stage/scan and E2E job, then assembles every index', () => {
   const gate = pipeline.jobs['all-components-gate'];
 
-  it('all-components-gate needs stage-and-scan, assemble-and-validate and e2e', () => {
-    expect(needsList(gate).sort()).toEqual(['assemble-and-validate', 'e2e', 'stage-and-scan']);
+  it('all-components-gate needs plan, stage-and-scan and e2e', () => {
+    expect(needsList(gate).sort()).toEqual(['e2e', 'plan', 'stage-and-scan']);
+  });
+
+  it('all-components-gate assembles every index AFTER its result checks, from the plan component list', () => {
+    const steps = (gate.steps ?? []) as Array<{ run?: string; env?: Record<string, string> }>;
+    const check = steps.findIndex((s) => (s.run ?? '').includes('needs.stage-and-scan.result'));
+    const assemble = steps.findIndex((s) => (s.run ?? '').includes('oci-gate-run.mjs assemble'));
+    expect(check, 'result-check step').toBeGreaterThanOrEqual(0);
+    expect(assemble, 'assemble runs only after the result checks pass').toBeGreaterThan(check);
+    expect(steps[assemble]!.env?.COMPONENTS).toContain('needs.plan.outputs.components');
   });
 
   it('all-components-gate uses if: always() so cancelled/skipped deps are inspected, not swallowed', () => {
@@ -164,7 +173,7 @@ describe('publisher workflow graph: aggregate gate covers every stage/scan, inde
 
   it("all-components-gate's own steps explicitly check every dep's .result", () => {
     const text = stepsText(gate);
-    for (const dep of ['stage-and-scan', 'assemble-and-validate', 'e2e']) {
+    for (const dep of ['plan', 'stage-and-scan', 'e2e']) {
       expect(text).toContain(`needs.${dep}.result`);
     }
   });
@@ -173,6 +182,15 @@ describe('publisher workflow graph: aggregate gate covers every stage/scan, inde
     for (const wf of CALLERS) expect(needsList(loadWf(wf).jobs.publish), wf).toEqual(['images']);
     expect(needsList(promoteWf.jobs.promote)).toContain('plan');
     expect(needsList(promoteWf.jobs['verify-remote'])).toContain('promote');
+  });
+
+  it('verify-remote is ONE job re-reading every promoted component from the plan list, failing if any fails', () => {
+    const verify = promoteWf.jobs['verify-remote'];
+    expect(verify.strategy, 'no per-component matrix').toBeUndefined();
+    const text = stepsText(verify);
+    expect(text).toContain('needs.plan.outputs.promote');
+    expect(text).toContain('ghcr-promote-run.mjs verify');
+    expect(text).toContain('exit \\"$failed\\"');
   });
 });
 
@@ -212,12 +230,11 @@ describe('publisher workflow graph: publishing is explicit (PR path cannot publi
     expect(JSON.stringify(pipeline.jobs['stage-and-scan'].strategy?.matrix)).toContain('needs.plan.outputs.matrix');
     expect(stepsText(promoteWf.jobs.plan)).toContain('--only');
     expect(JSON.stringify(promoteWf.jobs.promote.strategy?.matrix)).toContain('needs.plan.outputs.promote');
-    expect(promoteWf.jobs['verify-remote'].strategy?.matrix).toEqual(promoteWf.jobs.promote.strategy?.matrix);
   });
 
-  it('stage-and-scan and assemble-and-validate run unconditionally (validate-only on PR)', () => {
+  it('stage-and-scan runs unconditionally and the gate (with index assembly) always runs (validate-only on PR)', () => {
     expect(pipeline.jobs['stage-and-scan'].if).toBeUndefined();
-    expect(pipeline.jobs['assemble-and-validate'].if).toBeUndefined();
+    expect(pipeline.jobs['all-components-gate'].if).toBe('always()');
   });
 
   for (const [wf] of RELEASES) {
@@ -234,11 +251,11 @@ describe('publisher workflow graph: stage-and-scan never authenticates to any re
   const stage = pipeline.jobs['stage-and-scan'];
   const stageBlock = read(PIPELINE).slice(
     read(PIPELINE).indexOf('\n  stage-and-scan:'),
-    read(PIPELINE).indexOf('\n  assemble-and-validate:'),
+    read(PIPELINE).indexOf('\n  e2e:'),
   );
 
-  it('stage-and-scan and assemble-and-validate never log into GHCR or touch the token', () => {
-    for (const jobId of ['stage-and-scan', 'assemble-and-validate']) {
+  it('stage-and-scan and the index-assembling gate never log into GHCR or touch the token', () => {
+    for (const jobId of ['stage-and-scan', 'all-components-gate']) {
       const text = stepsText(pipeline.jobs[jobId]);
       expect(text).not.toContain('docker/login-action');
       expect(text).not.toContain('GITHUB_TOKEN');
@@ -279,8 +296,8 @@ describe('publisher workflow graph: component sets match the design (7/3, union 
 });
 
 describe('publisher workflow graph: CI loads the gate module built from registrar/src/oci-gate', () => {
-  it('stage-and-scan/assemble-and-validate run npm ci + npm run build before invoking the gate', () => {
-    for (const jobId of ['stage-and-scan', 'assemble-and-validate']) {
+  it('stage-and-scan and the index-assembling gate run npm ci + npm run build before invoking the gate', () => {
+    for (const jobId of ['stage-and-scan', 'all-components-gate']) {
       const text = stepsText(pipeline.jobs[jobId]);
       expect(text, `${jobId} must run npm ci`).toContain('npm ci');
       expect(text, `${jobId} must run npm run build (compiles oci-gate dist/)`).toContain('npm run build');
@@ -289,7 +306,7 @@ describe('publisher workflow graph: CI loads the gate module built from registra
 
   it('the gate CLI script is invoked by both scan and assemble steps', () => {
     const scanText = stepsText(pipeline.jobs['stage-and-scan']);
-    const assembleText = stepsText(pipeline.jobs['assemble-and-validate']);
+    const assembleText = stepsText(pipeline.jobs['all-components-gate']);
     expect(scanText).toContain('scripts/oci-gate-run.mjs');
     expect(scanText).toContain('scan ');
     expect(assembleText).toContain('scripts/oci-gate-run.mjs');

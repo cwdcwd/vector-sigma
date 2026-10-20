@@ -32,7 +32,7 @@ import {
 import { assembleLocalOciIndex } from '../oci-gate/index-assembly.js';
 import { REQUIRED_PLATFORMS, type OciDescriptor, type RequiredPlatform } from '../oci-gate/types.js';
 import { OciDistributionClient } from './oci-distribution.js';
-import type { RegistryTransport } from './types.js';
+import { RegistryClientError, type RegistryTransport } from './types.js';
 
 export type PromotionErrorCode =
   | 'malformed_layout'
@@ -40,7 +40,8 @@ export type PromotionErrorCode =
   | 'index_mismatch'
   | 'tag_mismatch'
   | 'duplicate_platform'
-  | 'missing_platform';
+  | 'missing_platform'
+  | 'blob_unreadable';
 
 export class PromotionError extends Error {
   constructor(
@@ -71,6 +72,59 @@ export interface PromoteComponentOptions {
   archTag: (platform: RequiredPlatform) => string;
   /** Tag for the assembled multi-arch index, e.g. `abcd1234`. */
   indexTag: string;
+  /**
+   * Backoff before each extra read-back attempt of a blob that 404s right
+   * after upload. Tests pass zeros; production uses the default.
+   */
+  readBackDelaysMs?: number[];
+  /** Diagnostics sink for the read-back recovery path (never secrets). */
+  log?: (line: string) => void;
+}
+
+const DEFAULT_READBACK_DELAYS_MS = [1000, 2000, 4000, 8000];
+
+/**
+ * Makes `digest` readable in the repository and returns its bytes. HEAD is
+ * only a hint: GHCR has been seen answering a blob as present (HEAD 200)
+ * while GET in the same repository returns 404 — a blob left by an
+ * interrupted earlier push that was never linked to the repo. So a 404 on
+ * read-back after a skipped upload re-uploads the exact bytes, and a 404
+ * right after an upload is retried with backoff (registry consistency).
+ * Anything else, or a blob still unreadable after that, fails closed.
+ */
+async function ensureBlobReadable(
+  client: OciDistributionClient,
+  digest: string,
+  expected: Buffer,
+  delays: number[],
+  log: (line: string) => void,
+): Promise<Buffer> {
+  let uploaded = false;
+  if (!(await client.blobExists(digest))) {
+    await client.uploadBlob(expected, digest);
+    uploaded = true;
+  }
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await client.getBlob(digest);
+    } catch (err) {
+      if (!(err instanceof RegistryClientError) || err.status !== 404) throw err;
+      if (!uploaded) {
+        log(`blob ${digest}: HEAD reported it present but GET returned 404 — uploading the scanned bytes`);
+        await client.uploadBlob(expected, digest);
+        uploaded = true;
+        continue;
+      }
+      if (attempt >= delays.length) {
+        throw new PromotionError(
+          'blob_unreadable',
+          `blob ${digest} is still not readable (GET 404) after upload and ${delays.length} retries`,
+        );
+      }
+      log(`blob ${digest}: GET 404 after upload — retrying in ${delays[attempt]}ms`);
+      await new Promise((r) => setTimeout(r, delays[attempt]));
+    }
+  }
 }
 
 export interface PromotedPlatform {
@@ -180,10 +234,13 @@ export async function promoteComponent(opts: PromoteComponentOptions): Promise<P
       if (!expected || sha256(expected) !== digest) {
         throw new PromotionError('digest_mismatch', `${manifest.platform}: local blob ${digest} is absent or does not hash to its digest`);
       }
-      if (!(await client.blobExists(digest))) {
-        await client.uploadBlob(expected, digest);
-      }
-      const fetchedBlob = await client.getBlob(digest);
+      const fetchedBlob = await ensureBlobReadable(
+        client,
+        digest,
+        expected,
+        opts.readBackDelaysMs ?? DEFAULT_READBACK_DELAYS_MS,
+        opts.log ?? ((line) => console.error(`promote: ${line}`)),
+      );
       if (!fetchedBlob.equals(expected) || sha256(fetchedBlob) !== digest) {
         throw new PromotionError(
           'digest_mismatch',

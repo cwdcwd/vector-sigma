@@ -80,11 +80,6 @@ jobs:
         run: npm ci
       - name: Build (typecheck) so the registry promoter dist/ exists
         run: npm run build
-      - name: Download validated local index
-        uses: actions/download-artifact@v4
-        with:
-          name: index-${{ matrix.component }}
-          path: ${{ runner.temp }}
       - name: Download the exact scanned OCI layouts (amd64 + arm64)
         uses: actions/download-artifact@v4
         with:
@@ -113,16 +108,16 @@ jobs:
           path: ${{ runner.temp }}/promoted-${{ matrix.component }}.json
           retention-days: 1
 
+  # One job re-reads every promoted component (was a 9-job matrix — the
+  # check is a few registry GETs per component). Its own job on purpose: it
+  # holds NO packages:write, so the proof that the published bytes are
+  # intact never runs where a write-capable token exists.
   verify-remote:
-    name: Verify remote digests (${{ matrix.component }})
+    name: Verify remote digests (every promoted component)
     needs: [plan, promote]
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        component: ${{ fromJSON(needs.plan.outputs.promote) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -132,17 +127,25 @@ jobs:
         run: npm ci
       - name: Build (typecheck) so the registry verifier dist/ exists
         run: npm run build
-      - name: Download the promotion record
+      - name: Download every promotion record
         uses: actions/download-artifact@v4
         with:
-          name: promoted-${{ matrix.component }}
-          path: ${{ runner.temp }}
+          pattern: promoted-*
+          path: ${{ runner.temp }}/records
+          merge-multiple: true
       # Anonymous re-read: no packages:write and no credential, so the
       # proof that the published bytes are intact does not depend on the
-      # writer's token.
+      # writer's token. Every component is checked even if one fails, then
+      # the job fails closed if any did.
       - name: Re-fetch by digest and compare (fails closed on any mismatch)
+        env:
+          COMPONENTS: ${{ needs.plan.outputs.promote }}
         run: |
-          set -euo pipefail
-          node scripts/ghcr-promote-run.mjs verify \
-            --registry ghcr.io \
-            --record "${{ runner.temp }}/promoted-${{ matrix.component }}.json"
+          set -uo pipefail
+          failed=0
+          for c in $(node -e 'for (const c of JSON.parse(process.env.COMPONENTS)) console.log(c)'); do
+            node scripts/ghcr-promote-run.mjs verify \
+              --registry ghcr.io \
+              --record "${{ runner.temp }}/records/promoted-$c.json" || { echo "::error::verify failed for $c"; failed=1; }
+          done
+          exit "$failed"
