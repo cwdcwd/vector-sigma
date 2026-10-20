@@ -37,16 +37,14 @@ const catalog = loadCatalog(repoRoot);
 
 const PIPELINE = '.github/workflows/_images.yml';
 const PROMOTE = '.github/workflows/_promote.yml';
-const CALLERS = [
-  '.github/workflows/build-images.yml',
-  '.github/workflows/release-registrar.yml',
-  '.github/workflows/release-devices.yml',
-] as const;
+// The ONE publisher: main builds, scans, E2Es, publishes and verifies.
+const CALLERS = ['.github/workflows/build-images.yml'] as const;
+const RESOLVE = '.github/workflows/_resolve.yml';
 const RELEASES = [
   ['.github/workflows/release-registrar.yml', 'registrar'],
   ['.github/workflows/release-devices.yml', 'devices'],
 ] as const;
-const ALL_WORKFLOWS = [PIPELINE, PROMOTE, ...CALLERS];
+const ALL_WORKFLOWS = [PIPELINE, PROMOTE, RESOLVE, ...CALLERS, ...RELEASES.map(([wf]) => wf)];
 
 interface WfJob {
   name?: string;
@@ -136,6 +134,12 @@ describe('publisher workflow graph: packages:write is scoped ONLY to promote', (
       const doc = loadWf(wf);
       expect(writers(doc)).toEqual(['publish']);
       expect(doc.jobs.images.permissions).toEqual({ contents: 'read' });
+    });
+  }
+
+  for (const [wf] of [...RELEASES, [RESOLVE]] as const) {
+    it(`${wf}: holds no packages:write at all (releases reuse main's images)`, () => {
+      expect(writers(loadWf(wf))).toEqual([]);
     });
   }
 });
@@ -283,9 +287,9 @@ describe('publisher workflow graph: component sets match the design (7/3, union 
     );
   });
 
-  it('release-registrar promotes the 7 registrar-fleet components; release-devices the 3 devices ones', () => {
+  it('release-registrar deploys the 7 registrar-fleet components; release-devices the 3 devices ones', () => {
     for (const [wf, fleet] of RELEASES) {
-      expect(loadWf(wf).jobs.publish.with?.promote_fleet, wf).toBe(fleet);
+      expect(loadWf(wf).jobs.publish.with?.fleet, wf).toBe(fleet);
     }
     expect(componentsFor(catalog, 'registrar').sort()).toEqual(
       ['hermes', 'litellm', 'postgres', 'registrant', 'registrar', 'scotty', 'tailscale'],

@@ -100,22 +100,14 @@ jobs:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GHCR_ACTOR: ${{ github.actor }}
         run: printf '%s' "$GHCR_TOKEN" | regctl registry login ghcr.io -u "$GHCR_ACTOR" --pass-stdin
-      # Tag name: a release run (registrar-v* / devices-v* tag push) tags with
-      # the release name; main tags with the commit SHA. Releases are cut from
-      # commits main already published, and builds are not byte-reproducible,
-      # so reusing the SHA would MOVE main's existing tags to different bytes
-      # (registrar-v1.5.0 failed on exactly that). Records pin by digest; the
-      # tag name is metadata, so the release tail is unaffected.
       - name: Publish the exact scanned bytes (by digest; tags last)
-        env:
-          PROMOTE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
         run: |
           set -euo pipefail
           scripts/publish-image.sh \
             --component "${{ matrix.component }}" \
             --registry ghcr.io \
             --repository "${{ github.repository }}/${{ matrix.component }}" \
-            --tag "${PROMOTE_TAG}" \
+            --tag "${GITHUB_SHA}" \
             --layouts "${{ runner.temp }}/layouts" \
             --descriptors "${{ runner.temp }}/descriptors" \
             --index "${{ runner.temp }}/indexes/${{ matrix.component }}-index.json" \

@@ -5,21 +5,18 @@ name: Release devices fleet
 # repo for builds, no drafts, the fleet pin advance stays the canary's job
 # (docs/balena-architecture.md).
 #
-#   images   — the shared pipeline (.github/workflows/_images.yml, read-only):
-#              build every images.json component once, credential-scan its
-#              inputs, content-gate the OCI layouts, run the compose E2E on
-#              the scanned amd64 bytes.
-#   publish  — .github/workflows/_promote.yml: promote THIS fleet's components
-#              (agent, registrant, tailscale-devices — exact scanned bytes,
-#              tagged with the commit SHA) and verify the published digests.
+#   publish  — .github/workflows/_resolve.yml: REUSE the images main already
+#              built, scanned, E2E'd, published and verified for this commit
+#              (build once, deploy many) — waits for main's run, resolves the
+#              digests, re-verifies them anonymously. No build, no GHCR write.
 #   release-evidence / scan (trivy) / smoke / render / deploy — consume the
 #              promotion records (r3v digest handoff); render pins every
 #              service to its promoted arm64 child digest; deploy pushes the
 #              rendered compose to balenaCloud.
 #
-# Publishing is gated on the repo variable VS_GHCR_PUBLISH_ENABLED: without
-# it the pipeline still builds, scans and E2Es; publish and the release tail
-# (which needs it) skip.
+# Gated on the repo variable VS_GHCR_PUBLISH_ENABLED (main only publishes
+# with it set, so without it there is nothing to release): unset, the whole
+# release skips.
 on:
   push:
     tags: ["devices-v*"]
@@ -36,22 +33,19 @@ env:
   BALENA_CLI_SHA256: "687ba0d0fd35fad6bb672763c739535b546fbf9aa5ab2909e670c5534a36e3d6"
 
 jobs:
-  images:
-    name: Build, scan, E2E
-    uses: ./.github/workflows/_images.yml
-    permissions:
-      contents: read
-
+  # Build once, deploy many: no build, scan or E2E here. The release reuses
+  # the exact images main built, scanned, E2E'd, published and verified for
+  # this commit (.github/workflows/_resolve.yml), then runs the release tail
+  # on those digests.
   publish:
-    name: Publish the devices fleet's images to GHCR
+    name: Reuse main's verified devices images
     if: vars.VS_GHCR_PUBLISH_ENABLED == 'true'
-    needs: images
-    uses: ./.github/workflows/_promote.yml
+    uses: ./.github/workflows/_resolve.yml
     permissions:
+      actions: read
       contents: read
-      packages: write
     with:
-      promote_fleet: devices
+      fleet: devices
 
   # r3v: ONE deterministic rollback ledger for the whole run — collated from
   # the verified promotion records only (no registry I/O, no credentials).
