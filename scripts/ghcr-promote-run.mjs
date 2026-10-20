@@ -168,16 +168,16 @@ async function runVerify(args) {
   const transport = createFetchTransport();
   const creds = tokenFromEnv(argVal(args, '--actor'));
   const scheme = argVal(args, '--scheme');
-  let token;
-  if (creds) {
-    token = await fetchRegistryToken(transport, {
-      registry,
-      repository: record.repository,
-      actions: 'pull',
-      ...(scheme ? { scheme } : {}),
-      ...creds,
-    });
-  }
+  // Always exchange for a token: GHCR rejects a header-less GET even on a
+  // public package. Without credentials this is an anonymous, pull-only
+  // token, so the re-read still proves the bytes without the writer's token.
+  const token = await fetchRegistryToken(transport, {
+    registry,
+    repository: record.repository,
+    actions: 'pull',
+    ...(scheme ? { scheme } : {}),
+    ...(creds ?? {}),
+  });
 
   try {
     const result = await verifyRemote({
