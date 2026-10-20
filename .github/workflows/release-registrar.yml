@@ -101,7 +101,7 @@ jobs:
           path: release-evidence/release-evidence.json
           retention-days: 90
   scan:
-    name: Vulnerability gate (trivy CRITICAL,HIGH)
+    name: Vulnerability gate (trivy — fixable CRITICAL blocks, HIGH reported)
     needs: publish
     runs-on: ubuntu-latest
     permissions:
@@ -136,7 +136,9 @@ jobs:
           console.log(amd+" "+arm);
           ' "$RECORD")"
           printf 'AMD64_DIGEST=%s\nARM64_DIGEST=%s\n' "${DIGESTS%% *}" "${DIGESTS##* }" >> "$GITHUB_ENV"
-      - name: Scan the PROMOTED amd64 child bytes
+      # Release CVE policy (owner decision 2026-10-20): a FIXABLE CRITICAL
+      # blocks the release; fixable HIGHs are reported (below) but do not block.
+      - name: Gate on fixable CRITICAL (amd64, blocking)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ghcr.io/${{ env.REGISTRY_NS }}/${{ matrix.component }}@${{ env.AMD64_DIGEST }}
@@ -144,9 +146,21 @@ jobs:
           exit-code: "1"
           ignore-unfixed: true
           vuln-type: os,library
-          severity: CRITICAL,HIGH
+          severity: CRITICAL
           skip-setup-trivy: false
-      - name: Scan the PROMOTED arm64 child bytes
+      - name: Report fixable HIGH (amd64, non-blocking)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ghcr.io/${{ env.REGISTRY_NS }}/${{ matrix.component }}@${{ env.AMD64_DIGEST }}
+          format: table
+          exit-code: "0"
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: HIGH
+          skip-setup-trivy: true
+      # Release CVE policy (owner decision 2026-10-20): a FIXABLE CRITICAL
+      # blocks the release; fixable HIGHs are reported (below) but do not block.
+      - name: Gate on fixable CRITICAL (arm64, blocking)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ghcr.io/${{ env.REGISTRY_NS }}/${{ matrix.component }}@${{ env.ARM64_DIGEST }}
@@ -154,8 +168,18 @@ jobs:
           exit-code: "1"
           ignore-unfixed: true
           vuln-type: os,library
-          severity: CRITICAL,HIGH
+          severity: CRITICAL
           skip-setup-trivy: false
+      - name: Report fixable HIGH (arm64, non-blocking)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ghcr.io/${{ env.REGISTRY_NS }}/${{ matrix.component }}@${{ env.ARM64_DIGEST }}
+          format: table
+          exit-code: "0"
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: HIGH
+          skip-setup-trivy: true
 
   smoke:
     name: Release image smoke gate
@@ -178,6 +202,13 @@ jobs:
           pattern: promoted-*
           path: ${{ runner.temp }}/records
           merge-multiple: true
+      # The smoke runs the arm64 CHILD digests — the exact bytes the devices
+      # run — on an amd64 runner, so it needs arm64 emulation (without it every
+      # in-container check failed "platform does not match", registrar-v1.5.1).
+      - name: Set up QEMU (arm64 emulation for the device-arch smoke)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
       - name: Boot-path smoke (registrar app components; digest-pinned to promotion records)
         run: scripts/release-smoke.sh cwdcwd/vector-sigma "${GITHUB_SHA}" registrar "${RUNNER_TEMP}/records"
 

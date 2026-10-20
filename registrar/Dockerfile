@@ -49,6 +49,16 @@ RUN npm ci --omit=dev --no-audit --no-fund -w @vector-sigma/shared -w @vector-si
       --cache /tmp/.npm-build-cache \
     && rm -rf /tmp/.npm-build-cache /root/.npm
 
+# Release CVE gate (trivy, fixable CRITICAL blocks): take the base image's
+# pending Debian security fixes, and drop npm/corepack — the runtime is
+# `node dist/index.js`, never npm, and npm's own bundled packages are where
+# the base image's npm-side CVEs live.
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && apt-get clean && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+              /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
+
 COPY --from=build /app/shared/dist shared/dist
 COPY --from=build /app/registrar/dist registrar/dist
 
