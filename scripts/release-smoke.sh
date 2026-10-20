@@ -231,8 +231,12 @@ case "$APP" in
     for c in agent registrant tailscale-devices; do
       smoke_manifest "$c"
     done
-    # cross-bake parity check: the master's tailscale component must exist too
-    smoke_manifest tailscale
+    # cross-bake parity check: the master's tailscale component must exist too.
+    # Tag mode only — a release binds to main's records for the components it
+    # deploys, and the devices app does not deploy master's tailscale (no
+    # promoted-tailscale.json is resolved; requiring it failed every devices
+    # release on the build-once pipeline).
+    [ -z "$RECORDS_DIR" ] && smoke_manifest tailscale
 
     # agent: gate + bd + hooks + docs + plugin
     expect_file  "agent gate"      "$(IMG agent)" /usr/local/bin/gate.sh
