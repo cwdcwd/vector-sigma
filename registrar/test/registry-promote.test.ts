@@ -252,6 +252,64 @@ describe('promotion input validation: fail closed before any registry write', ()
     expect(fake.calls.some((c) => c.startsWith('PUT') && c.includes('/manifests/abcd1234'))).toBe(false);
   });
 
+  // GHCR, run 39357011362 (tailscale-devices config blob): HEAD answered the
+  // blob as present while GET in the same repository returned 404 — a blob
+  // left dangling by an interrupted earlier push. HEAD is only a hint: the
+  // promoter must upload the scanned bytes and read them back.
+  it('re-uploads when HEAD says a blob exists but GET returns 404 (dangling blob)', async () => {
+    const fake = new FakeRegistry();
+    const dangling = digestsOfLayoutBytes(layouts()[0]!.tarBytes)[0]![0];
+    const originalSend = fake.send.bind(fake);
+    let linked = false;
+    fake.send = async (req) => {
+      const p = new URL(req.url).pathname;
+      if (p.endsWith(`/blobs/${dangling}`) && !linked) {
+        if (req.method === 'HEAD') return { status: 200, headers: {}, body: Buffer.alloc(0) };
+        if (req.method === 'GET') return { status: 404, headers: {}, body: Buffer.alloc(0) };
+      }
+      if (req.method === 'PUT' && new URL(req.url).searchParams.get('digest') === dangling) linked = true;
+      return originalSend(req);
+    };
+    const log: string[] = [];
+    const result = await promoteComponent(opts(fake, { readBackDelaysMs: [0, 0], log: (l) => log.push(l) }));
+    expect(linked, 'the dangling blob was re-uploaded').toBe(true);
+    expect(result.index.digest).toMatch(/^sha256:/);
+    expect(log.join('\n')).toContain('HEAD reported it present but GET returned 404');
+  });
+
+  it('retries a GET that 404s briefly right after upload, then succeeds', async () => {
+    const fake = new FakeRegistry();
+    const originalSend = fake.send.bind(fake);
+    const misses = new Map<string, number>();
+    fake.send = async (req) => {
+      const p = new URL(req.url).pathname;
+      const m = p.match(/\/blobs\/(sha256:[0-9a-f]{64})$/);
+      if (req.method === 'GET' && m && fake.blobs.has(m[1]!) && (misses.get(m[1]!) ?? 0) < 2) {
+        misses.set(m[1]!, (misses.get(m[1]!) ?? 0) + 1);
+        return { status: 404, headers: {}, body: Buffer.alloc(0) };
+      }
+      return originalSend(req);
+    };
+    const result = await promoteComponent(opts(fake, { readBackDelaysMs: [0, 0, 0] }));
+    expect(result.perPlatform).toHaveLength(2);
+    expect([...misses.values()].every((n) => n === 2)).toBe(true);
+  });
+
+  it('fails closed with blob_unreadable — and writes no tag — when a blob never becomes readable', async () => {
+    const fake = new FakeRegistry();
+    const originalSend = fake.send.bind(fake);
+    fake.send = async (req) => {
+      if (req.method === 'GET' && /\/blobs\/sha256:/.test(new URL(req.url).pathname)) {
+        return { status: 404, headers: {}, body: Buffer.alloc(0) };
+      }
+      return originalSend(req);
+    };
+    await expect(promoteComponent(opts(fake, { readBackDelaysMs: [0, 0], log: () => {} }))).rejects.toMatchObject({
+      code: 'blob_unreadable',
+    });
+    expect(fake.calls.some((c) => c.startsWith('PUT') && c.includes('/manifests/'))).toBe(false);
+  });
+
 });
 
 // ── helpers: read a layout tar's blobs without importing gate internals ──
