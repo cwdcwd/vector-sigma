@@ -75,6 +75,8 @@ the registrar-fleet app is a separate deliverable.
 
 Engineering spec: [docs/engineering-spec.md](docs/engineering-spec.md).
 
+How images are built and published, in plain language: [docs/image-pipeline.md](docs/image-pipeline.md).
+
 ## License
 
 MIT (code); docs CC-BY-4.0.
