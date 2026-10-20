@@ -112,12 +112,15 @@ jobs:
             --descriptors "${{ runner.temp }}/descriptors" \
             --index "${{ runner.temp }}/indexes/${{ matrix.component }}-index.json" \
             --record "${{ runner.temp }}/promoted-${{ matrix.component }}.json"
+      # Kept 90 days: a release cut from this commit binds to THIS record (the
+      # digests this run scanned, E2E'd and verified), never to a mutable tag
+      # (_resolve.yml). A release later than that has to come from a newer commit.
       - name: Upload the promotion record (index + per-arch digests)
         uses: actions/upload-artifact@v4
         with:
           name: promoted-${{ matrix.component }}
           path: ${{ runner.temp }}/promoted-${{ matrix.component }}.json
-          retention-days: 1
+          retention-days: 90
 
   # One job re-reads every promoted component. Its own job on purpose: it
   # holds NO packages:write and logs in nowhere, so the proof that the

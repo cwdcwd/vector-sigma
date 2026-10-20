@@ -186,6 +186,28 @@ describe('build once, deploy many: releases reuse main\'s verified images', () =
     expect(gate).toMatch(/conclusion.*= success/);
   });
 
+  it(`${RESOLVE}: binds to the record MAIN'S RUN wrote (by run id), never to a mutable tag (PR #99 review)`, () => {
+    const doc = loadWf(RESOLVE);
+    const steps = (doc.jobs.resolve.steps ?? []) as Array<{ uses?: string; run?: string; with?: Record<string, string> }>;
+    const dl = steps.find((s) => (s.uses ?? '').startsWith('actions/download-artifact'));
+    expect(dl, 'downloads main-run record').toBeDefined();
+    expect(dl!.with?.['run-id']).toBe('${{ needs.require-main-success.outputs.run_id }}');
+    expect(dl!.with?.name).toBe('promoted-${{ matrix.component }}');
+    const bind = steps.find((s) => (s.run ?? '').includes('scripts/resolve-published.sh'));
+    expect(bind!.run).toContain('main-record/promoted-${{ matrix.component }}.json');
+    // The resolver compares every tag against the recorded digest and fails
+    // on any difference — a moved tag is refused, not followed.
+    const resolver = readFileSync(path.join(repoRoot, 'scripts/resolve-published.sh'), 'utf8');
+    expect(resolver).toContain('refusing to deploy bytes main did not scan');
+    expect(resolver).toMatch(/\[ "\$got" = "\$want" \] \|\| die/);
+    // main keeps the record long enough for a release to bind to it.
+    const promote = loadWf('.github/workflows/_promote.yml');
+    const upload = ((promote.jobs.promote.steps ?? []) as Array<{ with?: Record<string, unknown> }>).find((s) =>
+      String(s.with?.name ?? '').startsWith('promoted-'),
+    );
+    expect(Number(upload?.with?.['retention-days'])).toBeGreaterThanOrEqual(90);
+  });
+
   it(`${RESOLVE}: resolves with the shared exact-index rule and re-verifies anonymously; no write anywhere`, () => {
     const doc = loadWf(RESOLVE);
     expect(stepsText(doc.jobs.resolve)).toContain('scripts/resolve-published.sh');

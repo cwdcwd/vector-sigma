@@ -89,7 +89,7 @@ commit (`registrar-v*` / `devices-v*` tag), so it reuses them:
 ```mermaid
 flowchart LR
   T["Push release tag"] --> W["Wait for main's pipeline<br/>for this commit to succeed"]
-  W --> R["Resolve main's published digests<br/>(exact two-platform index check)"]
+  W --> R["Bind to main's verified record<br/>(tags must still match it)"]
   R --> V["Re-verify anonymously"]
   V --> S["trivy + smoke<br/>(by digest)"]
   S --> D["Render digest-pinned compose<br/>→ balena deploy"]
@@ -97,7 +97,10 @@ flowchart LR
 
 The release waits for main's run if it is still going (so you can tag right
 after merging), and refuses if main's pipeline for that commit failed or never
-ran. It holds no registry write permission at all. Devices are pinned to exact
+ran. It then takes the digests from **the promotion record main's run wrote**
+(kept 90 days), not from tags: every tag must still point at the recorded
+digest, so a tag moved after main's run fails the release instead of being
+deployed. It holds no registry write permission at all. Devices are pinned to exact
 digests, so the images a device runs are byte-for-byte the ones main scanned
 and tested.
 
