@@ -256,6 +256,32 @@ describe('promotion input validation: fail closed before any registry write', ()
   // blob as present while GET in the same repository returned 404 — a blob
   // left dangling by an interrupted earlier push. HEAD is only a hint: the
   // promoter must upload the scanned bytes and read them back.
+  // GHCR creates a package on its first MANIFEST push; blobs uploaded into a
+  // package that does not exist yet are accepted but not readable until a
+  // manifest references them (run 39360749804: tailscale-devices, the one
+  // component never published before, failed every read-back). The promoter
+  // must push the manifest by digest BEFORE reading blobs back.
+  it('promotes into a brand-new package whose blobs are unreadable until a manifest exists', async () => {
+    const fake = new FakeRegistry();
+    const originalSend = fake.send.bind(fake);
+    let packageExists = false;
+    fake.send = async (req) => {
+      const p = new URL(req.url).pathname;
+      if (req.method === 'PUT' && /\/manifests\//.test(p)) packageExists = true;
+      if (req.method === 'GET' && /\/blobs\/sha256:/.test(p) && !packageExists) {
+        return { status: 404, headers: {}, body: Buffer.alloc(0) };
+      }
+      return originalSend(req);
+    };
+    const log: string[] = [];
+    const result = await promoteComponent(opts(fake, { readBackDelaysMs: [0], log: (l) => log.push(l) }));
+    expect(result.perPlatform).toHaveLength(2);
+    expect(log, 'no recovery path needed: blobs are read only after the manifest push').toEqual([]);
+    const firstManifestPut = fake.calls.findIndex((c) => c.startsWith('PUT') && c.includes('/manifests/'));
+    const firstBlobGet = fake.calls.findIndex((c) => c.startsWith('GET') && /\/blobs\/sha256:/.test(c));
+    expect(firstBlobGet).toBeGreaterThan(firstManifestPut);
+  });
+
   it('re-uploads when HEAD says a blob exists but GET returns 404 (dangling blob)', async () => {
     const fake = new FakeRegistry();
     const dangling = digestsOfLayoutBytes(layouts()[0]!.tarBytes)[0]![0];
@@ -307,7 +333,9 @@ describe('promotion input validation: fail closed before any registry write', ()
     await expect(promoteComponent(opts(fake, { readBackDelaysMs: [0, 0], log: () => {} }))).rejects.toMatchObject({
       code: 'blob_unreadable',
     });
-    expect(fake.calls.some((c) => c.startsWith('PUT') && c.includes('/manifests/'))).toBe(false);
+    // A digest-addressed manifest may exist (it is pushed before read-back),
+    // but no human-facing TAG is ever written for unverified bytes.
+    expect(fake.calls.some((c) => c.startsWith('PUT') && /\/manifests\/abcd1234/.test(c))).toBe(false);
   });
 
 });
