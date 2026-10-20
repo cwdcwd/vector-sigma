@@ -3,7 +3,7 @@
  *
  * Collates the per-component promotion records the exact-byte promote job
  * writes (promoted-<component>.json, verified byte-for-byte by
- * scripts/ghcr-promote-run.mjs verify) into ONE release-evidence.json for
+ * scripts/verify-published.sh) into ONE release-evidence.json for
  * the run: the artifact the rollback runbook cites. The ledger must answer,
  * from a single file, "what exact image bytes were promoted for this run"
  * — index digest, per-arch child digests, per component — so a rollback can

@@ -84,12 +84,30 @@ describe('exact-byte promotion: no builder anywhere in the publish path', () => 
       expect(text).not.toMatch(/push:\s*true/);
     });
 
-    it(`${wf}: promote never logs into GHCR (no docker/login-action) — the token reaches the client only via env`, () => {
+    it(`${wf}: promote logs regctl in via stdin only (no docker/login-action, no token on a command line)`, () => {
+      const steps = (loadWf(wf).jobs.promote.steps ?? []) as Array<{ run?: string; env?: Record<string, string> }>;
       const text = stepsText(loadWf(wf).jobs.promote);
       expect(text, `${wf} promote must not authenticate through docker/login-action`).not.toContain('docker/login-action');
-      // The credential must arrive through a named env var the script reads,
-      // never as a docker credential store entry or a URL parameter.
-      expect(text).toContain('--token-env');
+      const login = steps.filter((s) => /regctl registry login/.test(s.run ?? ''));
+      expect(login, 'exactly one regctl login step').toHaveLength(1);
+      expect(login[0]!.run).toContain('--pass-stdin');
+      expect(login[0]!.run).not.toMatch(/--pass\s|-p\s/);
+      // The token is scoped to the login step only.
+      const withToken = steps.filter((s) => JSON.stringify(s.env ?? {}).includes('secrets.GITHUB_TOKEN'));
+      expect(withToken).toHaveLength(1);
+      expect(withToken[0]).toBe(login[0]);
+    });
+
+    it(`${wf}: regctl is the pinned, checksum-verified install (never a floating download)`, () => {
+      for (const job of ['promote', 'verify-remote']) {
+        expect(stepsText(loadWf(wf).jobs[job]), job).toContain('scripts/install-regctl.sh');
+      }
+      const installer = readFileSync(path.join(repoRoot, 'scripts/install-regctl.sh'), 'utf8');
+      expect(installer).toMatch(/REGCTL_VERSION="v\d+\.\d+\.\d+"/);
+      expect(installer).toMatch(/linux-amd64\) echo "[0-9a-f]{64}"/);
+      expect(installer).toContain('sha256 mismatch');
+      expect(installer).not.toMatch(/releases\/latest/);
+      expect(installer).toContain('releases/download/${REGCTL_VERSION}/');
     });
 
     it(`${wf}: promote downloads the EXACT scanned OCI layout tars, not a rebuild source`, () => {
@@ -122,10 +140,27 @@ describe('exact-byte promotion: one index-assembly path (promote-manifest retire
 
   }
 
-  it(`${PROMOTE}: the promoter script — not buildx — does the index assembly`, () => {
+  it(`${PROMOTE}: promote pushes the GATE-assembled index as-is (no buildx imagetools, no re-assembly)`, () => {
     const text = stepsText(loadWf(PROMOTE).jobs.promote);
-    expect(text).toContain('scripts/ghcr-promote-run.mjs');
+    expect(text).toContain('scripts/publish-image.sh');
+    expect(text).toContain('indexes/${{ matrix.component }}-index.json');
     expect(text).not.toContain('imagetools');
+    expect(text).not.toContain('oci-gate-run.mjs assemble');
+  });
+
+  it('publish-image.sh: digest-for-digest copy, index by digest, read-back BEFORE any tag', () => {
+    const script = readFileSync(path.join(repoRoot, 'scripts/publish-image.sh'), 'utf8');
+    const copy = script.indexOf('regctl image copy "ocidir://');
+    const indexPut = script.indexOf('regctl manifest put');
+    const readBack = script.indexOf('regctl manifest get --format raw-body');
+    const firstTag = script.indexOf('tag_and_check "$digest_amd64"');
+    expect(copy, 'copies the scanned layout by digest').toBeGreaterThan(-1);
+    expect(script).toContain('"${repo}@${d}"');
+    expect(indexPut).toBeGreaterThan(copy);
+    expect(script).toContain('"${repo}@${index_digest}" < "$index_file"');
+    expect(readBack).toBeGreaterThan(indexPut);
+    expect(firstTag).toBeGreaterThan(readBack);
+    expect(script).toContain('set -euo pipefail');
   });
 });
 
@@ -136,10 +171,17 @@ describe('exact-byte promotion: verify-remote is credential-free and fail-closed
       expect(perms?.packages, `${wf} verify-remote must not hold write scope`).not.toBe('write');
     });
 
-    it(`${wf}: verify-remote runs the in-repo verifier (not a printed digest comparison)`, () => {
+    it(`${wf}: verify-remote runs the anonymous verifier and never logs in`, () => {
       const text = stepsText(loadWf(wf).jobs['verify-remote']);
-      expect(text).toContain('scripts/ghcr-promote-run.mjs');
-      expect(text).toContain('verify');
+      expect(text).toContain('scripts/verify-published.sh');
+      expect(text).not.toContain('registry login');
+      expect(text).not.toContain('secrets.');
+      const script = readFileSync(path.join(repoRoot, 'scripts/verify-published.sh'), 'utf8');
+      // An empty HOME: no regctl/docker credential can be picked up.
+      expect(script).toMatch(/HOME="\$anon_home" regctl/);
+      expect(script).toContain('manifest get --format raw-body');
+      expect(script).toContain('image digest');
+      expect(script).toContain('exit "$failed"');
     });
   }
 });

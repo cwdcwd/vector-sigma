@@ -10,8 +10,9 @@ name: Image promotion (reusable)
 #   plan          — the components this caller promotes (images.json fleet,
 #                   optionally narrowed to one).
 #   promote       — ONLY job with packages:write. Publishes the EXACT scanned
-#                   OCI-layout bytes (scripts/ghcr-promote-run.mjs — no
-#                   rebuild, no buildx), tagged with the commit SHA.
+#                   OCI-layout bytes digest for digest (scripts/publish-image.sh
+#                   + the pinned regctl — no rebuild, no buildx), tagged with
+#                   the commit SHA only after every manifest is read back.
 #   verify-remote — re-fetches every published digest anonymously and fails
 #                   closed on any byte difference.
 #
@@ -55,10 +56,12 @@ jobs:
             | tee -a "$GITHUB_OUTPUT"
 
   # ---------------------------------------------------------------------
-  # Only promote carries packages:write. fleet-ops-r3v: no rebuild — the exact scanned tars are
-  # pushed through scripts/ghcr-promote-run.mjs (in-repo OCI Distribution
-  # client); every blob/manifest is read back before any release tag is
-  # applied. The GITHUB_TOKEN reaches the client only via GHCR_TOKEN.
+  # Only promote carries packages:write. No rebuild and no custom registry
+  # client: scripts/publish-image.sh uses the pinned, checksum-verified
+  # regctl to copy the EXACT scanned OCI layouts into GHCR digest for digest,
+  # pushes the index the gate assembled (its bytes, unmodified), reads every
+  # manifest back by digest, and only then applies tags. The token reaches
+  # regctl via stdin login, in this job only.
   # ---------------------------------------------------------------------
   promote:
     name: Promote ${{ matrix.component }} (GHCR write, exact scanned bytes)
@@ -73,33 +76,41 @@ jobs:
         component: ${{ fromJSON(needs.plan.outputs.promote) }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Install gate runtime deps
-        run: npm ci
-      - name: Build (typecheck) so the registry promoter dist/ exists
-        run: npm run build
+      - name: Install pinned regctl (sha256-verified)
+        run: scripts/install-regctl.sh "${{ runner.temp }}" && echo "${{ runner.temp }}" >> "$GITHUB_PATH"
       - name: Download the exact scanned OCI layouts (amd64 + arm64)
         uses: actions/download-artifact@v4
         with:
           pattern: layout-${{ matrix.component }}-*
           path: ${{ runner.temp }}/layouts
           merge-multiple: true
-      - name: Promote the exact scanned bytes to GHCR (no rebuild, no buildx)
+      - name: Download the scan descriptors (the scanned manifest digests)
+        uses: actions/download-artifact@v4
+        with:
+          pattern: descriptor-${{ matrix.component }}-*
+          path: ${{ runner.temp }}/descriptors
+          merge-multiple: true
+      - name: Download the gate-assembled indexes
+        uses: actions/download-artifact@v4
+        with:
+          name: indexes
+          path: ${{ runner.temp }}/indexes
+      - name: Log regctl in to GHCR (token via stdin, never printed)
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GHCR_ACTOR: ${{ github.actor }}
+        run: printf '%s' "$GHCR_TOKEN" | regctl registry login ghcr.io -u "$GHCR_ACTOR" --pass-stdin
+      - name: Publish the exact scanned bytes (by digest; tags last)
         run: |
           set -euo pipefail
-          node scripts/ghcr-promote-run.mjs promote \
+          scripts/publish-image.sh \
+            --component "${{ matrix.component }}" \
             --registry ghcr.io \
             --repository "${{ github.repository }}/${{ matrix.component }}" \
             --tag "${GITHUB_SHA}" \
-            --layout "linux/amd64=${{ runner.temp }}/layouts/${{ matrix.component }}-amd64.tar" \
-            --layout "linux/arm64=${{ runner.temp }}/layouts/${{ matrix.component }}-arm64.tar" \
-            --token-env GHCR_TOKEN \
-            --actor "${GHCR_ACTOR}" \
+            --layouts "${{ runner.temp }}/layouts" \
+            --descriptors "${{ runner.temp }}/descriptors" \
+            --index "${{ runner.temp }}/indexes/${{ matrix.component }}-index.json" \
             --record "${{ runner.temp }}/promoted-${{ matrix.component }}.json"
       - name: Upload the promotion record (index + per-arch digests)
         uses: actions/upload-artifact@v4
@@ -108,10 +119,9 @@ jobs:
           path: ${{ runner.temp }}/promoted-${{ matrix.component }}.json
           retention-days: 1
 
-  # One job re-reads every promoted component (was a 9-job matrix — the
-  # check is a few registry GETs per component). Its own job on purpose: it
-  # holds NO packages:write, so the proof that the published bytes are
-  # intact never runs where a write-capable token exists.
+  # One job re-reads every promoted component. Its own job on purpose: it
+  # holds NO packages:write and logs in nowhere, so the proof that the
+  # published bytes are intact never runs where a write-capable token exists.
   verify-remote:
     name: Verify remote digests (every promoted component)
     needs: [plan, promote]
@@ -120,32 +130,22 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Install gate runtime deps
-        run: npm ci
-      - name: Build (typecheck) so the registry verifier dist/ exists
-        run: npm run build
+      - name: Install pinned regctl (sha256-verified)
+        run: scripts/install-regctl.sh "${{ runner.temp }}" && echo "${{ runner.temp }}" >> "$GITHUB_PATH"
       - name: Download every promotion record
         uses: actions/download-artifact@v4
         with:
           pattern: promoted-*
           path: ${{ runner.temp }}/records
           merge-multiple: true
-      # Anonymous re-read: no packages:write and no credential, so the
-      # proof that the published bytes are intact does not depend on the
-      # writer's token. Every component is checked even if one fails, then
-      # the job fails closed if any did.
-      - name: Re-fetch by digest and compare (fails closed on any mismatch)
+      # Anonymous re-read (an empty regctl config — no credential at all):
+      # every digest must re-hash to itself and every tag must resolve to its
+      # recorded digest. Checks every component, then fails if any failed.
+      - name: Re-read every digest anonymously and compare (fails closed)
         env:
           COMPONENTS: ${{ needs.plan.outputs.promote }}
         run: |
-          set -uo pipefail
-          failed=0
-          for c in $(node -e 'for (const c of JSON.parse(process.env.COMPONENTS)) console.log(c)'); do
-            node scripts/ghcr-promote-run.mjs verify \
-              --registry ghcr.io \
-              --record "${{ runner.temp }}/records/promoted-$c.json" || { echo "::error::verify failed for $c"; failed=1; }
-          done
-          exit "$failed"
+          set -euo pipefail
+          # shellcheck disable=SC2046
+          scripts/verify-published.sh "${{ runner.temp }}/records" \
+            $(node -e 'for (const c of JSON.parse(process.env.COMPONENTS)) console.log(c)')

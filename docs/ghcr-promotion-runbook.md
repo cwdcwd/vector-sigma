@@ -1,5 +1,7 @@
 # Exact-byte GHCR promotion runbook (fleet-ops-r3v)
 
+> New to this? Start with [image-pipeline.md](image-pipeline.md), the plain-language overview.
+
 How a Vector Sigma image gets from a scanned local OCI layout into GHCR, and
 how the pipeline proves the bytes that landed are the bytes that were scanned.
 
@@ -35,60 +37,64 @@ Two consequences, both enforced in code rather than in review:
    and validates every component's local OCI index from only this run's
    scanned-and-passed child digests (one runner, not one per component).
 4. `promote` (one job per component) — the only job with `packages:write`.
-   Downloads the scanned layout tars and runs `scripts/ghcr-promote-run.mjs
-   promote`.
+   Downloads the scanned layout tars, scan descriptors and gate-assembled
+   index, and runs `scripts/publish-image.sh` (the pinned `regctl`).
 5. `verify-remote` — ONE job, no `packages:write`, no credential. Runs
-   `scripts/ghcr-promote-run.mjs verify` against every component's
-   promotion record, and fails if any one fails. Kept separate from
+   `scripts/verify-published.sh` against every component's promotion
+   record, and fails if any one fails. Kept separate from
    `promote` on purpose: the proof never runs where a write-capable token
    exists.
 6. `scan` / `smoke` / `render` / `deploy` — unchanged in shape, now gated
    behind a real `verify-remote` instead of a dormant placeholder.
 
-## What the promoter does, in order
+## What publishing does, in order
+
+`scripts/publish-image.sh`, per component. It uses **`regctl`**
+(regclient.org), installed by `scripts/install-regctl.sh` at a pinned version
+and verified against a pinned SHA-256 before it runs. There is no in-repo
+registry client.
 
 STAGING (any failure here leaves the registry with **zero** tags):
 
-1. Upload every blob the manifest references that HEAD does not already
-   report (HEAD only decides whether to upload; it is never proof).
-2. PUT each per-arch manifest **by digest** — a digest reference is
-   content-addressed, so it can only ever point at those exact bytes, and no
-   human-facing tag exists yet. This must precede the blob read-back: GHCR
-   creates a package on its first manifest push, and blobs in a package that
-   does not exist yet are not readable (a component's first-ever publish).
-3. GET every blob back and compare byte-for-byte + re-hash; a 404 after a
-   HEAD-skipped upload re-uploads once, a 404 after upload retries with
-   backoff, and a blob that never becomes readable fails the promotion
-   (`blob_unreadable`, no tags). Then GET the manifest back and compare.
-4. Assemble the multi-arch index from only the scanned-and-passed child
-   descriptors, PUT it **by digest**, GET it back, compare.
-
-TAGGING (only reachable once every staging verification passed):
-
-5. PUT each per-arch tag, read it back, require it to resolve to the staged
+1. Copy each platform's **scanned image manifest + blobs by digest** straight
+   from the scanned OCI layout (`regctl image copy ocidir://…@<digest>
+   <repo>@<digest>`). The digest comes from the content gate's scan
+   descriptor, so only the scanned manifest can be copied, and a digest
+   reference cannot point at anything else.
+2. Push the **index the gate assembled** (`all-components-gate`), its bytes
+   unmodified, **by digest**. The script first checks it names exactly the two
+   scanned digests.
+3. Read every manifest back **by digest**; its bytes must re-hash to that
    digest.
-6. PUT the index tag, read it back, require it to resolve to the index digest.
 
-A tagging failure stops before the index tag is applied — a partially verified
-release is never advertised as one coherent multi-arch release.
+TAGGING (only reachable once every staging check passed):
+
+4. Tag each platform manifest, then the index; each tag is read back and must
+   resolve to the digest it was given.
+5. Write the promotion record (`promoted-<component>.json`) — the same format
+   the release tail (`render-release-compose.mjs`, `release-ledger.mjs`)
+   consumes.
+
+regctl pushes a manifest only after its blobs, so a component's first-ever
+publish (a GHCR package that does not exist yet) needs nothing special — the
+blob-before-manifest read-back trap the old in-repo client fell into
+(2026-10-20) cannot occur.
 
 ## What verification trusts
 
-`verifyRemote` recomputes SHA-256 over the served bytes. It does **not** trust
-the registry's `Docker-Content-Digest` header, and it does not trust the
-promoter's own promote-time return value. It re-reads the published index and
-every child **by digest** and fails closed on any difference.
-
-Failure codes: `index_mismatch`, `child_missing`, `child_mismatch`,
-`malformed_index`, `tag_unresolvable`.
+`scripts/verify-published.sh` runs in its own job with no write scope and an
+**empty regctl config** (a fresh `HOME`), so it can only ever read
+anonymously. For each component it re-reads the index and both platform
+manifests **by digest** and recomputes SHA-256 over the served bytes (it does
+not trust the registry's digest header), and checks every tag resolves to its
+recorded digest. It checks every component, then fails if any check failed.
 
 ## Credential handling
 
-There is no `docker/login-action` anywhere in the promote path. The
-`GITHUB_TOKEN` reaches the client only as the value of a named environment
-variable (`--token-env`), is exchanged for a scoped bearer token, and is sent
-only in an `Authorization` header — never in a URL, a log line, or an error
-message. Tests pin all three of those properties.
+The `GITHUB_TOKEN` appears in exactly one step of the promote job: it is piped
+to `regctl registry login --pass-stdin`, so it is never on a command line, in a
+URL or in a log line. The verify job never logs in. Tests pin both properties
+(`promote-structural-gate.test.ts`).
 
 ## The owner switch
 
@@ -126,25 +132,23 @@ dispatch remains validation-only and both publish jobs skip.
 
 ## Operating it
 
-Promote (as CI does; omit `--scheme` in production — it is `https`):
+Install the pinned regctl, log in, publish (as CI does):
 
 ```
-node scripts/ghcr-promote-run.mjs promote \
-  --registry ghcr.io \
-  --repository cwdcwd/vector-sigma/registrar \
-  --tag "$GITHUB_SHA" \
-  --layout "linux/amd64=$TMP/layouts/registrar-amd64.tar" \
-  --layout "linux/arm64=$TMP/layouts/registrar-arm64.tar" \
-  --token-env GHCR_TOKEN --actor "$GITHUB_ACTOR" \
-  --record "$TMP/promoted-registrar.json"
+scripts/install-regctl.sh "$HOME/bin"
+printf '%s' "$GHCR_TOKEN" | regctl registry login ghcr.io -u "$GITHUB_ACTOR" --pass-stdin
+scripts/publish-image.sh \
+  --component registrar --registry ghcr.io \
+  --repository cwdcwd/vector-sigma/registrar --tag "$GITHUB_SHA" \
+  --layouts "$TMP/layouts" --descriptors "$TMP/descriptors" \
+  --index "$TMP/indexes/registrar-index.json" \
+  --record "$TMP/records/promoted-registrar.json"
 ```
 
-Verify (no credential needed for a public package — the verifier fetches an anonymous pull token, as GHCR requires):
+Verify, anonymously:
 
 ```
-node scripts/ghcr-promote-run.mjs verify \
-  --registry ghcr.io \
-  --record "$TMP/promoted-registrar.json"
+scripts/verify-published.sh "$TMP/records" registrar
 ```
 
 Both exit non-zero with a `::error::` line on any failure.
@@ -156,12 +160,10 @@ re-run the job. If a release tag was applied and then found bad, cut a fresh
 tag from the known-good commit; **never** move an existing tag (see
 `balena-architecture.md`).
 
-## What is NOT proven by this lane
+## What has been proven live
 
-Everything above is proven against unit-level fakes, a real `node:http`
-registry socket, and the real script invoked as a child process. It has **not**
-been run against live GHCR: GHCR's own media-type acceptance, `Location`
-handling and auth quirks are still unconfirmed by a live write. The first real
-run should be a manual `workflow_dispatch` on a scratch component, and the
-promotion record's digests should be compared by hand before any tag-cut
-release is allowed to run.
+- 2026-10-19: the first GHCR writes (`registrar`, then 8 of 9 components) and
+  the anonymous verify (after the token fix, #93).
+- 2026-10-20: the regctl publish + verify scripts run end to end against a
+  local registry with the real scanned `tailscale-devices` layouts: digests
+  preserved, tags resolve, a re-pointed tag and a missing record both fail.

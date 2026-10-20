@@ -189,8 +189,7 @@ describe('publisher workflow graph: aggregate gate covers every stage/scan and E
     expect(verify.strategy, 'no per-component matrix').toBeUndefined();
     const text = stepsText(verify);
     expect(text).toContain('needs.plan.outputs.promote');
-    expect(text).toContain('ghcr-promote-run.mjs verify');
-    expect(text).toContain('exit \\"$failed\\"');
+    expect(text).toContain('scripts/verify-published.sh');
   });
 });
 
@@ -420,7 +419,7 @@ describe('publisher workflow steps: shape invariants that catch YAML parse-time 
       const doc = loadWf(wf);
       const ledgerSteps = Object.values(doc.jobs).flatMap((job) =>
         (Array.isArray(job.steps) ? job.steps : []).filter(
-          (step) => typeof step.run === 'string' && /ghcr-promote-run\.mjs ledger/.test(step.run as string),
+          (step) => typeof step.run === 'string' && /release-ledger\.mjs/.test(step.run as string),
         ),
       );
       expect(ledgerSteps.length, `${wf}: exactly one release-evidence ledger step expected`).toBe(1);
