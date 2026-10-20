@@ -84,26 +84,25 @@ export interface PromoteComponentOptions {
 const DEFAULT_READBACK_DELAYS_MS = [1000, 2000, 4000, 8000];
 
 /**
- * Makes `digest` readable in the repository and returns its bytes. HEAD is
- * only a hint: GHCR has been seen answering a blob as present (HEAD 200)
- * while GET in the same repository returns 404 — a blob left by an
- * interrupted earlier push that was never linked to the repo. So a 404 on
- * read-back after a skipped upload re-uploads the exact bytes, and a 404
- * right after an upload is retried with backoff (registry consistency).
- * Anything else, or a blob still unreadable after that, fails closed.
+ * Reads `digest` back from the repository. Called only AFTER the manifest
+ * that references it has been pushed (by digest): GHCR creates a package on
+ * its first manifest push, and blobs uploaded into a package that does not
+ * exist yet are accepted (HEAD may even report them) but are not readable
+ * until a manifest references them — the first-ever publish of a component
+ * (run 39360749804, tailscale-devices) can never read a blob back before
+ * its manifest exists. A 404 here re-uploads the scanned bytes once if this
+ * run skipped the upload on a HEAD hint, then retries with backoff
+ * (registry consistency). A blob still unreadable fails closed.
  */
-async function ensureBlobReadable(
+async function readBackBlob(
   client: OciDistributionClient,
   digest: string,
   expected: Buffer,
+  uploadedThisRun: boolean,
   delays: number[],
   log: (line: string) => void,
 ): Promise<Buffer> {
-  let uploaded = false;
-  if (!(await client.blobExists(digest))) {
-    await client.uploadBlob(expected, digest);
-    uploaded = true;
-  }
+  let uploaded = uploadedThisRun;
   for (let attempt = 0; ; attempt++) {
     try {
       return await client.getBlob(digest);
@@ -118,10 +117,10 @@ async function ensureBlobReadable(
       if (attempt >= delays.length) {
         throw new PromotionError(
           'blob_unreadable',
-          `blob ${digest} is still not readable (GET 404) after upload and ${delays.length} retries`,
+          `blob ${digest} is still not readable (GET 404) after upload, manifest push and ${delays.length} retries`,
         );
       }
-      log(`blob ${digest}: GET 404 after upload — retrying in ${delays[attempt]}ms`);
+      log(`blob ${digest}: GET 404 — retrying in ${delays[attempt]}ms`);
       await new Promise((r) => setTimeout(r, delays[attempt]));
     }
   }
@@ -222,25 +221,32 @@ export async function promoteComponent(opts: PromoteComponentOptions): Promise<P
     staged.push({ manifest: stagePlatformLayout(l.platform, layout), blobs: layout.blobs });
   }
 
+  const delays = opts.readBackDelaysMs ?? DEFAULT_READBACK_DELAYS_MS;
+  const log = opts.log ?? ((line: string) => console.error(`promote: ${line}`));
   for (const { manifest, blobs } of staged) {
-    // Blobs first: a manifest referencing an absent blob is an invalid
-    // image, and some registries reject the manifest PUT outright. HEAD
-    // is only an existence hint: whether pre-existing or newly uploaded,
-    // fetch every blob by digest and prove its bytes equal the scanned
-    // layout bytes and hash to the requested content address before any
-    // manifest or tag can be published.
+    // 1. Blobs first: a manifest referencing an absent blob is an invalid
+    //    image, and registries reject that manifest PUT. HEAD only decides
+    //    whether to upload; it is never taken as proof.
+    const uploaded = new Set<string>();
     for (const digest of manifest.blobDigests) {
       const expected = blobs.get(digest);
       if (!expected || sha256(expected) !== digest) {
         throw new PromotionError('digest_mismatch', `${manifest.platform}: local blob ${digest} is absent or does not hash to its digest`);
       }
-      const fetchedBlob = await ensureBlobReadable(
-        client,
-        digest,
-        expected,
-        opts.readBackDelaysMs ?? DEFAULT_READBACK_DELAYS_MS,
-        opts.log ?? ((line) => console.error(`promote: ${line}`)),
-      );
+      if (!(await client.blobExists(digest))) {
+        await client.uploadBlob(expected, digest);
+        uploaded.add(digest);
+      }
+    }
+    // 2. The manifest by DIGEST reference (content-addressed — it can only
+    //    ever point at these bytes; no human-facing tag exists yet). This is
+    //    what makes the blobs readable in a brand-new GHCR package.
+    await client.putManifest(manifest.descriptor.digest, manifest.bytes, manifest.descriptor.mediaType);
+    // 3. Read every blob back and prove its bytes equal the scanned layout
+    //    bytes and hash to the content address — all before any tag.
+    for (const digest of manifest.blobDigests) {
+      const expected = blobs.get(digest)!;
+      const fetchedBlob = await readBackBlob(client, digest, expected, uploaded.has(digest), delays, log);
       if (!fetchedBlob.equals(expected) || sha256(fetchedBlob) !== digest) {
         throw new PromotionError(
           'digest_mismatch',
@@ -248,9 +254,7 @@ export async function promoteComponent(opts: PromoteComponentOptions): Promise<P
         );
       }
     }
-    // Manifest by DIGEST reference (content-addressed — cannot point at
-    // anything else), then read back by that same digest and compare.
-    await client.putManifest(manifest.descriptor.digest, manifest.bytes, manifest.descriptor.mediaType);
+    // 4. Read the manifest back by that same digest and compare.
     const fetched = await client.getManifest(manifest.descriptor.digest);
     if (!fetched.bytes.equals(manifest.bytes)) {
       throw new PromotionError(

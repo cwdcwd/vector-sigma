@@ -49,14 +49,17 @@ Two consequences, both enforced in code rather than in review:
 
 STAGING (any failure here leaves the registry with **zero** tags):
 
-1. Upload every blob the manifest references (skipped when HEAD reports it
-   present), then GET it back and compare byte-for-byte. HEAD is only a hint:
-   a GET 404 after a skipped upload re-uploads the scanned bytes, a GET 404
-   right after an upload is retried with backoff, and a blob that never
-   becomes readable fails the promotion (`blob_unreadable`, no tags).
+1. Upload every blob the manifest references that HEAD does not already
+   report (HEAD only decides whether to upload; it is never proof).
 2. PUT each per-arch manifest **by digest** — a digest reference is
-   content-addressed, so it can only ever point at those exact bytes.
-3. GET it back and compare byte-for-byte, then re-hash it.
+   content-addressed, so it can only ever point at those exact bytes, and no
+   human-facing tag exists yet. This must precede the blob read-back: GHCR
+   creates a package on its first manifest push, and blobs in a package that
+   does not exist yet are not readable (a component's first-ever publish).
+3. GET every blob back and compare byte-for-byte + re-hash; a 404 after a
+   HEAD-skipped upload re-uploads once, a 404 after upload retries with
+   backoff, and a blob that never becomes readable fails the promotion
+   (`blob_unreadable`, no tags). Then GET the manifest back and compare.
 4. Assemble the multi-arch index from only the scanned-and-passed child
    descriptors, PUT it **by digest**, GET it back, compare.
 
