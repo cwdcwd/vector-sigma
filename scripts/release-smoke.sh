@@ -212,6 +212,11 @@ case "$APP" in
     expect_file  "hermes hook 04"     "$(IMG hermes)" /etc/cont-init.d/04-vs-a2a-wiring
     expect_file  "hermes hook 05"     "$(IMG hermes)" /etc/cont-init.d/05-vs-github-identity
     expect_file  "hermes hook 06"     "$(IMG hermes)" /etc/cont-init.d/06-vs-memory-tools
+    # signed A2A identity (docs/a2a-signed-identity.md): guard + s6 slot baked, guard runnable
+    expect_file  "hermes a2a-guard"   "$(IMG hermes)" /usr/local/bin/vs-a2a-guard
+    expect_file  "hermes a2a-guard s6" "$(IMG hermes)" /etc/s6-overlay/s6-rc.d/user/contents.d/a2a-guard
+    expect_grep  "hermes a2a-guard keygen" "$(IMG hermes)" \
+      "/opt/hermes/.venv/bin/python /usr/local/bin/vs-a2a-guard keygen --state-dir /tmp/g" '"fingerprint"'
 
     # registrant: entrypoint + clock-gate epoch
     expect_file  "registrant entrypoint" "$(IMG registrant)" /usr/local/bin/vs-entrypoint.sh
@@ -240,6 +245,10 @@ case "$APP" in
 
     # agent: gate + bd + hooks + docs + plugin
     expect_file  "agent gate"      "$(IMG agent)" /usr/local/bin/gate.sh
+    expect_file  "agent a2a-guard"    "$(IMG agent)" /usr/local/bin/vs-a2a-guard
+    expect_file  "agent a2a-guard s6" "$(IMG agent)" /etc/s6-overlay/s6-rc.d/user/contents.d/a2a-guard
+    expect_grep  "agent a2a-guard keygen" "$(IMG agent)" \
+      "/opt/hermes/.venv/bin/python /usr/local/bin/vs-a2a-guard keygen --state-dir /tmp/g" '"fingerprint"'
     # Presence, not count: gate.sh legitimately contains ready.marker on four
     # lines (comment, MARKER= assignment, poll message, timeout message) —
     # review finding 5 on PR #59: a count-based assertion fails a HEALTHY

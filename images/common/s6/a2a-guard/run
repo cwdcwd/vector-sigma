@@ -1,0 +1,13 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# a2a-guard service (docs/a2a-signed-identity.md): the signed-identity sidecar in front of Hermes's
+# A2A server. Always declared so s6 has a supervised slot; it RUNS only when the 04-vs-a2a-wiring
+# hook has written $HERMES_HOME/a2a-guard/guard.json (a bundle carrying peer_keys). Without it the
+# script exits 0 and ./finish returns 125 (permanent failure: s6 leaves the slot down), exactly
+# like the stock dashboard service, so a bundle without signed identity runs as it always has.
+GD="${HERMES_HOME:-/opt/data}/a2a-guard"
+[ -f "$GD/guard.json" ] || exit 0
+cd "$GD" || exit 0
+# Drop to the runtime user (the guard reads the 0600 key + tokens the hook chowned to it).
+[ "$(id -u)" = 0 ] || exec /opt/hermes/.venv/bin/python /usr/local/bin/vs-a2a-guard serve --config "$GD/guard.json"
+exec s6-setuidgid hermes /opt/hermes/.venv/bin/python /usr/local/bin/vs-a2a-guard serve --config "$GD/guard.json"
