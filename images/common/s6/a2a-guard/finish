@@ -1,0 +1,7 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# Companion to ./run. No guard.json: exit 125 so s6-supervise leaves the slot down (no restart
+# loop). Configured: exit 0 so s6 restarts the guard if it ever exits.
+# Arguments: $1=run-exit-code, $2=signal-num, $3=service-dir-name, $4=run-pgid (servicedir(7)).
+[ -f "${HERMES_HOME:-/opt/data}/a2a-guard/guard.json" ] && exit 0
+exit 125

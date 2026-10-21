@@ -22,3 +22,12 @@ jobs:
         run: npm run build
       - name: Unit tests
         run: npm test
+      # The signed-identity guard (images/common/bin/vs-a2a-guard.py) is Python: run its suite with
+      # the one dependency the images' Hermes venv provides.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: a2a-guard tests
+        run: |
+          python -m pip install --quiet 'cryptography>=42,<51'
+          python -m unittest images/common/bin/test_vs_a2a_guard.py
