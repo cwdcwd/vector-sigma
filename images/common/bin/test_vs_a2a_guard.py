@@ -275,7 +275,8 @@ def _http(url, body=None, headers=None):
         with urllib.request.urlopen(req, timeout=10) as r:
             return r.status, json.loads(r.read())
     except urllib.error.HTTPError as e:
-        return e.code, json.loads(e.read())
+        with e:  # close the response it carries (Python 3.14 warns otherwise)
+            return e.code, json.loads(e.read())
 
 
 class Listeners(unittest.TestCase):
@@ -405,3 +406,87 @@ class Listeners(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BundleMode(unittest.TestCase):
+    """VS bundle mode: peer keys + `strict` come from the LIVE a2a.json and hot-reload on tick()."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.hermes = type("Hermes", (_Upstream,), {"seen": []})
+        self.hermes_srv = _start(self.hermes)
+        self.alice_key = g.keygen(base / "alice")
+        g.keygen(base / "bob")
+        self.a2a = base / "config-a2a.json"
+        self.write_bundle({"alice": g.public_key_text(self.alice_key)}, strict=False)
+        tok = base / "bob" / "local-peer-tokens.json"
+        tok.write_text(json.dumps({"alice": "local-alice-token"}))
+        os.chmod(tok, 0o600)
+        (base / "bob" / "guard.json").write_text(json.dumps({
+            "agent_name": "bob", "state_dir": ".", "bundle_a2a": str(self.a2a),
+            "inbound": {"upstream": f"http://127.0.0.1:{self.hermes_srv.server_address[1]}",
+                        "public_url": "http://bob.test:9900/"}, "outbound": {"enabled": False}}))
+        self.bob = g.Guard(g.Config(base / "bob" / "guard.json"))
+        self.srv = _start(g.make_inbound(self.bob))
+        self.url = f"http://127.0.0.1:{self.srv.server_address[1]}/"
+
+    def tearDown(self):
+        for s in (self.hermes_srv, self.srv):
+            s.shutdown()
+            s.server_close()
+        self.tmp.cleanup()
+
+    def write_bundle(self, peer_keys, strict):
+        # a fresh mtime each write (the registrant writes tmp+rename, which also changes it)
+        self.a2a.write_text(json.dumps({"identity_key": "unused-here", "peer_keys": peer_keys, "strict": strict}))
+        st = self.a2a.stat()
+        os.utime(self.a2a, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+
+    def signed(self):
+        return _http(self.url, HERMES_V1, {g.SIG_HEADER: g.sign(self.alice_key, "alice", "bob", HERMES_V1)})
+
+    def test_peer_keys_and_dual_mode_come_from_the_bundle(self):
+        self.assertEqual(self.signed()[0], 200)
+        self.assertEqual(_http(self.url, HERMES_V1, {"Authorization": "Bearer legacy"})[0], 200)  # dual
+
+    def test_strict_flip_lands_live(self):
+        self.write_bundle({"alice": g.public_key_text(self.alice_key)}, strict=True)
+        self.bob.tick()
+        self.assertEqual(_http(self.url, HERMES_V1, {"Authorization": "Bearer legacy"})[0], 401)
+        self.assertEqual(self.signed()[0], 200)
+        self.write_bundle({"alice": g.public_key_text(self.alice_key)}, strict=False)  # rollback, live
+        self.bob.tick()
+        self.assertEqual(_http(self.url, HERMES_V1, {"Authorization": "Bearer legacy"})[0], 200)
+
+    def test_revocation_lands_live(self):
+        self.assertEqual(self.signed()[0], 200)
+        self.write_bundle({}, strict=True)
+        self.bob.tick()
+        code, resp = self.signed()
+        self.assertEqual(code, 401)
+        self.assertIn("bad signature", resp["error"]["message"])
+
+    def test_status_file_reports_readiness(self):
+        self.signed()
+        _http(self.url, HERMES_V1, {"Authorization": "Bearer legacy"})
+        self.bob.tick()
+        st = json.loads(self.bob.cfg.status_path.read_text())
+        self.assertEqual(st["schema"], "vs.a2a-guard.status/1")
+        self.assertEqual((st["agent"], st["strict"], st["peers"], st["local_tokens"]),
+                         ("bob", False, ["alice"], ["alice"]))
+        self.assertEqual(st["counts"], {"verified": 1, "legacy": 1, "refused": 0})
+
+    def test_malformed_key_is_skipped_not_fatal(self):
+        self.write_bundle({"alice": g.public_key_text(self.alice_key), "mallory": "not-a-key"}, strict=False)
+        self.bob.tick()
+        self.assertEqual(sorted(self.bob.registry), ["alice"])
+        self.assertEqual(self.signed()[0], 200)
+
+    def test_broken_bundle_keeps_last_good_state(self):
+        self.a2a.write_text("{not json")
+        st = self.a2a.stat()
+        os.utime(self.a2a, ns=(st.st_atime_ns, st.st_mtime_ns + 2_000_000_000))
+        self.bob.tick()
+        self.assertEqual(sorted(self.bob.registry), ["alice"])
+        self.assertEqual(self.signed()[0], 200)

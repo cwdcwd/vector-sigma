@@ -160,6 +160,24 @@ describe('primus image contract (fleet-ops-b1r)', () => {
     expect(wiringCode).not.toMatch(/exit [1-9]/);
   });
 
+  it('signed identity (docs/a2a-signed-identity.md): the wiring hook drives the a2a-guard from peer_keys', () => {
+    const wiring = stripComments(readFileSync(path.join(repoRoot, 'images/common/hooks/vs-a2a-wiring.sh'), 'utf8'));
+    // keygen every boot; the public key lands where the registrant reports it from
+    expect(wiring).toMatch(/vs-a2a-guard keygen --state-dir "\$GUARD_DIR"/);
+    expect(wiring).toMatch(/pubkey\.json/);
+    // signed mode only when the bundle carries peer_keys; otherwise guard.json is REMOVED (service down)
+    expect(wiring).toMatch(/peer_keys/);
+    expect(wiring).toMatch(/os\.remove\(cfg\)/);
+    // Hermes moves behind the guard and resolves callers by LOCAL tokens
+    expect(wiring).toMatch(/set_env A2A_HOST "127\.0\.0\.1"/);
+    expect(wiring).toMatch(/set_env A2A_PORT "9901"/);
+    // keyed peers route through the outbound guard; the token is an env REFERENCE in config.yaml
+    expect(wiring).toMatch(/http:\/\/127\.0\.0\.1:9902\/peer\//);
+    expect(wiring).toMatch(/\$\{A2A_GUARD_OUTBOUND_TOKEN\}/);
+    // the guard reads keys + strict from the LIVE bundle file (hot reload)
+    expect(wiring).toMatch(/"bundle_a2a": os\.path\.join\(bundle_dir, "a2a\.json"\)/);
+  });
+
   it('every compose runs the ONE hermes image (images.json component, no twin drift)', () => {
     const catalog = JSON.parse(readFileSync(path.join(repoRoot, 'images.json'), 'utf8'));
     expect(catalog.components.hermes).toMatchObject({
