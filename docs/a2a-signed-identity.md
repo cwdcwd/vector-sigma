@@ -80,7 +80,7 @@ bundle. The design does not claim more than that. It adds detection and an owner
   is active, the registrar keeps the active key and records the new one as `conflict`.
   - It audits the event and flags the device in the console, and the guard keeps verifying only
     the active key.
-  - The race thanos described leaves a visible trace. Either the attacker registered first (the
+  - A registration race leaves a visible trace. Either the attacker registered first (the
     legitimate device's report lands as `conflict`), or the legitimate device did (the attacker's
     lands as `conflict`).
   - The owner resolves it by approving the key whose fingerprint matches the device's boot log,
