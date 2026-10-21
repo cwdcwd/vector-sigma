@@ -290,6 +290,26 @@ def verify(header_value: str, rpc: dict, registry: dict, me: str, nonces: NonceC
     return kid
 
 
+def load_bundle_registry(path: Path) -> tuple[dict, bool]:
+    """a2a.json {"peer_keys": {name: "<b64url>"}, "strict": bool} -> (registry, strict).
+    A malformed key is skipped (logged) rather than taking the whole registry down."""
+    data = json.loads(path.read_text())
+    if not isinstance(data, dict):
+        raise ValueError("bundle a2a.json is not a JSON object")
+    peer_keys = data.get("peer_keys")
+    if peer_keys is None:
+        peer_keys = {}  # absent: no signed peers (a legitimate bundle state)
+    elif not isinstance(peer_keys, dict):
+        raise ValueError("bundle peer_keys is not an object")  # malformed: keep the last good state
+    out = {}
+    for name, pub in peer_keys.items():
+        try:
+            out[name] = {"key": load_public_key(pub), "pub": pub}
+        except (ValueError, TypeError):
+            log.error("bundle peer_keys: ignoring malformed key for %r", name)
+    return out, bool(data.get("strict", False))
+
+
 def load_registry(path: Path) -> dict:
     """{"peers": {"agent-a": {"ed25519": "<b64url>"}, ...}} -> {name: {"key": Ed25519PublicKey, "pub": str}}"""
     data = json.loads(path.read_text())
@@ -320,6 +340,12 @@ class Config:
         self.outbound_token_path = self.state_dir / "outbound-token"
         self.gateway_key_env = self.outbound.get("gateway_key_env", "A2A_OWN_IDENTITY_KEY")
         self.env_file = rel(raw["env_file"]) if raw.get("env_file") else None
+        # VS bundle mode: peer public keys and the fleet `strict` switch come from the LIVE
+        # registrar-delivered a2a.json (the registrant's watcher rewrites it on rotation), so
+        # revocation and the strict flip land without a container recreate.
+        self.bundle_a2a = rel(raw["bundle_a2a"]) if raw.get("bundle_a2a") else None
+        self.reload_seconds = max(1, int(raw.get("reload_seconds", 15)))
+        self.status_path = self.state_dir / "status.json"
 
 
 def read_env_value(name: str, env_file: Optional[Path]) -> str:
@@ -424,14 +450,70 @@ class Guard:
         self.cfg = cfg
         self.key = load_private_key(key_path(cfg.state_dir))
         self.nonces = NonceCache(ttl=2 * cfg.skew + 60)
+        self.counts = {"verified": 0, "legacy": 0, "refused": 0}
+        self._source_mtime = None
         self.reload()
 
+    def _source(self) -> Path:
+        return self.cfg.bundle_a2a or self.cfg.registry_path
+
     def reload(self) -> None:
-        self.registry = load_registry(self.cfg.registry_path)
-        self.local_tokens = read_secret_json(self.cfg.local_tokens_path) if self.cfg.local_tokens_path.exists() else {}
-        self.outbound_token = (read_secret_text(self.cfg.outbound_token_path)
-                               if self.cfg.outbound_token_path.exists() else "")
+        """Transactional: every input is loaded into locals first and committed only when all of
+        them succeeded, so a failure at any step leaves the previous state fully intact."""
+        stamp = self._source_stamp()
+        if self.cfg.bundle_a2a:
+            registry, strict = load_bundle_registry(self.cfg.bundle_a2a)
+            legacy = not strict
+        else:
+            registry, legacy = load_registry(self.cfg.registry_path), self.cfg.legacy_bearer
+        local_tokens = read_secret_json(self.cfg.local_tokens_path) if self.cfg.local_tokens_path.exists() else {}
+        if not isinstance(local_tokens, dict):
+            raise ValueError(f"{self.cfg.local_tokens_path} is not a JSON object")
+        outbound_token = (read_secret_text(self.cfg.outbound_token_path)
+                          if self.cfg.outbound_token_path.exists() else "")
+        # commit
+        if hasattr(self, "registry") and self.cfg.legacy_bearer != legacy:
+            log.warning("strict mode %s (from the bundle)", "OFF" if legacy else "ON")
+        self.registry, self.cfg.legacy_bearer = registry, legacy
+        self.local_tokens, self.outbound_token = local_tokens, outbound_token
+        self._source_mtime = stamp
         log.info("loaded %d registry peers, %d local peer tokens", len(self.registry), len(self.local_tokens))
+
+    def _source_stamp(self):
+        """(mtime, inode, size): also catches an atomic replace within one mtime tick."""
+        try:
+            st = self._source().stat()
+        except OSError:
+            return None
+        return (st.st_mtime_ns, st.st_ino, st.st_size)
+
+    def tick(self) -> None:
+        """Reload when the key source changed (bundle rotations land live), then write status.
+        Any reload failure keeps the last good registry and strict setting: the live bundle is
+        delivered from outside, so a malformed one must never stop the guard."""
+        stamp = self._source_stamp()
+        if stamp != self._source_mtime:
+            try:
+                self.reload()
+            except Exception as e:  # noqa: BLE001 - keep serving the last good state
+                log.error("reload failed, keeping the previous registry: %s", e)
+                self._source_mtime = stamp  # don't retry the same bad file every tick
+        self.write_status()
+
+    def write_status(self) -> None:
+        """Readiness for the registrant to report (docs/a2a-signed-identity.md, Strict mode)."""
+        status = {"schema": "vs.a2a-guard.status/1", "agent": self.cfg.me, "running": True,
+                  "pid": os.getpid(), "strict": not self.cfg.legacy_bearer,
+                  "peers": sorted(self.registry), "local_tokens": sorted(self.local_tokens),
+                  "outbound_peers": sorted((self.cfg.outbound.get("peers") or {})
+                                           if self.cfg.outbound.get("enabled", True) else {}),
+                  "counts": dict(self.counts), "updated_at": int(time.time())}
+        try:
+            tmp = self.cfg.status_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(status))
+            os.replace(tmp, self.cfg.status_path)
+        except OSError as e:
+            log.warning("could not write %s: %s", self.cfg.status_path, e)
 
 
 def _point_card_at(url: str):
@@ -502,9 +584,11 @@ def make_inbound(guard: Guard):
                         raise GuardError(403, f"{peer!r} is verified but has no local token on this host")
                     headers["Authorization"] = f"Bearer {token}"
                     headers["X-A2A-Verified-Peer"] = peer
+                    guard.counts["verified"] += 1
                     log.info("verified %s -> %s (%s)", peer, guard.cfg.me, method_class(rpc.get("method")))
                 elif guard.cfg.legacy_bearer and self.headers.get("Authorization"):
                     headers["Authorization"] = self.headers["Authorization"]  # Hermes checks it, as before
+                    guard.counts["legacy"] += 1
                     log.info("legacy bearer passthrough (unsigned) from %s", self.client_address[0])
                 else:
                     raise GuardError(401, "unsigned request (no X-A2A-Sig)")
@@ -512,6 +596,7 @@ def make_inbound(guard: Guard):
                 _relay(self, "POST", upstream + self.path, raw, headers)
             except GuardError as e:
                 log.warning("inbound refused: %s", e)
+                guard.counts["refused"] += 1
                 _jsonrpc_error(self, e.code, str(e), rpc_id)
 
     return Inbound
@@ -594,8 +679,10 @@ def serve(cfg: Config) -> None:
     signal.signal(signal.SIGHUP, lambda *_: guard.reload())
     stop = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
+    guard.write_status()
     try:
-        stop.wait()
+        while not stop.wait(cfg.reload_seconds):  # live key source + status heartbeat
+            guard.tick()
     except KeyboardInterrupt:
         pass
     for s in servers:

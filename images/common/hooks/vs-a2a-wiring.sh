@@ -222,6 +222,105 @@ else
   log "bundle a2a.json carries no identity_key — A2A inbound stays OFF (bind-safety default)"
 fi
 
+# ── 2b: signed identity (docs/a2a-signed-identity.md) ──────────────────
+# Every boot: ensure this agent's Ed25519 key exists on the data volume (the registrant reports
+# the PUBLIC key; the private key never leaves this volume). When the bundle carries peer_keys,
+# switch to signed mode: the a2a-guard s6 service fronts Hermes on :9900, Hermes moves to
+# 127.0.0.1:9901 and accepts LOCAL per-peer tokens (generated here, never in a bundle), and
+# keyed peers' a2a_agents go through the outbound guard. Without peer_keys, guard.json is
+# removed so the service stays down and everything above holds exactly as before.
+GUARD_DIR="$HOME_DIR/a2a-guard"
+SIGNED_PEERS=""
+if [ -x /usr/local/bin/vs-a2a-guard ]; then
+  mkdir -p "$GUARD_DIR" && chmod 700 "$GUARD_DIR"
+  if _pub="$("$PY" /usr/local/bin/vs-a2a-guard keygen --state-dir "$GUARD_DIR" 2>/dev/null)"; then
+    printf '%s\n' "$_pub" > "$GUARD_DIR/pubkey.json.tmp" && mv -f "$GUARD_DIR/pubkey.json.tmp" "$GUARD_DIR/pubkey.json"
+    log "a2a identity key: fingerprint $(printf '%s' "$_pub" | sed -n 's/.*"fingerprint": "\([0-9a-f]*\)".*/\1/p')"
+  else
+    log "WARN: a2a-guard keygen failed — signed identity unavailable this boot"
+  fi
+  _signed="$("$PY" - "$GUARD_DIR" "$BUNDLE_DIR" "$ENV_FILE" <<'PYEOF'
+import json, os, secrets, sys
+gd, bundle_dir, env_file = sys.argv[1:4]
+def env_val(path, key):
+    try:
+        for line in open(path):
+            if line.startswith(key + "="):
+                return line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return ""
+try:
+    a2a = json.load(open(os.path.join(bundle_dir, "a2a.json")))
+except Exception:
+    a2a = {}
+keys = a2a.get("peer_keys") if isinstance(a2a.get("peer_keys"), dict) else {}
+me = env_val(os.path.join(bundle_dir, "agent.env"), "AGENT_NAME")
+edge = env_val(os.path.join(bundle_dir, "agent.env"), "GATEWAY_URL").rstrip("/")
+public = a2a.get("public_url") if isinstance(a2a.get("public_url"), str) else ""
+cfg = os.path.join(gd, "guard.json")
+peers = sorted(n for n, k in keys.items() if isinstance(n, str) and n.strip() and n != me and isinstance(k, str) and k)
+if not (a2a.get("identity_key") and peers and me and edge and public.strip()):
+    if os.path.exists(cfg):
+        os.remove(cfg)
+    print("OFF"); sys.exit(0)
+def secret(path, value):
+    fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(value)
+    os.replace(path + ".tmp", path)
+tok_path = os.path.join(gd, "local-peer-tokens.json")
+try:
+    toks = json.load(open(tok_path))
+except Exception:
+    toks = {}
+toks = {n: toks.get(n) or secrets.token_urlsafe(32) for n in peers}
+secret(tok_path, json.dumps(toks))
+out_path = os.path.join(gd, "outbound-token")
+try:
+    outbound = open(out_path).read().strip()
+except OSError:
+    outbound = ""
+secret(out_path, outbound or secrets.token_urlsafe(32))
+guard = {"agent_name": me, "state_dir": ".", "bundle_a2a": os.path.join(bundle_dir, "a2a.json"),
+         "env_file": env_file,
+         "inbound": {"listen_host": "0.0.0.0", "listen_port": 9900, "upstream": "http://127.0.0.1:9901",
+                     "public_url": public.strip()},
+         "outbound": {"listen_port": 9902, "gateway_key_env": "A2A_OWN_IDENTITY_KEY",
+                      "peers": {n: {"url": f"{edge}/a2a/{n}", "gateway_agent_id": n, "aud": n} for n in peers}}}
+with open(cfg + ".tmp", "w") as f:
+    json.dump(guard, f, indent=1)
+os.replace(cfg + ".tmp", cfg)
+# line 1: mode + strict; line 2: signed peer names; line 3: LOCAL tokens (secret: never logged)
+print("ON " + ("strict" if a2a.get("strict") else "dual"))
+print(",".join(peers))
+print(",".join(f"{n}:{t}" for n, t in toks.items()))
+PYEOF
+)" || _signed="OFF"
+  _mode="$(printf '%s\n' "$_signed" | sed -n '1p')"
+  if [ "${_mode%% *}" = "ON" ]; then
+    SIGNED_PEERS="$(printf '%s\n' "$_signed" | sed -n '2p')"
+    _local="$(printf '%s\n' "$_signed" | sed -n '3p')"
+    # Hermes listens only on loopback behind the guard; it resolves callers by LOCAL tokens. In
+    # dual mode the bundle's legacy peer_tokens stay too (unsigned peers still work until the owner
+    # flips strict; the guard enforces strict live, before Hermes sees anything).
+    set_env A2A_HOST "127.0.0.1" || true
+    set_env A2A_PORT "9901" || true
+    if [ "${_mode#ON }" = "strict" ] || [ -z "$PEER_TOKENS" ]; then
+      set_env A2A_PEER_TOKENS "$_local" || true
+    else
+      set_env A2A_PEER_TOKENS "$_local,$PEER_TOKENS" || true
+    fi
+    set_env A2A_GUARD_OUTBOUND_TOKEN "$(cat "$GUARD_DIR/outbound-token")" || true
+    log "signed identity ON (${_mode#ON } mode; signed peers: $SIGNED_PEERS)"
+  else
+    drop_env A2A_GUARD_OUTBOUND_TOKEN
+    log "signed identity off (no peer_keys in the bundle) — a2a-guard stays down"
+  fi
+  chown -R "$RUN_UID:$RUN_GID" "$GUARD_DIR" 2>/dev/null || log "WARN: could not chown $GUARD_DIR"
+fi
+export SIGNED_PEERS
+
 # ── 3: config.yaml managed section (model + a2a) ────────────────────────
 
 # The bundle is authoritative for these keys (a device has no operator);
@@ -281,6 +380,10 @@ if isinstance(tokens, dict):
     peer_names = sorted(str(k).strip() for k in tokens
                         if isinstance(k, str) and str(k).strip()
                         and isinstance(tokens[k], str) and tokens[k].strip())
+# Signed identity (section 2b): peers with a registered public key are called through the local
+# outbound guard, which signs as this agent; in strict bundles they need not appear in peer_tokens.
+signed_peers = [n for n in os.environ.get("SIGNED_PEERS", "").split(",") if n]
+peer_names = sorted(set(peer_names) | set(signed_peers))
 # Outbound peer URLs ride the mesh EDGE from the bundle's GATEWAY_URL (the
 # gateway serves every agent's card at /a2a/<name> — peers call each other
 # THROUGH the gateway, never origin-to-origin). public_url (A2A_PUBLIC_URL)
@@ -293,6 +396,13 @@ if ident.strip() and peer_names and gateway_url:
     edge = gateway_url.rstrip("/")
     agents = {}
     for name in peer_names:
+        if name in signed_peers:
+            agents[name] = {
+                "url": f"http://127.0.0.1:9902/peer/{name}",
+                "auth": {"type": "bearer", "token": "${A2A_GUARD_OUTBOUND_TOKEN}"},
+                "timeout": 1200,
+            }
+            continue
         agents[name] = {
             "url": f"{edge}/a2a/{name}",
             "auth": {"type": "bearer", "token": "${A2A_OWN_IDENTITY_KEY}"},
