@@ -138,6 +138,15 @@ RUN chmod 0755 /usr/local/bin/gate.sh
 COPY images/common/hooks/vs-a2a-wiring.sh /etc/cont-init.d/04-vs-a2a-wiring
 RUN chmod 0755 /etc/cont-init.d/04-vs-a2a-wiring
 
+# Signed A2A identity (docs/a2a-signed-identity.md): the guard sidecar + its s6 longrun. Dark until
+# the wiring hook writes $HERMES_HOME/a2a-guard/guard.json (a bundle carrying peer_keys); until then
+# the service exits and stays down, so behavior is unchanged.
+COPY images/common/bin/vs-a2a-guard.py /usr/local/bin/vs-a2a-guard
+COPY images/common/s6/a2a-guard /etc/s6-overlay/s6-rc.d/a2a-guard
+RUN chmod 0755 /usr/local/bin/vs-a2a-guard /etc/s6-overlay/s6-rc.d/a2a-guard/run \
+         /etc/s6-overlay/s6-rc.d/a2a-guard/finish \
+    && touch /etc/s6-overlay/s6-rc.d/user/contents.d/a2a-guard
+
 # ── Docs: the WORKER environment map + the shared conventions ─────────────
 COPY docs/queue-conventions.md \
      docs/device-environment.md \
