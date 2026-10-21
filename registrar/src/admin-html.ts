@@ -52,7 +52,7 @@ export interface PageOpts {
 function nav(csrfToken: string, active?: string): string {
   const link = (key: string, href: string, label: string) =>
     `<a href="${href}"${active === key ? ' class="active" aria-current="page"' : ''}>${label}</a>`;
-  return `<header class="site-header"><a class="brand" href="/admin/devices"><img src="/admin/static/logo-128.png" alt="" class="brand-logo"><span class="brand-name">vector-sigma <span class="brand-sub">registrar</span></span></a><nav class="nav">${link('devices', '/admin/devices', 'Devices')}${link('new-device', '/admin/new-device', 'New device')}${link('audit', '/admin/audit', 'Audit')}${link('admin-keys', '/admin/admin-keys', 'Admin keys')}${link('mesh-enroll-keys', '/admin/mesh-enroll-keys', 'Mesh-enroll keys')}<form method="post" action="/admin/logout" class="inline-form"><input type="hidden" name="_csrf" value="${esc(csrfToken)}"><button type="submit" class="linklike">Log out</button></form></nav></header>`;
+  return `<header class="site-header"><a class="brand" href="/admin/devices"><img src="/admin/static/logo-128.png" alt="" class="brand-logo"><span class="brand-name">vector-sigma <span class="brand-sub">registrar</span></span></a><nav class="nav">${link('devices', '/admin/devices', 'Devices')}${link('new-device', '/admin/new-device', 'New device')}${link('audit', '/admin/audit', 'Audit')}${link('admin-keys', '/admin/admin-keys', 'Admin keys')}${link('mesh-enroll-keys', '/admin/mesh-enroll-keys', 'Mesh-enroll keys')}${link('a2a', '/admin/a2a', 'Signed identity')}<form method="post" action="/admin/logout" class="inline-form"><input type="hidden" name="_csrf" value="${esc(csrfToken)}"><button type="submit" class="linklike">Log out</button></form></nav></header>`;
 }
 
 export function page(title: string, body: string, opts?: PageOpts): string {
@@ -657,5 +657,53 @@ export function meshEnrollKeyMintedPage(
 <p class="muted">Store it in your password manager NOW. On primus, set it as the <code>MESH_ENROLL_KEY</code> service variable — never in image layers. It cannot be retrieved again.</p></div>
 <p>Row id ${keyId}. <a href="/admin/mesh-enroll-keys">Back to mesh-enroll keys</a></p>`,
     { csrfToken },
+  );
+}
+export interface A2aDeviceRowView {
+  deviceId: string;
+  agentName: string;
+  fingerprint: string | null;
+  keyStatus: 'active' | 'pending' | 'none';
+  conflictFingerprint: string | null;
+  guardRunning: boolean;
+  signedSender: boolean;
+  appliedCurrent: boolean;
+  ready: boolean;
+}
+
+/** Signed A2A identity (docs/a2a-signed-identity.md): per-device keys + readiness, the strict switch. */
+export function a2aMeshPage(rows: A2aDeviceRowView[], strict: boolean, csrfToken: string, error?: string): string {
+  const yes = (b: boolean) => (b ? '<span class="ok">yes</span>' : '<span class="danger">no</span>');
+  const action = (uuid: string, verb: string, label: string, cls = '') =>
+    `<form method="post" action="/admin/devices/${esc(uuid)}/a2a-key/${verb}" class="inline-form"><input type="hidden" name="_csrf" value="${esc(csrfToken)}"><button type="submit"${cls ? ` class="${cls}"` : ''}>${label}</button></form>`;
+  const trs = rows
+    .map((r) => {
+      const conflict = r.conflictFingerprint
+        ? `<span class="danger">${esc(r.conflictFingerprint)}</span> ${action(r.deviceId, 'approve', 'Approve new key')} ${action(r.deviceId, 'reject-conflict', 'Reject', 'danger')}`
+        : '—';
+      const keyCell = r.fingerprint
+        ? `<code>${esc(r.fingerprint)}</code> ${esc(r.keyStatus)}${r.keyStatus === 'pending' && !r.conflictFingerprint ? ` ${action(r.deviceId, 'approve', 'Approve')}` : ''}`
+        : '<span class="muted">not reported</span>';
+      const revoke = r.fingerprint ? action(r.deviceId, 'revoke', 'Revoke key', 'danger') : '';
+      return `<tr><td>${esc(r.agentName)}</td><td>${keyCell}</td><td>${conflict}</td><td>${yes(r.guardRunning)}</td><td>${yes(r.signedSender)}</td><td>${yes(r.appliedCurrent)}</td><td>${yes(r.ready)}</td><td>${revoke}</td></tr>`;
+    })
+    .join('\n');
+  const allReady = rows.length > 0 && rows.every((r) => r.ready);
+  const toggle = strict
+    ? `<form method="post" action="/admin/a2a/strict"><input type="hidden" name="_csrf" value="${esc(csrfToken)}"><input type="hidden" name="strict" value="off"><button type="submit" class="danger">Turn strict OFF (live rollback)</button></form>`
+    : `<form method="post" action="/admin/a2a/strict"><input type="hidden" name="_csrf" value="${esc(csrfToken)}"><input type="hidden" name="strict" value="on"><button type="submit"${allReady ? '' : ' disabled'}>Turn strict ON</button></form>${allReady ? '' : '<p class="muted">Enabled once every enrolled device reports ready on its current bundle.</p>'}`;
+  return page(
+    'Signed identity',
+    `<h1>Signed A2A identity</h1>
+${error ? `<p class="danger">${esc(error)}</p>` : ''}
+<p class="muted">Each agent generates an Ed25519 key on its own data volume and reports the <strong>public</strong> key; peers receive public keys only (<code>peer_keys</code>). Compare each fingerprint with the one the device logs at boot (<code>a2a identity key: fingerprint …</code>). A different key reported later is a <strong>conflict</strong>: the active key stays until you approve or reject the new one.</p>
+<div class="card"><h2>Strict mode: ${strict ? '<span class="ok">ON</span>' : '<span class="muted">off (dual)</span>'}</h2>
+<p class="muted">Strict refuses unsigned A2A calls everywhere; raw peer mesh keys stop being delivered for keyed peers. Delivered live (no container recreate) and reversible live.</p>
+${toggle}</div>
+<table>
+<tr><th>Agent</th><th>Key</th><th>Conflict</th><th>Guard</th><th>Signed sender</th><th>Bundle applied</th><th>Ready</th><th></th></tr>
+${trs}
+</table>`,
+    { csrfToken, active: 'a2a' },
   );
 }

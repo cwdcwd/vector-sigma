@@ -15,6 +15,13 @@
       "when": 1791389000000,
       "tag": "0001_mesh_enroll",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1792604233853,
+      "tag": "0002_a2a_signed_identity",
+      "breakpoints": true
     }
   ]
 }

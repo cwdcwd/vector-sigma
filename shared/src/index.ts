@@ -115,6 +115,19 @@ export const BootstrapRequestSchema = z.object({
 });
 export type BootstrapRequest = z.infer<typeof BootstrapRequestSchema>;
 
+/**
+ * Signed A2A identity (docs/a2a-signed-identity.md): the registrant reports the agent's PUBLIC
+ * Ed25519 key (raw 32 bytes, base64url, no padding) and, when present, the guard's status.json
+ * plus the bundle version the device has applied (readiness for strict mode).
+ */
+export const A2aKeyReportSchema = z.object({
+  balena_uuid: BalenaUuid,
+  ed25519: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+  guard_status: z.record(z.string(), z.unknown()).nullable().optional(),
+  bundle_version: z.number().int().nonnegative().nullable().optional(),
+});
+export type A2aKeyReport = z.infer<typeof A2aKeyReportSchema>;
+
 export const StatusRequestSchema = z.object({
   balena_uuid: BalenaUuid,
 });

@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import {
   bigserial,
+  boolean,
   check,
   inet,
   integer,
@@ -111,4 +112,41 @@ export const gatewayCreatorKey = pgTable('gateway_creator_key', {
   keyHash: text('key_hash').notNull(),
   alias: text('alias').notNull().unique(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+/**
+ * Signed A2A identity (docs/a2a-signed-identity.md): one row per device holding the PUBLIC
+ * Ed25519 key its agent generated on its own data volume (the private key never leaves it).
+ * Reported by the registrant on its authenticated poll. `status`:
+ *   active   — distributed to the device's mesh peers as peer_keys
+ *   pending  — first key held for owner approval (VS_A2A_KEY_APPROVAL=always)
+ * A DIFFERENT key reported while one is active never replaces it: it is recorded in the
+ * conflict_* columns (an owner alarm; approve swaps it in, revoke clears it).
+ * `guard_status` is the guard's own status.json as last reported (readiness for strict mode).
+ */
+export const a2aPublicKeys = pgTable(
+  'a2a_public_keys',
+  {
+    deviceId: uuid('device_id')
+      .primaryKey()
+      .references(() => devices.balenaUuid),
+    ed25519: text('ed25519').notNull(),
+    fingerprint: text('fingerprint').notNull(),
+    status: text('status').notNull(),
+    conflictEd25519: text('conflict_ed25519'),
+    conflictFingerprint: text('conflict_fingerprint'),
+    conflictAt: timestamp('conflict_at', { withTimezone: true }),
+    guardStatus: jsonb('guard_status'),
+    reportedBundleVersion: integer('reported_bundle_version'),
+    reportedAt: timestamp('reported_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [check('a2a_public_keys_status_check', sql`${t.status} IN ('active','pending')`)],
+);
+
+/** Fleet-wide mesh settings (one row, id = 1). `strict`: refuse unsigned A2A fleet-wide. */
+export const meshSettings = pgTable('mesh_settings', {
+  id: integer('id').primaryKey(),
+  strict: boolean('strict').notNull().default(false),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });

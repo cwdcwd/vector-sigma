@@ -1,3 +1,4 @@
+import { readiness as a2aReadiness, getStrict, setStrict, approveDeviceKey, rejectConflict, revokeDeviceKey, resyncMeshKeys, A2aKeyError } from './a2a-keys.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import multipart from '@fastify/multipart';
 import type { MultipartFile } from '@fastify/multipart';
@@ -591,6 +592,55 @@ export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): v
   // plaintext renders once for the operator to move into the primus
   // service env (MESH_ENROLL_KEY) — never into image layers.
 
+  // ── Signed A2A identity (docs/a2a-signed-identity.md) ────────────────
+  app.get('/admin/a2a', async (request, reply) => {
+    const session = await requireSession(request);
+    if (!session) return redirectToLogin(reply);
+    const rows = await a2aReadiness(db, clock);
+    const error = (request.query as { error?: string } | undefined)?.error;
+    return securityHeaders(reply)
+      .type('text/html')
+      .send(html.a2aMeshPage(rows, await getStrict(db), session.csrfToken, error));
+  });
+
+  app.post('/admin/a2a/strict', async (request, reply) => {
+    const session = await requireSession(request);
+    if (!session) return redirectToLogin(reply);
+    if (!(await csrfGate(request, session))) return reply.status(403).type('text/html').send(csrfErrorPage());
+    const body = (request.body as Map<string, string> | undefined) ?? new Map<string, string>();
+    const on = (body.get('strict') ?? '') === 'on';
+    try {
+      await setStrict(db, clock, on, { sourceIp: request.ip });
+    } catch (err) {
+      if (err instanceof A2aKeyError) {
+        const who = Array.isArray(err.details) && err.details.length ? `: ${err.details.join(', ')}` : '';
+        return reply.redirect(`/admin/a2a?error=${encodeURIComponent(err.message + who)}`, 303);
+      }
+      throw err;
+    }
+    return reply.redirect('/admin/a2a', 303);
+  });
+
+  for (const [verb, fn] of [
+    ['approve', approveDeviceKey],
+    ['reject-conflict', rejectConflict],
+    ['revoke', revokeDeviceKey],
+  ] as const) {
+    app.post(`/admin/devices/:uuid/a2a-key/${verb}`, async (request, reply) => {
+      const session = await requireSession(request);
+      if (!session) return redirectToLogin(reply);
+      if (!(await csrfGate(request, session))) return reply.status(403).type('text/html').send(csrfErrorPage());
+      const uuid = (request.params as { uuid: string }).uuid;
+      try {
+        await fn(db, clock, uuid);
+      } catch (err) {
+        if (err instanceof A2aKeyError) return reply.redirect(`/admin/a2a?error=${encodeURIComponent(err.message)}`, 303);
+        throw err;
+      }
+      return reply.redirect('/admin/a2a', 303);
+    });
+  }
+
   app.get('/admin/mesh-enroll-keys', async (request, reply) => {
     const session = await requireSession(request);
     if (!session) return redirectToLogin(reply);
@@ -747,6 +797,8 @@ export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): v
           : 'Mesh enroll failed unexpectedly.';
       return enrollFailure(message);
     }
+    // Signed identity: the new member gets its peers' public keys (and they get its key).
+    await resyncMeshKeys(db, clock).catch((err) => request.log.error({ err }, 'a2a key resync after enroll failed'));
     const reloaded = await loadDevice(uuid);
     if (!reloaded) return reply.status(404).type('text/html').send(notFoundPage());
     return securityHeaders(reply)
