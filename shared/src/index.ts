@@ -185,4 +185,5 @@ export const REGISTRAR_ROUTES = {
   status: '/v1/status',
   reArm: '/v1/re-arm',
   rotate: '/v1/rotate',
+  a2aKey: '/v1/a2a-key',
 } as const;

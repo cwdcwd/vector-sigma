@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 import type { ClockProbe } from './clock-gate.js';
 import { ClockGateTimeout, waitForClock } from './clock-gate.js';
 import type { RegistrantConfig } from './config.js';
@@ -274,6 +276,52 @@ export async function bootstrapWithRetry(
  * rewrite bundle+files+marker. Restart alone never refetches (boot
  * identity check dominates); the poll is the rotation mechanism.
  */
+/**
+ * Signed A2A identity (docs/a2a-signed-identity.md): report the agent's PUBLIC key (written by
+ * the 04-vs-a2a-wiring hook to <data>/a2a-guard/pubkey.json) plus the guard's status.json and
+ * the bundle version this device has applied. Absent pubkey = nothing to report yet. Never
+ * throws: a failed report is retried on the next watcher cycle.
+ */
+export async function reportA2aIdentity(
+  config: RegistrantConfig,
+  client: RegistrarClient,
+  bundleVersion: number | null,
+  last: { status?: string } = {},
+): Promise<'absent' | 'reported' | 'failed'> {
+  const dir = path.join(config.dataDir, 'a2a-guard');
+  let ed25519: string;
+  try {
+    const pub = JSON.parse(await readFile(path.join(dir, 'pubkey.json'), 'utf8')) as { ed25519?: unknown };
+    if (typeof pub.ed25519 !== 'string') return 'absent';
+    ed25519 = pub.ed25519;
+  } catch {
+    return 'absent';
+  }
+  let guardStatus: Record<string, unknown> | null = null;
+  try {
+    const st = JSON.parse(await readFile(path.join(dir, 'status.json'), 'utf8'));
+    if (st !== null && typeof st === 'object' && !Array.isArray(st)) guardStatus = st as Record<string, unknown>;
+  } catch {
+    // guard not running (yet): the key still registers; readiness stays false
+  }
+  try {
+    const res = await client.reportA2aKey({ ed25519, guard_status: guardStatus, bundle_version: bundleVersion });
+    if (res.status !== last.status) {
+      if (res.status === 'conflict') {
+        log('error', 'ACTION REQUIRED: the registrar holds a DIFFERENT a2a identity key for this device; '
+          + 'compare fingerprints in the console (Signed identity) and approve or reject', { fingerprint: res.fingerprint });
+      } else {
+        log('info', 'a2a identity key reported', { status: res.status, fingerprint: res.fingerprint });
+      }
+      last.status = res.status;
+    }
+    return 'reported';
+  } catch {
+    log('warn', 'a2a identity report failed; will retry next interval');
+    return 'failed';
+  }
+}
+
 export async function watchForRotation(
   config: RegistrantConfig,
   store: IdentityStore,
@@ -297,7 +345,9 @@ export async function watchForRotation(
     return false;
   };
 
+  const a2aLast: { status?: string } = {};
   for (;;) {
+    await reportA2aIdentity(config, client, localVersion, a2aLast);
     let status: StatusSuccess;
     try {
       status = await client.status();
