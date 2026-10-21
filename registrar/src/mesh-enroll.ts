@@ -864,3 +864,35 @@ export async function bootstrapCreatorKey(
   }
   return key;
 }
+
+/** The service env with the creator key resolved (env first, else the bootstrap). */
+export type CreatorKeyEnv = () => Promise<Record<string, string | undefined>>;
+
+/**
+ * ONE creator-key source for every mint path: the machine-auth mesh-enroll,
+ * the console mesh-enroll, and the console's memory + model mints. An
+ * env-set GATEWAY_KEY_CREATOR_KEY wins; otherwise the bootstrap runs once
+ * per registrar process and its key is shared (concurrent callers await the
+ * same mint). A failed bootstrap is not cached, so the next call retries.
+ * Before this, only the machine-auth enroll held the bootstrapped key, and
+ * the console mints refused with "not configured" on a bootstrapped master.
+ */
+export function createCreatorKeyEnv(
+  db: NodePgDatabase,
+  baseEnv: () => Record<string, string | undefined> = () => process.env,
+  bootstrap: typeof bootstrapCreatorKey = bootstrapCreatorKey,
+): CreatorKeyEnv {
+  let pending: Promise<string> | null = null;
+  return async () => {
+    const env = { ...baseEnv() };
+    if ((env[MESH_CREATOR_KEY_ENV] ?? '').trim() !== '') return env;
+    if (pending === null) {
+      const p = bootstrap(db, env);
+      pending = p;
+      p.catch(() => {
+        if (pending === p) pending = null;
+      });
+    }
+    return { ...env, [MESH_CREATOR_KEY_ENV]: await pending };
+  };
+}

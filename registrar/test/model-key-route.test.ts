@@ -314,3 +314,55 @@ describe('mint-model-key route', () => {
     expect(await currentBundle(env.device.uuid)).toBeUndefined();
   });
 });
+describe('console mints on a bootstrapped master (no GATEWAY_KEY_CREATOR_KEY)', () => {
+  beforeEach(async () => {
+    await seedDevice(env.db, { uuid: env.device.uuid, hash: env.device.hash, agentName: AGENT, bundle: null });
+  });
+  afterEach(() => {
+    delete process.env['LITELLM_MASTER_KEY'];
+  });
+
+  it('Mint model key bootstraps the scoped creator key once, then mints with it (never the master)', async () => {
+    process.env['GATEWAY_KEY_MINT_BASE_URL'] = MINT_BASE_TEST;
+    process.env['LITELLM_MASTER_KEY'] = 'sk-master-test-fixture';
+    const seen: Array<{ path: string; auth: string }> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string | URL, init?: RequestInit) => {
+        const u = new URL(String(url));
+        const auth = String((init?.headers as Record<string, string> | undefined)?.['authorization'] ?? '');
+        seen.push({ path: u.pathname, auth });
+        if (u.pathname === '/key/list') return respond(200, { keys: [] });
+        if (u.pathname === '/user/new') return respond(200, { user_id: 'x' });
+        if (u.pathname === '/key/generate') {
+          const alias = (JSON.parse(String(init?.body)) as { key_alias: string }).key_alias;
+          return respond(200, { key: alias === 'key-creator' ? 'sk-creator-bootstrapped' : 'sk-model-test-2' });
+        }
+        return respond(404, {});
+      }),
+    );
+    const c = await loginClient();
+    const csrf = await c.csrfFrom(`/admin/devices/${env.device.uuid}`);
+    const res = await c.postForm(`/admin/devices/${env.device.uuid}/mint-model-key`, { _csrf: csrf });
+    expect(res.status).toBe(200);
+    expect(res.html).not.toContain('not configured');
+    // the bootstrap ran with the master key; every mint call after it used the bootstrapped creator key
+    const firstCreatorMint = seen.findIndex((s) => s.auth === 'Bearer sk-creator-bootstrapped');
+    expect(firstCreatorMint).toBeGreaterThan(0);
+    expect(seen.slice(0, firstCreatorMint).every((s) => s.auth === 'Bearer sk-master-test-fixture')).toBe(true);
+    expect(seen.slice(firstCreatorMint).every((s) => s.auth === 'Bearer sk-creator-bootstrapped')).toBe(true);
+    const bundle = await currentBundle(env.device.uuid);
+    expect(bundle?.files.find((f) => f.path === 'config/agent.env')?.content).toContain('GATEWAY_API_KEY=sk-model-test-2');
+  });
+
+  it('without the master key either, the fallback message names both setup options and no gateway call is made', async () => {
+    process.env['GATEWAY_KEY_MINT_BASE_URL'] = MINT_BASE_TEST;
+    const c = await loginClient();
+    const csrf = await c.csrfFrom(`/admin/devices/${env.device.uuid}`);
+    const res = await c.postForm(`/admin/devices/${env.device.uuid}/mint-model-key`, { _csrf: csrf });
+    expect(res.status).toBe(200);
+    expect(res.html).toContain('GATEWAY_KEY_CREATOR_KEY');
+    expect(res.html).toContain('LITELLM_MASTER_KEY');
+    expect(calls.length).toBe(0);
+  });
+});
