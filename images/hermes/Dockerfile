@@ -38,12 +38,40 @@ FROM nousresearch/hermes-agent:v2026.9.21
 #   - PyJWT / anyio in the Hermes venv (patch-level, pinned)
 #   - npm 11.21.1 (same major as the base): its bundled tar is patched. npm is
 #     kept, not removed — Hermes may launch npx-based MCP servers at runtime.
+# HIGH remediation (2026-10-20, reported-not-blocking policy; fixable HIGHs
+# cleared where a fixed upstream release exists):
+#   - uv 0.12.24 replaces the base's 0.11.6 (bundled rustls-webpki / quinn-proto)
+#   - venv: aiohttp 3.14.4, tornado 6.5.9, urllib3 2.8.0, httpx2 + httpcore2
+#     2.12.0 (hermes-agent pins aiohttp==3.14.3 / httpx2==2.7.0 in extras —
+#     overridden, as PyJWT is; those pins are extras-only, so `uv pip check`
+#     still reports just the PyJWT override and the base's own msal one)
+#   - node: patch releases dropped in place of the vulnerable copies inside
+#     Hermes's own trees (same major/minor, unchanged dependency ranges). Each
+#     target must exist at the expected version, so a base bump that moves or
+#     fixes one fails the build instead of silently skipping it.
+COPY --from=ghcr.io/astral-sh/uv:0.12.24@sha256:3af4716e991d6956a41e573eab705d0ee08500cd829ed30293eb8472f372c65a /uv /uvx /usr/local/bin/
 RUN apt-get update \
     && apt-get upgrade -y --no-install-recommends \
     && apt-get clean && rm -rf /var/lib/apt/lists/* \
     && uv pip install --no-cache --python /opt/hermes/.venv/bin/python 'PyJWT==2.14.0' 'anyio==4.14.2' \
+         'aiohttp==3.14.4' 'tornado==6.5.9' 'urllib3==2.8.0' 'httpx2==2.12.0' 'httpcore2==2.12.0' \
     && npm install -g --no-audit --no-fund --cache /tmp/.npm-cve-cache npm@11.21.1 \
-    && rm -rf /tmp/.npm-cve-cache /root/.npm
+    && mkdir /tmp/cve-pack \
+    && for spec in \
+         /opt/hermes/node_modules/brace-expansion=5.0.9=5.0.11 \
+         /opt/hermes/node_modules/source-map-js=1.2.1=1.2.2 \
+         /opt/hermes/ui-tui/node_modules/undici=6.28.0=6.28.1 \
+         /opt/hermes/plugins/platforms/photon/sidecar/node_modules/undici=7.29.0=7.29.1 \
+         /opt/hermes/plugins/platforms/photon/sidecar/node_modules/@grpc/grpc-js=1.14.4=1.14.5; do \
+         dir="${spec%%=*}"; rest="${spec#*=}"; have="${rest%%=*}"; want="${rest#*=}"; \
+         name="$(node -p "require('$dir/package.json').name")"; \
+         got="$(node -p "require('$dir/package.json').version")"; \
+         [ "$got" = "$have" ] || { echo "cve-override: $dir is $got, expected $have" >&2; exit 1; }; \
+         tgz="$(npm pack --silent --cache /tmp/.npm-cve-cache --pack-destination /tmp/cve-pack "$name@$want")"; \
+         rm -rf "$dir" && mkdir -p "$dir" && tar -xzf "/tmp/cve-pack/$tgz" -C "$dir" --strip-components 1 --no-same-owner; \
+         echo "cve-override: $name $have -> $(node -p "require('$dir/package.json').version") at $dir"; \
+       done \
+    && rm -rf /tmp/cve-pack /tmp/.npm-cve-cache /root/.npm
 
 # ── bd 1.2.2: prebuilt release binary (images/scotty/Dockerfile pattern, VERBATIM
 # mechanism) ──────────────────────────────────────────────────────────────

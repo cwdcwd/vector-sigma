@@ -17,7 +17,7 @@
 # cannot serve every node. containerboot substitutes ${TS_CERT_DOMAIN}
 # with the node's own cert domain at apply time (cmd/containerboot/
 # serve.go readServeConfig: bytes.ReplaceAll(j, []byte("${TS_CERT_DOMAIN}"),
-# []byte(certDomain)) — verified at the pinned v1.102.5 tag), and on a
+# []byte(certDomain)) — verified at the pinned v1.104.1 tag), and on a
 # non-kube node the cert domain is the node's own MagicDNS FQDN (the
 # netmap's st.CertDomains[0] — main.go nmState.certDomains.At(0); the
 # live master proves the field non-empty: its serve config applied and
@@ -27,7 +27,7 @@
 # step beyond the tailnet-wide HTTPS enable already in place (lnf).
 #
 # Dialect note (same as the master's build — verified from the pinned
-# image's own source, v1.102.5, cmd/containerboot/serve.go
+# image's own source, v1.104.1, cmd/containerboot/serve.go
 # readServeConfig): TS_SERVE_CONFIG is a raw ipn.ServeConfig JSON file.
 #   TCP  — map keyed by PORT number ("9900"), value { "HTTPS": true }
 #   Web  — map keyed "SNI:port" (no implicit 443 in this dialect), each
@@ -43,6 +43,10 @@
 # A file change re-applies via fsnotify (with a 5s-ticker fallback), so
 # the baked bytes are also the recovery path after any drift.
 
-FROM tailscale/tailscale:v1.102.5
+# v1.102.5 -> v1.104.1 (2026-10-20, CVE bump: clears 4 of the 7 fixable HIGH
+# Go CVEs in containerboot/tailscale/tailscaled): re-verified at the tag —
+# serve.go readServeConfig still ReplaceAlls ${TS_CERT_DOMAIN}; settings.go
+# still defaults TS_USERSPACE true and now parses TS_BOOT_TIMEOUT (24h valid).
+FROM tailscale/tailscale:v1.104.1
 
 COPY images/tailscale-devices/serve-config.json /serve-config.json

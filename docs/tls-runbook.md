@@ -28,7 +28,7 @@ The f57.13 runbook's history is recoverable from git history.
   `GATEWAY_URL`/`A2A_PUBLIC_URL`): no variable flips in this release.
 - The serve config is `images/tailscale/serve-config.json`, baked into
   the master's tailscale image (`images/tailscale/Dockerfile`, FROM the same
-  pinned `v1.102.5` tag the devices fleet uses) and pointed at by the
+  pinned `v1.104.1` tag the devices fleet uses) and pointed at by the
   `TS_SERVE_CONFIG` environment variable — the supervisor cannot
   bind-mount (the f57.12 precedent).
 - Devices join the tailnet and serve nothing; the devices fleet's

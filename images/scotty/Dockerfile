@@ -97,7 +97,13 @@ COPY --from=source /scotty/src/package.json /scotty/src/package-lock.json ./
 RUN npm ci
 # Release CVE gate: next 16.3.4 (scotty's upstream lock at cc55734) carries a
 # fixable CRITICAL; 16.3.6 is the patch release that fixes it.
-RUN npm install --no-audit --no-fund --save-exact next@16.3.6
+# 16.3.8 + sharp >= 0.35.5 (next's image optimizer dep): the fixable HIGHs
+# reported 2026-10-20. sharp can't be a direct dependency (upstream's
+# `overrides: { sharp: ^0.35.4 }` forbids it), so the lock is updated within
+# that range and the result asserted.
+RUN npm install --no-audit --no-fund --save-exact next@16.3.8 \
+    && npm update --no-audit --no-fund sharp \
+    && node -e 'const v=JSON.parse(require("fs").readFileSync("node_modules/sharp/package.json","utf8")).version.split(".").map(Number); if (v[0]!==0||v[1]!==35||v[2]<5) { console.error("sharp "+v.join(".")+" < 0.35.5"); process.exit(1); } console.log("sharp "+v.join("."))'
 COPY --from=source /scotty/src/ ./
 # Standalone output is opt-in upstream (next.config.ts); the image runs the
 # standalone server. NEXT_STANDALONE=1 mirrors the upstream Dockerfile.

@@ -17,7 +17,7 @@ import { imageInputs, loadCatalog } from '../../scripts/image-catalog.mjs';
  *
  * The plan verified the placeholder mechanism two ways: the DEVICES
  * fleet's serve config already keys on ${TS_CERT_DOMAIN} at the same
- * pinned v1.102.5 tag and serves live; and containerboot's own source
+ * pinned v1.104.1 tag and serves live; and containerboot's own source
  * at the tag substitutes ${TS_CERT_DOMAIN} with the node's cert domain
  * on ANY node type (cmd/containerboot/serve.go readServeConfig
  * bytes.ReplaceAll; main.go sets certDomain from the netmap's

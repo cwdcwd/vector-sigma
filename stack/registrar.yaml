@@ -389,7 +389,7 @@ services:
   # TS_AUTHKEY (service variable) and TS_HOSTNAME (device variable) are
   # never in this file. ts-state persists tailnet identity + LE certs.
   # /dev/net/tun passthrough + TS_USERSPACE "false" are load-bearing
-  # (containerboot v1.102.5 defaults to userspace, which cannot accept
+  # (containerboot v1.104.1 defaults to userspace, which cannot accept
   # inbound tailnet traffic). TS_BOOT_TIMEOUT 24h makes a keyless
   # NeedsLogin a benign park instead of a 61s restart loop. Healthcheck is
   # process liveness only (the 1py.3 lesson).
