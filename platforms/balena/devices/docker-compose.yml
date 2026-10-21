@@ -158,13 +158,13 @@ services:
   # label stays for forward-proofing (a future host whose tun is
   # modular).
   #
-  # TS_USERSPACE: "false" — containerboot at v1.102.5 defaults
+  # TS_USERSPACE: "false" — containerboot at v1.104.1 defaults
   # UserspaceMode TRUE (cmd/containerboot/settings.go:111 —
   # def.Bool(os.Getenv("TS_USERSPACE"), true)); without this explicit
   # override the passthrough alone would still boot userspace. Kernel
   # tun is what accepts inbound tailnet connections.
   #
-  # TS_BOOT_TIMEOUT: 24h — v1.102.5's default 60s boot deadline expires
+  # TS_BOOT_TIMEOUT: 24h — v1.104.1's default 60s boot deadline expires
   # the IPN-bus watch on a keyless NeedsLogin park (containerboot exits
   # 1, supervisor restarts — the ~61s loop pinned live on release
   # 4373489: 157 restarts on optimus-prime, 34 on the master). A long
@@ -181,7 +181,7 @@ services:
   # j7g.1 SERVE FORM (the owner's AC3 live-leg origin decision — the same
   # serve-only TLS edge pattern the master's lnf build established): the
   # devices fleet's tailscale service becomes a BUILD (images/tailscale-devices/Dockerfile,
-  # FROM the same pinned v1.102.5) baking serve-config.json, pointed at by
+  # FROM the same pinned v1.104.1) baking serve-config.json, pointed at by
   # TS_SERVE_CONFIG. The devices fleet is N devices from one compose, so
   # the config keys the served surface on the ${TS_CERT_DOMAIN} PLACEHOLDER
   # — containerboot substitutes each node's own MagicDNS FQDN at apply time

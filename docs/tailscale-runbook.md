@@ -39,7 +39,7 @@ service spec:
 
 | Property | Value | Why |
 |---|---|---|
-| image | `tailscale/tailscale:v1.102.5` | Official, PINNED tag (never `:latest`); arm64 verified in the registry index 2026-10-01; alpine-based (healthcheck shell exists) |
+| image | `tailscale/tailscale:v1.104.1` | Official, PINNED tag (never `:latest`); arm64 verified in the registry index 2026-10-20; alpine-based (healthcheck shell exists) |
 | `network_mode` | `host` | tailscaled manages the host network namespace (the containerboot contract shape) |
 | `cap_add` | `net_admin`, `net_raw` | The containerboot contract |
 | env (structural) | `TS_STATE_DIR=/var/lib/tailscale` | The ONLY env in the compose; secrets arrive as dashboard variables |
@@ -57,7 +57,7 @@ canary on release 4373489 falsified the assumption that this made a
 inherit the host's `/dev` — the container's tailscaled fell back to
 `--tun=userspace-networking` (which cannot accept inbound tailnet
 traffic). The service therefore ships the passthrough, plus
-`TS_USERSPACE: "false"` (containerboot at v1.102.5 defaults userspace
+`TS_USERSPACE: "false"` (containerboot at v1.104.1 defaults userspace
 mode TRUE — kernel tun requires the explicit override) and
 `TS_BOOT_TIMEOUT: "24h"` (the 60s default makes a keyless first boot
 exit-1 restart-loop instead of a benign park).
@@ -202,11 +202,11 @@ IS the TLS front door. What shipped:
 
 - **The master's tailscale service becomes a BUILD**:
   `images/tailscale/Dockerfile` (FROM the same pinned
-  `v1.102.5`) bakes `serve-config.json`; the compose sets
+  `v1.104.1`) bakes `serve-config.json`; the compose sets
   `TS_SERVE_CONFIG=/serve-config.json`. ~~The devices fleet's tailscale
   service stays on the stock image~~ — superseded by the j7g.1 serve
   form below (the devices now serve their own agent origin).
-- **The serve config** (the containerboot v1.102.5 dialect, verified
+- **The serve config** (the containerboot v1.104.1 dialect, verified
   from the pinned tag's own source — `cmd/containerboot/serve.go`):
   `TCP` map keyed by port with `HTTPS:true` (443/8443/8444); `Web`
   map keyed `SNI:port` (no implicit 443), each proxying the loopback
@@ -288,7 +288,7 @@ What ships (repo-side, `platforms/balena/devices/`):
 
 - **`images/tailscale/Dockerfile` + `serve-config.json`** — the devices
   fleet's tailscale service becomes a BUILD (FROM the same pinned
-  `v1.102.5`), baking a serve config that fronts `:9900` at the
+  `v1.104.1`), baking a serve config that fronts `:9900` at the
   node's own MagicDNS name, proxying the agent's loopback publish.
 - **The `${TS_CERT_DOMAIN}` placeholder** (the ONE deliberate
   dialect delta vs the master's literal bake): the devices fleet is

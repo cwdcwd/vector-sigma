@@ -15,7 +15,7 @@ import { describe, expect, it } from 'vitest';
  * VS_CA_CERT_B64 and basic_auth are GONE.
  *
  * This test pins, so drift is a red CI run, not a canary discovery:
- *   1. serve-config.json: the v1.102.5 containerboot dialect (verified
+ *   1. serve-config.json: the v1.104.1 containerboot dialect (verified
  *      from the pinned tag's own source, cmd/containerboot/serve.go â€”
  *      readServeConfig + ipn/serve.go): TCP map keyed by PORT with
  *      HTTPS:true; Web map keyed "SNI:port" (there is NO implicit port
@@ -81,7 +81,7 @@ const registrarCompose = stripComments(
 const devicesCompose = stripComments(read('platforms/balena/devices/docker-compose.yml'));
 const deployCompose = stripComments(read('platforms/compose/compose.yaml'));
 
-describe('serve-config.json: the containerboot v1.102.5 dialect (lnf)', () => {
+describe('serve-config.json: the containerboot v1.104.1 dialect (lnf)', () => {
   const sc = JSON.parse(read('images/tailscale/serve-config.json'));
 
   it('fronts exactly the three management surfaces on the tailnet ports', () => {
@@ -128,7 +128,7 @@ describe('images/tailscale/Dockerfile: the master serve image (lnf)', () => {
   const dfCode = stripComments(df);
 
   it('pins the same tailscale tag the devices fleet uses (never :latest)', () => {
-    expect(dfCode).toMatch(/FROM tailscale\/tailscale:v1\.102\.5/);
+    expect(dfCode).toMatch(/FROM tailscale\/tailscale:v1\.104\.1/);
     expect(dfCode).not.toMatch(/:latest/);
   });
 
@@ -200,7 +200,7 @@ describe('platforms/balena/devices compose: the agent-origin serve edge (j7g.1 â
     // cannot serve every node, so the config keys the ${TS_CERT_DOMAIN}
     // PLACEHOLDER and containerboot substitutes each node's own
     // MagicDNS FQDN at apply time (readServeConfig's bytes.ReplaceAll,
-    // verified at the pinned v1.102.5 tag). The MASTER's config stays
+    // verified at the pinned v1.104.1 tag). The MASTER's config stays
     // literal (single device, known name) â€” this is the ONE deliberate
     // dialect delta between the two serve configs.
     const sc = JSON.parse(read('images/tailscale-devices/serve-config.json'));
@@ -214,7 +214,7 @@ describe('platforms/balena/devices compose: the agent-origin serve edge (j7g.1 â
 
   it('images/tailscale/Dockerfile pins the same tailscale tag both fleets build from', () => {
     const dfCode = stripComments(read('images/tailscale-devices/Dockerfile'));
-    expect(dfCode).toMatch(/FROM tailscale\/tailscale:v1\.102\.5/);
+    expect(dfCode).toMatch(/FROM tailscale\/tailscale:v1\.104\.1/);
     expect(dfCode).not.toMatch(/:latest/);
     expect(dfCode).toMatch(/COPY images\/tailscale(-devices)?\/serve-config\.json \/serve-config\.json/);
   });

@@ -10,7 +10,7 @@
 # is BAKED here and pointed at by the TS_SERVE_CONFIG environment
 # variable on the compose's tailscale service.
 #
-# Dialect note (verified from the pinned image's own source, v1.102.5 —
+# Dialect note (verified from the pinned image's own source, v1.104.1 —
 # cmd/containerboot/serve.go readServeConfig): TS_SERVE_CONFIG is a raw
 # ipn.ServeConfig JSON file, NOT the tailscaled config-file (hujson)
 # dialect newer clients (1.52+) accept. Shape (ipn/serve.go at the tag):
@@ -37,7 +37,7 @@
 # release/deploy sequence (plan section B/C) carries that gate; this
 # repo change only fixes the bytes.
 #
-# Application semantics (cmd/containerboot/main.go + serve.go, v1.102.5):
+# Application semantics (cmd/containerboot/main.go + serve.go, v1.104.1):
 #   - at startup containerboot UNSETS any previous serve config, then
 #     applies this file on the first netmap update (the certDomain change
 #     triggers the watcher's first read-apply); a file change re-applies
@@ -50,6 +50,10 @@
 #     config requests Let's Encrypt certificates for the MagicDNS name
 #     automatically once enabled; they renew inside tailscaled.
 
-FROM tailscale/tailscale:v1.102.5
+# v1.102.5 -> v1.104.1 (2026-10-20, CVE bump: clears 4 of the 7 fixable HIGH
+# Go CVEs in containerboot/tailscale/tailscaled): re-verified at the tag —
+# serve.go readServeConfig still ReplaceAlls ${TS_CERT_DOMAIN}; settings.go
+# still defaults TS_USERSPACE true and now parses TS_BOOT_TIMEOUT (24h valid).
+FROM tailscale/tailscale:v1.104.1
 
 COPY images/tailscale/serve-config.json /serve-config.json

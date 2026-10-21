@@ -13,7 +13,7 @@ import { describe, expect, it } from 'vitest';
  * not a deploy-day discovery:
  *
  *   - official image at a PINNED tag (never :latest; arm64 verified in the
- *     registry index 2026-10-01; current stable = v1.102.5),
+ *     registry index 2026-10-20; current stable = v1.104.1),
  *   - network_mode: host (tailscaled needs the host netns; no published
  *     ports — the overlay is private, funnel is ACL-denied),
  *   - cap_add net_admin + net_raw (the containerboot contract),
@@ -33,12 +33,12 @@ import { describe, expect, it } from 'vitest';
  *     tailnet traffic impossible). The passthrough is load-bearing:
  *     containerboot's own ensureTunFile mknod fallback needs CAP_MKNOD,
  *     which this service deliberately does not grant,
- *   - TS_USERSPACE: "false" — containerboot at v1.102.5 defaults
+ *   - TS_USERSPACE: "false" — containerboot at v1.104.1 defaults
  *     UserspaceMode TRUE (cmd/containerboot/settings.go:111,
  *     def.Bool(os.Getenv("TS_USERSPACE"), true)); the passthrough alone
  *     would still boot userspace. "false" parses via strconv.ParseBool
  *     (util/def/def.go),
- *   - TS_BOOT_TIMEOUT: structural long boot deadline — v1.102.5's 60s
+ *   - TS_BOOT_TIMEOUT: structural long boot deadline — v1.104.1's 60s
  *     default IPN-bus watch expires on a keyless NeedsLogin park and
  *     exits 1 → supervisor restart-loop ~61s (pinned live: 157 restarts
  *     on optimus-prime, 34 on the master). A long park keeps the
@@ -101,7 +101,7 @@ describe.each(composes)('tailscale overlay service: %s', (rel) => {
     // (images/tailscale/Dockerfile) — either a direct `image:` pin (devices)
     // or a build whose FROM is the pin (master) satisfies the guard.
     expect(
-      /^    image: tailscale\/tailscale:v1\.102\.5$/m.test(ts) ||
+      /^    image: tailscale\/tailscale:v1\.104\.1$/m.test(ts) ||
         /dockerfile: images\/tailscale(-devices)?\/Dockerfile/.test(ts),
     ).toBe(true);
     expect(ts).not.toMatch(/:latest/);
@@ -150,12 +150,12 @@ describe.each(composes)('tailscale overlay service: %s', (rel) => {
     expect(ts).toMatch(/^      - \/dev\/net\/tun$/m);
   });
 
-  it('forces kernel tun with TS_USERSPACE=false (containerboot defaults userspace TRUE at v1.102.5)', () => {
+  it('forces kernel tun with TS_USERSPACE=false (containerboot defaults userspace TRUE at v1.104.1)', () => {
     expect(ts).toMatch(/^      TS_USERSPACE: "false"$/m);
   });
 
   it('parks keyless boots instead of crashlooping (TS_BOOT_TIMEOUT beats the 60s default)', () => {
-    // v1.102.5 default: the IPN-bus watch dies at 60s on a keyless
+    // v1.104.1 default: the IPN-bus watch dies at 60s on a keyless
     // NeedsLogin park → exit 1 → supervisor restart-loop. A long
     // structural deadline keeps the container Running until the
     // owner's TS_AUTHKEY lands (recreate + join).
