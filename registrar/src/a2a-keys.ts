@@ -31,8 +31,17 @@ import type { Clock } from './clock.js';
 const A2A_PATH = 'config/a2a.json';
 /** Ed25519 public key, raw 32 bytes, base64url without padding (the guard's wire format). */
 const ED25519_B64URL = /^[A-Za-z0-9_-]{43}$/;
-/** A guard status older than this does not count as running (registrant polls well inside it). */
+/**
+ * A guard status older than this does not count as running. The registrant reports on every
+ * watcher cycle (WATCH_INTERVAL_MS), so this must stay comfortably above that cadence; a fleet
+ * polling slower can raise it with VS_A2A_READY_MAX_AGE_MS (milliseconds).
+ */
 export const READY_MAX_AGE_MS = 15 * 60 * 1000;
+
+function readyMaxAgeMs(env: Record<string, string | undefined> = process.env): number {
+  const v = Number(env.VS_A2A_READY_MAX_AGE_MS);
+  return Number.isFinite(v) && v > 0 ? v : READY_MAX_AGE_MS;
+}
 
 export class A2aKeyError extends Error {
   constructor(
@@ -58,6 +67,12 @@ export function keyFingerprint(ed25519: string): string {
   }
   const raw = Buffer.from(ed25519, 'base64url');
   if (raw.length !== 32) throw new A2aKeyError('ed25519 must decode to 32 bytes', 'invalid_key', 400);
+  // Canonical encoding only: a 43-char form also admits low-bit variants of the same 32 bytes,
+  // which would compare unequal as strings and fire a false conflict alarm. The guard always
+  // emits the canonical form.
+  if (raw.toString('base64url') !== ed25519) {
+    throw new A2aKeyError('ed25519 must be canonically encoded', 'invalid_key', 400);
+  }
   return createHash('sha256').update(raw).digest('hex').slice(0, 16);
 }
 
@@ -171,7 +186,7 @@ export async function readiness(db: NodePgDatabase, clock: Clock): Promise<Devic
   return enrolled.map((d) => {
     const k = byDevice.get(d.deviceId);
     const st = (k?.guardStatus ?? null) as Record<string, unknown> | null;
-    const fresh = k?.reportedAt ? now - new Date(k.reportedAt).getTime() <= READY_MAX_AGE_MS : false;
+    const fresh = k?.reportedAt ? now - new Date(k.reportedAt).getTime() <= readyMaxAgeMs() : false;
     const guardRunning = fresh && st?.running === true;
     const outbound = Array.isArray(st?.outbound_peers) ? (st?.outbound_peers as unknown[]) : [];
     const signedSender = guardRunning && outbound.length > 0;
@@ -300,8 +315,10 @@ export async function resyncMeshKeys(db: NodePgDatabase, clock: Clock): Promise<
     for (const p of trusted) {
       if (strict && peerKeys[p]) {
         delete tokens[p]; // strict: keyed peers authenticate by signature; no raw mesh key on this device
-      } else if (!tokens[p] && identityKey.get(p)) {
-        tokens[p] = identityKey.get(p)!; // not strict (or peer unkeyed): the legacy inbound path needs it
+      } else if (!strict && !tokens[p] && identityKey.get(p)) {
+        // dual: the legacy inbound path needs the raw key. Never re-distribute under strict, so
+        // revoking a key while strict does not hand the revoked peer's legacy credential back out.
+        tokens[p] = identityKey.get(p)!;
       }
     }
     if (Object.keys(tokens).length > 0) next.peer_tokens = tokens;

@@ -145,6 +145,16 @@ registered while devices still run stale bundles or legacy senders. Instead:
 Each lands as its own PR, in the order above. Releases ship it dark (no `peer_keys` means today's
 behavior) until the registrar change is released, then on.
 
+## Deferred (tracked follow-up)
+
+**Gateway agent rows still forward `Authorization`** (`extra_headers: ["Authorization"]`).
+- In strict mode, a receiver never authenticates by it: the guard verifies the signature and
+  strips the header before Hermes sees anything.
+- A receiver's guard does still *see* its callers' mesh keys in transit. Those keys are
+  route-locked to the mesh and are no longer an identity.
+- Clearing the field means the registrar must `PATCH /v1/agents/<id>`. That needs the creator
+  key's route lock widened, which is its own reviewed change.
+
 ## Non-goals and limits
 
 - **The edge → agent hop** is TLS on devices (serve edge) and compose-internal on primus,

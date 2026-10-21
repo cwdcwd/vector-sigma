@@ -148,6 +148,30 @@ describe('signed A2A identity: registrar', () => {
     expect((await readiness(env.db, env.clock)).find((r) => r.agentName === A.name)?.guardRunning).toBe(false);
   });
 
+  it('non-canonical key encodings are refused (no false conflict alarm)', () => {
+    const pub = newPublicKey();
+    const last = pub[pub.length - 1];
+    // flip a low (padding) bit in the final char: same decoded bytes, different string
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+    const variant = pub.slice(0, -1) + alphabet[alphabet.indexOf(last) ^ 1];
+    expect(Buffer.from(variant, 'base64url').equals(Buffer.from(pub, 'base64url'))).toBe(true);
+    expect(() => keyFingerprint(variant)).toThrow(/canonically/);
+  });
+
+  it('revoking a key while strict does not re-distribute the raw legacy credential', async () => {
+    await report(A, { ed25519: newPublicKey() });
+    await report(B, { ed25519: newPublicKey() });
+    for (const d of [A, B]) {
+      const { version } = await a2aOf(env, d.uuid);
+      await reportGuardStatus(env.db, env.clock, d.uuid, { running: true, outbound_peers: ['x'] }, version);
+    }
+    await setStrict(env.db, env.clock, true);
+    await revokeDeviceKey(env.db, env.clock, B.uuid);
+    const a = (await a2aOf(env, A.uuid)).a2a;
+    expect(a.peer_keys).toBeUndefined();
+    expect(a.peer_tokens).toBeUndefined(); // B's raw mesh key is NOT handed back out under strict
+  });
+
   it('revoking a key removes it from the peers', async () => {
     await report(A, { ed25519: newPublicKey() });
     await report(B, { ed25519: newPublicKey() });
