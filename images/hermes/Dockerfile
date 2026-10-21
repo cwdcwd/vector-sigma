@@ -150,15 +150,6 @@ RUN chmod 0755 /etc/cont-init.d/03-vs-queue-join
 COPY images/common/hooks/vs-a2a-wiring.sh /etc/cont-init.d/04-vs-a2a-wiring
 RUN chmod 0755 /etc/cont-init.d/04-vs-a2a-wiring
 
-# Signed A2A identity (docs/a2a-signed-identity.md): the guard sidecar + its s6 longrun. Dark until
-# the wiring hook writes $HERMES_HOME/a2a-guard/guard.json (a bundle carrying peer_keys); until then
-# the service exits and stays down, so behavior is unchanged.
-COPY images/common/bin/vs-a2a-guard.py /usr/local/bin/vs-a2a-guard
-COPY images/common/s6/a2a-guard /etc/s6-overlay/s6-rc.d/a2a-guard
-RUN chmod 0755 /usr/local/bin/vs-a2a-guard /etc/s6-overlay/s6-rc.d/a2a-guard/run \
-         /etc/s6-overlay/s6-rc.d/a2a-guard/finish \
-    && touch /etc/s6-overlay/s6-rc.d/user/contents.d/a2a-guard
-
 # e5o.5: the GitHub App identity wiring hook — primus writes to this
 # repo too (the same per-agent App mechanics as the devices: the bundle
 # carries github-app.pem + GH_APP_ID/GH_APP_SLUG; the hook derives the
