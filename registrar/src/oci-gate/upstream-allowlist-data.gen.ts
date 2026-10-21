@@ -1885,6 +1885,27 @@ export const UPSTREAM_IMAGE_ALLOWLIST: readonly UpstreamFileEntry[] = [
     markerFn: null,
     occurrences: [{ literal: "192.168.0.1" }, { literal: "192.168.0.0" }],
   },
+  // 2026-10-20 (CVE bump, PR #105): the hermes/agent images install httpx2
+  // 2.12.0 OVER hermes-agent's 2.7.0. The base layer still carries the 2.7.0
+  // bytes (pinned above, dca52588...), so this is an ADDITIONAL pin for the
+  // override layer's file, not a replacement. Byte-verified two ways: the
+  // official PyPI wheel httpx2-2.12.0-py3-none-any.whl (wheel sha256
+  // cc8b6eec...) and the built image's file. It is BYTE-IDENTICAL to the
+  // 2.13.0 _urls.py already pinned for LiteLLM's /app/.venv (d9fc06bc...);
+  // its only RFC1918 literal is the 192.168.0.1 test-doc address.
+  {
+    name: "pip-httpx2-2.12-hermes-override-rfc1918",
+    patterns: ["rfc1918_private_ip"],
+    matchKind: 'prefix',
+    match: "site-packages/httpx2",
+    fileSha256: null,
+    fileSha256s: {
+      "/opt/hermes/.venv/lib/python3.13/site-packages/httpx2/_urls.py": "d9fc06bca6d76d9e099738c51de8b6af245b5c6c2e6c5e386c3e8d46d4001756",
+    },
+    markers: [],
+    markerFn: null,
+    occurrences: [{ literal: "192.168.0.1" }],
+  },
   {
     name: "pip-httpx-rfc1918",
     patterns: ["rfc1918_private_ip"],
