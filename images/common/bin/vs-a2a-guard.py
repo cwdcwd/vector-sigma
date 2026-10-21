@@ -458,17 +458,25 @@ class Guard:
         return self.cfg.bundle_a2a or self.cfg.registry_path
 
     def reload(self) -> None:
+        """Transactional: every input is loaded into locals first and committed only when all of
+        them succeeded, so a failure at any step leaves the previous state fully intact."""
+        stamp = self._source_stamp()
         if self.cfg.bundle_a2a:
-            self.registry, strict = load_bundle_registry(self.cfg.bundle_a2a)
-            if self.cfg.legacy_bearer == strict:
-                log.warning("strict mode %s (from the bundle)", "ON" if strict else "OFF")
-            self.cfg.legacy_bearer = not strict
+            registry, strict = load_bundle_registry(self.cfg.bundle_a2a)
+            legacy = not strict
         else:
-            self.registry = load_registry(self.cfg.registry_path)
-        self._source_mtime = self._source_stamp()
-        self.local_tokens = read_secret_json(self.cfg.local_tokens_path) if self.cfg.local_tokens_path.exists() else {}
-        self.outbound_token = (read_secret_text(self.cfg.outbound_token_path)
-                               if self.cfg.outbound_token_path.exists() else "")
+            registry, legacy = load_registry(self.cfg.registry_path), self.cfg.legacy_bearer
+        local_tokens = read_secret_json(self.cfg.local_tokens_path) if self.cfg.local_tokens_path.exists() else {}
+        if not isinstance(local_tokens, dict):
+            raise ValueError(f"{self.cfg.local_tokens_path} is not a JSON object")
+        outbound_token = (read_secret_text(self.cfg.outbound_token_path)
+                          if self.cfg.outbound_token_path.exists() else "")
+        # commit
+        if hasattr(self, "registry") and self.cfg.legacy_bearer != legacy:
+            log.warning("strict mode %s (from the bundle)", "OFF" if legacy else "ON")
+        self.registry, self.cfg.legacy_bearer = registry, legacy
+        self.local_tokens, self.outbound_token = local_tokens, outbound_token
+        self._source_mtime = stamp
         log.info("loaded %d registry peers, %d local peer tokens", len(self.registry), len(self.local_tokens))
 
     def _source_stamp(self):

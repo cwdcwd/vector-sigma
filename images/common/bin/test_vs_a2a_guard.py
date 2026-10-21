@@ -488,6 +488,18 @@ class BundleMode(unittest.TestCase):
                          ("bob", False, ["alice"], ["alice"]))
         self.assertEqual(st["counts"], {"verified": 1, "legacy": 1, "refused": 0})
 
+    def test_reload_is_transactional(self):
+        # Review: a failure in a LATER reload step (here a malformed local-token file) must not leave
+        # the new registry/strict half-applied.
+        self.bob.tick()
+        before = (sorted(self.bob.registry), self.bob.cfg.legacy_bearer, dict(self.bob.local_tokens))
+        self.bob.cfg.local_tokens_path.write_text("[not, an, object]")
+        self.write_bundle({}, strict=True)  # would revoke alice AND flip strict if half-applied
+        self.bob.tick()
+        self.assertEqual((sorted(self.bob.registry), self.bob.cfg.legacy_bearer, dict(self.bob.local_tokens)), before)
+        self.assertEqual(self.signed()[0], 200)
+        self.assertEqual(_http(self.url, HERMES_V1, {"Authorization": "Bearer legacy"})[0], 200)  # still dual
+
     def test_malformed_key_is_skipped_not_fatal(self):
         self.write_bundle({"alice": g.public_key_text(self.alice_key), "mallory": "not-a-key"}, strict=False)
         self.bob.tick()
