@@ -22,7 +22,8 @@ import type { RegistrarConfig } from './config.js';
 import { registerAdminRoutes, cookieMap } from './admin.js';
 import { verifyAdminKey } from './admin-auth.js';
 import { rotateBundle, rearmSlot } from './rotate.js';
-import { RearmRequestSchema, RotateRequestSchema, MeshEnrollRequestSchema } from '@vector-sigma/shared';
+import { RearmRequestSchema, RotateRequestSchema, MeshEnrollRequestSchema, A2aKeyReportSchema } from '@vector-sigma/shared';
+import { registerDeviceKey, reportGuardStatus, resolveKeyPolicy, resyncMeshKeys, A2aKeyError } from './a2a-keys.js';
 import { enrollAgent, bootstrapCreatorKey, MeshEnrollError, MeshMintRateLimiter, MESH_CREATOR_KEY_ENV, MESH_MASTER_KEY_ENV, MESH_GATEWAY_BASE_URL_ENV } from './mesh-enroll.js';
 import { SessionManager, SESSION_COOKIE } from './session.js';
 
@@ -294,6 +295,54 @@ export function buildApp(opts: BuildOptions): FastifyInstance {
       bundle_version: result.bundleVersion,
       delivered_at: result.deliveredAt.toISOString(),
     });
+  });
+
+  /**
+   * Signed A2A identity: the registrant reports the agent's PUBLIC key (+ guard readiness).
+   * Same device auth as bootstrap (Bearer REGISTRAR_KEY + balena_uuid), but it consumes no
+   * delivery slot. The first key binds with the device credential's trust; a different key is a
+   * conflict alarm, never a replacement (docs/a2a-signed-identity.md, Trust anchor).
+   */
+  app.post('/v1/a2a-key', async (request, reply) => {
+    const ip = clientIp(request);
+    const keyId = keyFingerprint(extractBearer(request));
+    const now = () => clock.now();
+    const locked = rateGate(request);
+    if (locked !== null) {
+      await audit(db, { deviceId: null, outcome: 'denied', reason: 'rate_limited', keyId, sourceIp: ip, occurredAt: now() });
+      return reply.status(429).header('Retry-After', String(locked)).send({ error: 'rate_limited', retry_after_seconds: locked });
+    }
+    const parsed = A2aKeyReportSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      await audit(db, { deviceId: null, outcome: 'denied', reason: 'invalid_body', keyId, sourceIp: ip, occurredAt: now() });
+      return reply.status(400).send({ error: 'invalid_request' });
+    }
+    const presentedKey = extractBearer(request);
+    if (presentedKey === null) {
+      limiter.recordFailure(ip);
+      await audit(db, { deviceId: null, outcome: 'denied', reason: 'missing_key', keyId: null, sourceIp: ip, occurredAt: now() });
+      return reply.status(401).send({ error: 'unauthorized' });
+    }
+    const auth = await authenticate(db, parsed.data.balena_uuid, presentedKey);
+    if (!auth.ok) {
+      if (auth.keyFailure) limiter.recordFailure(ip);
+      await audit(db, { deviceId: auth.auditDeviceId, outcome: 'denied', reason: auth.reason, keyId, sourceIp: ip, occurredAt: now() });
+      if (auth.status === 403) return reply.status(403).send({ error: 'forbidden' });
+      return reply.status(401).send({ error: 'unauthorized' });
+    }
+    try {
+      const result = await registerDeviceKey(db, clock, parsed.data.balena_uuid, parsed.data.ed25519,
+        resolveKeyPolicy(process.env), { keyId, sourceIp: ip });
+      if (parsed.data.guard_status !== undefined || parsed.data.bundle_version !== undefined) {
+        await reportGuardStatus(db, clock, parsed.data.balena_uuid,
+          (parsed.data.guard_status ?? null) as Record<string, unknown> | null, parsed.data.bundle_version ?? null);
+      }
+      return reply.status(200).send({ status: result.status, fingerprint: result.fingerprint });
+    } catch (err) {
+      if (err instanceof A2aKeyError) return reply.status(err.status).send({ error: err.code });
+      request.log.error({ err }, 'a2a key report failed');
+      return reply.status(500).send({ error: 'internal_error' });
+    }
   });
 
   app.get('/v1/status', async (request, reply) => {
@@ -574,6 +623,10 @@ app.post('/v1/mesh-enroll', async (request, reply) => {
     request.log.error({ err }, 'mesh enroll failed');
     return reply.status(500).send({ error: 'internal_error' });
   }
+
+  // Signed identity: a new mesh member gets its peers' public keys (and they get its key).
+  // Best effort: the enroll already succeeded; a failed resync is re-run by the next key event.
+  await resyncMeshKeys(db, clock).catch((err) => request.log.error({ err }, 'a2a key resync after enroll failed'));
 
   // The API returns alias + merged ONLY — key material never crosses
   // to the caller (shape B's own constraint, kept verbatim).
