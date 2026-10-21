@@ -294,8 +294,15 @@ def load_bundle_registry(path: Path) -> tuple[dict, bool]:
     """a2a.json {"peer_keys": {name: "<b64url>"}, "strict": bool} -> (registry, strict).
     A malformed key is skipped (logged) rather than taking the whole registry down."""
     data = json.loads(path.read_text())
+    if not isinstance(data, dict):
+        raise ValueError("bundle a2a.json is not a JSON object")
+    peer_keys = data.get("peer_keys")
+    if peer_keys is None:
+        peer_keys = {}  # absent: no signed peers (a legitimate bundle state)
+    elif not isinstance(peer_keys, dict):
+        raise ValueError("bundle peer_keys is not an object")  # malformed: keep the last good state
     out = {}
-    for name, pub in (data.get("peer_keys") or {}).items():
+    for name, pub in peer_keys.items():
         try:
             out[name] = {"key": load_public_key(pub), "pub": pub}
         except (ValueError, TypeError):
@@ -458,26 +465,31 @@ class Guard:
             self.cfg.legacy_bearer = not strict
         else:
             self.registry = load_registry(self.cfg.registry_path)
-        try:
-            self._source_mtime = self._source().stat().st_mtime_ns
-        except OSError:
-            self._source_mtime = None
+        self._source_mtime = self._source_stamp()
         self.local_tokens = read_secret_json(self.cfg.local_tokens_path) if self.cfg.local_tokens_path.exists() else {}
         self.outbound_token = (read_secret_text(self.cfg.outbound_token_path)
                                if self.cfg.outbound_token_path.exists() else "")
         log.info("loaded %d registry peers, %d local peer tokens", len(self.registry), len(self.local_tokens))
 
-    def tick(self) -> None:
-        """Reload when the key source changed (bundle rotations land live), then write status."""
+    def _source_stamp(self):
+        """(mtime, inode, size): also catches an atomic replace within one mtime tick."""
         try:
-            mtime = self._source().stat().st_mtime_ns
+            st = self._source().stat()
         except OSError:
-            mtime = None
-        if mtime != self._source_mtime:
+            return None
+        return (st.st_mtime_ns, st.st_ino, st.st_size)
+
+    def tick(self) -> None:
+        """Reload when the key source changed (bundle rotations land live), then write status.
+        Any reload failure keeps the last good registry and strict setting: the live bundle is
+        delivered from outside, so a malformed one must never stop the guard."""
+        stamp = self._source_stamp()
+        if stamp != self._source_mtime:
             try:
                 self.reload()
-            except (OSError, ValueError, GuardError) as e:  # keep serving the last good state
+            except Exception as e:  # noqa: BLE001 - keep serving the last good state
                 log.error("reload failed, keeping the previous registry: %s", e)
+                self._source_mtime = stamp  # don't retry the same bad file every tick
         self.write_status()
 
     def write_status(self) -> None:

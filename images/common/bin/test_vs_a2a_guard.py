@@ -7,6 +7,7 @@ import os
 import stat
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -437,11 +438,21 @@ class BundleMode(unittest.TestCase):
             s.server_close()
         self.tmp.cleanup()
 
+    _clock = [int(time.time() * 1e9)]
+
+    def _bump(self):
+        # strictly increasing mtimes, independent of wall-clock granularity (deterministic reloads)
+        self._clock[0] += 1_000_000_000
+        os.utime(self.a2a, ns=(self._clock[0], self._clock[0]))
+
+    def write_raw(self, text):
+        tmp = self.a2a.with_suffix(".tmp")  # the registrant writes tmp + rename too
+        tmp.write_text(text)
+        os.replace(tmp, self.a2a)
+        self._bump()
+
     def write_bundle(self, peer_keys, strict):
-        # a fresh mtime each write (the registrant writes tmp+rename, which also changes it)
-        self.a2a.write_text(json.dumps({"identity_key": "unused-here", "peer_keys": peer_keys, "strict": strict}))
-        st = self.a2a.stat()
-        os.utime(self.a2a, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+        self.write_raw(json.dumps({"identity_key": "unused-here", "peer_keys": peer_keys, "strict": strict}))
 
     def signed(self):
         return _http(self.url, HERMES_V1, {g.SIG_HEADER: g.sign(self.alice_key, "alice", "bob", HERMES_V1)})
@@ -484,9 +495,14 @@ class BundleMode(unittest.TestCase):
         self.assertEqual(self.signed()[0], 200)
 
     def test_broken_bundle_keeps_last_good_state(self):
-        self.a2a.write_text("{not json")
-        st = self.a2a.stat()
-        os.utime(self.a2a, ns=(st.st_atime_ns, st.st_mtime_ns + 2_000_000_000))
+        # Review: structurally wrong JSON must not stop the guard either.
+        self.write_bundle({"alice": g.public_key_text(self.alice_key)}, strict=True)
         self.bob.tick()
-        self.assertEqual(sorted(self.bob.registry), ["alice"])
-        self.assertEqual(self.signed()[0], 200)
+        for broken in ("{not json", "[]", "null", '{"peer_keys": []}', '{"peer_keys": "x"}', '"str"'):
+            with self.subTest(broken):
+                self.write_raw(broken)
+                self.bob.tick()  # must not raise
+                self.assertEqual(sorted(self.bob.registry), ["alice"])
+                self.assertFalse(self.bob.cfg.legacy_bearer)  # strict kept
+                self.assertEqual(self.signed()[0], 200)
+                self.assertEqual(_http(self.url, HERMES_V1, {"Authorization": "Bearer legacy"})[0], 401)
