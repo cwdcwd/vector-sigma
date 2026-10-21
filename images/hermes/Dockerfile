@@ -67,9 +67,15 @@ RUN apt-get update \
          name="$(node -p "require('$dir/package.json').name")"; \
          got="$(node -p "require('$dir/package.json').version")"; \
          [ "$got" = "$have" ] || { echo "cve-override: $dir is $got, expected $have" >&2; exit 1; }; \
-         tgz="$(npm pack --silent --cache /tmp/.npm-cve-cache --pack-destination /tmp/cve-pack "$name@$want")"; \
-         rm -rf "$dir" && mkdir -p "$dir" && tar -xzf "/tmp/cve-pack/$tgz" -C "$dir" --strip-components 1 --no-same-owner; \
-         echo "cve-override: $name $have -> $(node -p "require('$dir/package.json').version") at $dir"; \
+         tgz="$(npm pack --silent --cache /tmp/.npm-cve-cache --pack-destination /tmp/cve-pack "$name@$want")" \
+           && [ -n "$tgz" ] && [ -f "/tmp/cve-pack/$tgz" ] \
+           || { echo "cve-override: npm pack $name@$want failed" >&2; exit 1; }; \
+         rm -rf "$dir" && mkdir -p "$dir" && tar -xzf "/tmp/cve-pack/$tgz" -C "$dir" --strip-components 1 --no-same-owner \
+           || { echo "cve-override: extracting $name@$want into $dir failed" >&2; exit 1; }; \
+         now="$(node -p "require('$dir/package.json').version")" \
+           && [ "$now" = "$want" ] \
+           || { echo "cve-override: $dir is '$now' after replacement, expected $want" >&2; exit 1; }; \
+         echo "cve-override: $name $have -> $now at $dir"; \
        done \
     && rm -rf /tmp/cve-pack /tmp/.npm-cve-cache /root/.npm
 
