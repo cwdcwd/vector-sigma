@@ -24,7 +24,7 @@ import { verifyAdminKey } from './admin-auth.js';
 import { rotateBundle, rearmSlot } from './rotate.js';
 import { RearmRequestSchema, RotateRequestSchema, MeshEnrollRequestSchema, A2aKeyReportSchema } from '@vector-sigma/shared';
 import { registerDeviceKey, reportGuardStatus, resolveKeyPolicy, resyncMeshKeys, A2aKeyError } from './a2a-keys.js';
-import { enrollAgent, bootstrapCreatorKey, MeshEnrollError, MeshMintRateLimiter, MESH_CREATOR_KEY_ENV, MESH_MASTER_KEY_ENV, MESH_GATEWAY_BASE_URL_ENV } from './mesh-enroll.js';
+import { enrollAgent, createCreatorKeyEnv, MeshEnrollError, MeshMintRateLimiter } from './mesh-enroll.js';
 import { SessionManager, SESSION_COOKIE } from './session.js';
 
 export interface BuildOptions {
@@ -126,6 +126,15 @@ export function buildApp(opts: BuildOptions): FastifyInstance {
   // manager would silently disagree about who is logged in.
   const sessions = new SessionManager(config.sessionSecret, clock);
 
+  /**
+   * The creator key for every mint path (j7g.1 design call): env first, else
+   * the registrar-side bootstrap from the composition master key, minted once
+   * per process and shared by the machine-auth enroll and the console's
+   * enroll / memory / model actions. A restart re-mints (self-heal). The
+   * value never leaves this process's memory.
+   */
+  const creatorKeyEnv = createCreatorKeyEnv(db);
+
   // Admin console + owner endpoints share this limiter for admin-key auth.
   registerAdminRoutes(app, {
     db,
@@ -133,18 +142,11 @@ export function buildApp(opts: BuildOptions): FastifyInstance {
     clock,
     limiter,
     sessions,
+    creatorKeyEnv,
   });
 
   /** Per-device mint rate limiter for the mesh-enroll action (j7g.1). */
   const mintLimiter = new MeshMintRateLimiter(clock);
-
-  /**
-   * The in-process bootstrapped creator key (j7g.1 design call): null
-   * until the first mesh-enroll call bootstraps it from the composition
-   * master key. One mint per registrar process; a restart re-mints
-   * (self-heal). Never written anywhere but this closure.
-   */
-  let bootstrappedCreatorKey: string | null = null;
 
   /**
    * Front door (fleet-ops-f57.9): GET / must never 404. A live admin
@@ -578,32 +580,24 @@ app.post('/v1/mesh-enroll', async (request, reply) => {
   }
   const { agent_name: agentName, origin_url: originUrl, public_url: publicUrl } = parsed.data;
 
-  // Resolve the creator key: env first, then the one-time registrar-side
-  // bootstrap (design call, flagged in the PR). The bootstrap is cached
-  // in-process — one mint per registrar process; a restart re-mints
-  // (the self-heal). The value never leaves this process's memory.
-  let env: Record<string, string | undefined> = { ...process.env };
-  if ((env[MESH_CREATOR_KEY_ENV] ?? '').trim() === '') {
-    if (bootstrappedCreatorKey === null) {
-      try {
-        bootstrappedCreatorKey = await bootstrapCreatorKey(db, env);
-      } catch (err) {
-        const reason = err instanceof MeshEnrollError ? err.code : 'mesh_enroll_bootstrap_failed';
-        await audit(db, {
-          deviceId: null,
-          outcome: 'denied',
-          reason: `mesh_enroll_bootstrap:${reason}`,
-          keyId,
-          sourceIp: ip,
-          occurredAt: clock.now(),
-        });
-        return reply.status(err instanceof MeshEnrollError ? err.status : 500).send({
-          error: 'not_configured',
-          reason: err instanceof Error ? err.message : 'creator key bootstrap failed',
-        });
-      }
-    }
-    env = { ...env, [MESH_CREATOR_KEY_ENV]: bootstrappedCreatorKey };
+  // Resolve the creator key: env first, then the shared registrar-side bootstrap.
+  let env: Record<string, string | undefined>;
+  try {
+    env = await creatorKeyEnv();
+  } catch (err) {
+    const reason = err instanceof MeshEnrollError ? err.code : 'mesh_enroll_bootstrap_failed';
+    await audit(db, {
+      deviceId: null,
+      outcome: 'denied',
+      reason: `mesh_enroll_bootstrap:${reason}`,
+      keyId,
+      sourceIp: ip,
+      occurredAt: clock.now(),
+    });
+    return reply.status(err instanceof MeshEnrollError ? err.status : 500).send({
+      error: 'not_configured',
+      reason: err instanceof Error ? err.message : 'creator key bootstrap failed',
+    });
   }
 
   let outcome;

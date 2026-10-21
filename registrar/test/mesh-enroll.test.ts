@@ -1,7 +1,8 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { createCreatorKeyEnv } from '../src/mesh-enroll.js';
 
 /**
  * Mesh-enroll capability contract (fleet-ops-j7g.1 shape B).
@@ -124,8 +125,10 @@ describe('mesh-enroll sentinel shape is hardcoded server-side (j7g.1)', () => {
     // surface (/key/list liveness probe + /v1/agents registration).
     expect(block).toMatch(/allowed_routes: \[\n\s+'\/user\/new',\n\s+'\/team\/new',\n\s+'\/team\/list',\n\s+'\/team\/member_add',\n\s+'\/key\/generate',\n\s+'\/key\/list',\n\s+'\/v1\/agents',\n\s+\]/);
     expect(block).toMatch(/gatewayCreatorKey/);
-    // the route only bootstraps when the env var is unset
-    expect(appSrc).toMatch(/\(env\[MESH_CREATOR_KEY_ENV\] \?\? ''\)\.trim\(\) === ''/);
+    // the shared resolver only bootstraps when the env var is unset, and every mint path uses it
+    const resolver = moduleSrc.slice(moduleSrc.indexOf('export function createCreatorKeyEnv'));
+    expect(resolver).toMatch(/if \(\(env\[MESH_CREATOR_KEY_ENV\] \?\? ''\)\.trim\(\) !== ''\) return env;/);
+    expect(appSrc).toMatch(/env = await creatorKeyEnv\(\);/);
   });
 });
 
@@ -204,5 +207,30 @@ describe('vs-mesh-enroll CLI: thin, bundle-auth, single-source (j7g.1)', () => {
   it('returns {alias, merged} only — never echoes key fields', () => {
     expect(cliSrc).toMatch(/alias=/);
     expect(cliSrc).toMatch(/merged=/);
+  });
+});
+
+describe('createCreatorKeyEnv: one creator-key source for every mint path', () => {
+  const db = {} as never;
+  it('env-set key wins: the bootstrap never runs', async () => {
+    const boot = vi.fn(async () => 'sk-boot');
+    const get = createCreatorKeyEnv(db, () => ({ GATEWAY_KEY_CREATOR_KEY: 'sk-env' }), boot);
+    expect((await get())['GATEWAY_KEY_CREATOR_KEY']).toBe('sk-env');
+    expect(boot).not.toHaveBeenCalled();
+  });
+  it('unset: bootstraps once, concurrent and later callers share the key', async () => {
+    const boot = vi.fn(async () => 'sk-boot');
+    const get = createCreatorKeyEnv(db, () => ({}), boot);
+    const [a, b] = await Promise.all([get(), get()]);
+    const c = await get();
+    expect([a, b, c].map((e) => e['GATEWAY_KEY_CREATOR_KEY'])).toEqual(['sk-boot', 'sk-boot', 'sk-boot']);
+    expect(boot).toHaveBeenCalledTimes(1);
+  });
+  it('a failed bootstrap is not cached: the next call retries', async () => {
+    const boot = vi.fn().mockRejectedValueOnce(new Error('gateway down')).mockResolvedValueOnce('sk-boot');
+    const get = createCreatorKeyEnv(db, () => ({}), boot);
+    await expect(get()).rejects.toThrow('gateway down');
+    expect((await get())['GATEWAY_KEY_CREATOR_KEY']).toBe('sk-boot');
+    expect(boot).toHaveBeenCalledTimes(2);
   });
 });

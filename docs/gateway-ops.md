@@ -382,6 +382,14 @@ registration). Two provisioning shapes, in priority order:
    alias with no marker row is REFUSED — an owner-held credential is
    never silently destroyed; the message names the manual step.
 
+**One creator key for every mint path.** The resolved key (env, or the
+per-process bootstrap) is shared by the machine-auth enroll and all
+console actions: *Mesh enroll*, *Mint memory keys* and *Mint model key*.
+Whichever runs first bootstraps it; the others reuse it, and a failed
+bootstrap is retried on the next call. (Before registrar-v1.5.9 only the
+machine-auth enroll saw the bootstrapped key, so the console mints
+refused with "not configured" on a bootstrapped master.)
+
 The master key is therefore used ONLY by the bootstrap (and never
 reaches the enroll's steady-state calls). When the owner later
 service-scopes `LITELLM_MASTER_KEY` (the standing hardening option),
