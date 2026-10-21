@@ -55,6 +55,10 @@ FROM nousresearch/hermes-agent:v2026.9.21
 #     2.12.0 (hermes-agent pins aiohttp==3.14.3 / httpx2==2.7.0 in extras —
 #     overridden, as PyJWT is; those pins are extras-only, so `uv pip check`
 #     still reports just the PyJWT override and the base's own msal one)
+#   - CRITICAL, 2026-10-21: certifi 2026.10.19 (GHSA-6q48-6c7w-9gw2, compromised
+#     emSign roots) and pillow 13.0.0 (CVE-2026-112403). hermes-agent hard-pins
+#     certifi==2026.5.20 and Pillow==12.3.0, so `uv pip check` flags both too;
+#     Hermes's own code uses none of the APIs Pillow 13 removed.
 #   - node: patch releases dropped in place of the vulnerable copies inside
 #     Hermes's own trees (same major/minor, unchanged dependency ranges). Each
 #     target must exist at the expected version, so a base bump that moves or
@@ -65,6 +69,7 @@ RUN apt-get update \
     && apt-get clean && rm -rf /var/lib/apt/lists/* \
     && uv pip install --no-cache --python /opt/hermes/.venv/bin/python 'PyJWT==2.14.0' 'anyio==4.14.2' \
          'aiohttp==3.14.4' 'tornado==6.5.9' 'urllib3==2.8.0' 'httpx2==2.12.0' 'httpcore2==2.12.0' \
+         'certifi==2026.10.19' 'pillow==13.0.0' \
     && npm install -g --no-audit --no-fund --cache /tmp/.npm-cve-cache npm@11.21.1 \
     && mkdir /tmp/cve-pack \
     && for spec in \
