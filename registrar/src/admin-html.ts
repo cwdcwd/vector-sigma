@@ -663,8 +663,10 @@ export interface A2aDeviceRowView {
   deviceId: string;
   agentName: string;
   fingerprint: string | null;
+  publicKey: string | null;
   keyStatus: 'active' | 'pending' | 'none';
   conflictFingerprint: string | null;
+  conflictPublicKey: string | null;
   guardRunning: boolean;
   signedSender: boolean;
   appliedCurrent: boolean;
@@ -673,16 +675,19 @@ export interface A2aDeviceRowView {
 
 /** Signed A2A identity (docs/a2a-signed-identity.md): per-device keys + readiness, the strict switch. */
 export function a2aMeshPage(rows: A2aDeviceRowView[], strict: boolean, csrfToken: string, error?: string): string {
+  // No JS (CSP script-src 'self'): <details> reveals the key; user-select:all makes one click select it to copy.
+  const showKey = (key: string | null) =>
+    key ? ` <details class="a2a-key"><summary>show key</summary><code style="user-select:all;word-break:break-all">${esc(key)}</code></details>` : '';
   const yes = (b: boolean) => (b ? '<span class="ok">yes</span>' : '<span class="danger">no</span>');
   const action = (uuid: string, verb: string, label: string, cls = '') =>
     `<form method="post" action="/admin/devices/${esc(uuid)}/a2a-key/${verb}" class="inline-form"><input type="hidden" name="_csrf" value="${esc(csrfToken)}"><button type="submit"${cls ? ` class="${cls}"` : ''}>${label}</button></form>`;
   const trs = rows
     .map((r) => {
       const conflict = r.conflictFingerprint
-        ? `<span class="danger">${esc(r.conflictFingerprint)}</span> ${action(r.deviceId, 'approve', 'Approve new key')} ${action(r.deviceId, 'reject-conflict', 'Reject', 'danger')}`
+        ? `<span class="danger">${esc(r.conflictFingerprint)}</span>${showKey(r.conflictPublicKey)} ${action(r.deviceId, 'approve', 'Approve new key')} ${action(r.deviceId, 'reject-conflict', 'Reject', 'danger')}`
         : '—';
       const keyCell = r.fingerprint
-        ? `<code>${esc(r.fingerprint)}</code> ${esc(r.keyStatus)}${r.keyStatus === 'pending' && !r.conflictFingerprint ? ` ${action(r.deviceId, 'approve', 'Approve')}` : ''}`
+        ? `<code>${esc(r.fingerprint)}</code> ${esc(r.keyStatus)}${showKey(r.publicKey)}${r.keyStatus === 'pending' && !r.conflictFingerprint ? ` ${action(r.deviceId, 'approve', 'Approve')}` : ''}`
         : '<span class="muted">not reported</span>';
       const revoke = r.fingerprint ? action(r.deviceId, 'revoke', 'Revoke key', 'danger') : '';
       return `<tr><td>${esc(r.agentName)}</td><td>${keyCell}</td><td>${conflict}</td><td>${yes(r.guardRunning)}</td><td>${yes(r.signedSender)}</td><td>${yes(r.appliedCurrent)}</td><td>${yes(r.ready)}</td><td>${revoke}</td></tr>`;
@@ -696,7 +701,7 @@ export function a2aMeshPage(rows: A2aDeviceRowView[], strict: boolean, csrfToken
     'Signed identity',
     `<h1>Signed A2A identity</h1>
 ${error ? `<p class="danger">${esc(error)}</p>` : ''}
-<p class="muted">Each agent generates an Ed25519 key on its own data volume and reports the <strong>public</strong> key; peers receive public keys only (<code>peer_keys</code>). Compare each fingerprint with the one the device logs at boot (<code>a2a identity key: fingerprint …</code>). A different key reported later is a <strong>conflict</strong>: the active key stays until you approve or reject the new one.</p>
+<p class="muted">Each agent generates an Ed25519 key on its own data volume and reports the <strong>public</strong> key; peers receive public keys only (<code>peer_keys</code>). <em>Show key</em> reveals the full public key (one click selects it for copying). Compare each fingerprint with the one the device logs at boot (<code>a2a identity key: fingerprint …</code>). A different key reported later is a <strong>conflict</strong>: the active key stays until you approve or reject the new one.</p>
 <div class="card"><h2>Strict mode: ${strict ? '<span class="ok">ON</span>' : '<span class="muted">off (dual)</span>'}</h2>
 <p class="muted">Strict refuses unsigned A2A calls everywhere; raw peer mesh keys stop being delivered for keyed peers. Delivered live (no container recreate) and reversible live.</p>
 ${toggle}</div>

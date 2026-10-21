@@ -105,6 +105,23 @@ describe('signed A2A identity: registrar', () => {
     expect(audits.some((r) => String(r.reason).startsWith('a2a_key_conflict:'))).toBe(true);
   });
 
+  it('console: a conflicting key is shown in full next to the active one, so it can be checked before approval', async () => {
+    await seedAdminKey(env.db, 'ak_test_admin');
+    const admin = new AdminClient(env.app);
+    await admin.login('ak_test_admin');
+    const first = newPublicKey();
+    const second = newPublicKey();
+    await report(A, { ed25519: first });
+    await report(A, { ed25519: second });
+    const row = (await readiness(env.db, env.clock)).find((r) => r.deviceId === A.uuid)!;
+    expect(row.publicKey).toBe(first);
+    expect(row.conflictPublicKey).toBe(second);
+    const html = (await admin.get('/admin/a2a')).html;
+    expect(html).toContain(first);
+    expect(html).toContain(second);
+    expect(html.indexOf(keyFingerprint(second))).toBeLessThan(html.indexOf(second)); // conflict key sits in the conflict cell
+  });
+
   it('active keys reach the peers as peer_keys (public only), via the rotate plane', async () => {
     const pa = newPublicKey();
     const pb = newPublicKey();
@@ -210,6 +227,7 @@ describe('signed A2A identity: registrar', () => {
     expect(pageRes.status).toBe(200);
     expect(pageRes.html).toContain('Signed A2A identity');
     expect(pageRes.html).toContain(keyFingerprint(pa));
+    expect(pageRes.html).toMatch(new RegExp(`<summary>show key</summary><code[^>]*>${pa}</code>`)); // full PUBLIC key, copyable
     expect(pageRes.html).toMatch(/Turn strict ON<\/button>/);
     const toggled = await admin.postForm('/admin/a2a/strict', { _csrf: extractCsrf(pageRes.html), strict: 'on' });
     expect(toggled.status).toBe(303);

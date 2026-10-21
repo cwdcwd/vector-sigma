@@ -149,8 +149,11 @@ export interface DeviceReadiness {
   deviceId: string;
   agentName: string;
   fingerprint: string | null;
+  /** The full PUBLIC key (raw Ed25519, as reported), for copying into other trust stores. */
+  publicKey: string | null;
   keyStatus: 'active' | 'pending' | 'none';
   conflictFingerprint: string | null;
+  conflictPublicKey: string | null;
   guardRunning: boolean;
   signedSender: boolean;
   appliedCurrent: boolean;
@@ -196,8 +199,10 @@ export async function readiness(db: NodePgDatabase, clock: Clock): Promise<Devic
       deviceId: d.deviceId,
       agentName: d.agentName,
       fingerprint: k?.fingerprint ?? null,
+      publicKey: k?.ed25519 ?? null,
       keyStatus,
       conflictFingerprint: k?.conflictFingerprint ?? null,
+      conflictPublicKey: k?.conflictEd25519 ?? null,
       guardRunning,
       signedSender,
       appliedCurrent,
