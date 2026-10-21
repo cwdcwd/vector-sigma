@@ -19,6 +19,14 @@
 # re-derive the allowlist pins BEFORE bumping this digest (gate contract).
 FROM ghcr.io/berriai/litellm@sha256:b7b9e2c306343721802253d0dd9436b9634a2eb4e14da7c7cf06c5c7b7530802
 
+# CRITICAL remediation (release gate, 2026-10-21): certifi 2026.10.19 over the
+# base venv's 2026.4.22 (GHSA-6q48-6c7w-9gw2, compromised emSign roots). The
+# stock venv has no pip/uv, so uv is bind-mounted for this one step only (no
+# binary shipped). The base layer's pinned bytes are untouched; the content
+# gate scans the new layer like any other.
+RUN --mount=from=ghcr.io/astral-sh/uv:0.12.24@sha256:3af4716e991d6956a41e573eab705d0ee08500cd829ed30293eb8472f372c65a,source=/uv,target=/tmp/uv \
+    /tmp/uv pip install --no-cache --python /app/.venv/bin/python 'certifi==2026.10.19' \
+    && /app/.venv/bin/python -c 'import certifi, sys; v = certifi.__version__; print("certifi", v); sys.exit(v != "2026.10.19")'
 COPY images/litellm/litellm-config.yaml /app/config.yaml
 COPY images/litellm/litellm-entrypoint.sh /app/litellm-entrypoint.sh
 
