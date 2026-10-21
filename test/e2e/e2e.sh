@@ -2358,6 +2358,16 @@ urllib.request.urlopen(req, timeout=10)
 #   8. strict OFF (the live rollback) via the console
 # The E2E registrants poll every 10 min, so this AC restarts primus-registrant wherever the real
 # watcher's first cycle (report key + fetch a rotated bundle) is what the step needs.
+log_since() { # log_since <container> <since-rfc3339> <pattern> — poll up to 15 s for a FRESH log line
+  local i
+  for i in $(seq 1 15); do
+    # capture first: under pipefail, grep -q's early exit SIGPIPEs a still-writing docker logs
+    grep -qF -- "$3" <<<"$(docker logs --since "$2" "$1" 2>&1)" && return 0
+    sleep 1
+  done
+  return 1
+}
+now_utc() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 psql_val() { # psql_val <sql> — one value from the registrar DB
   $COMPOSE exec -T postgres psql -U "$PG_USER" -d "$PG_DB" -tA -c "$1" 2>/dev/null | tr -d '[:space:]'
 }
@@ -2429,20 +2439,17 @@ ac18_signed_identity() {
       -H "Authorization: Bearer $master" -H 'Content-Type: application/json' -H 'A2A-Version: 1.0' \
       -H "x-a2a-primus-x-a2a-sig: $sig" --data-binary @/tmp/ac18-body-$id.json
   }
-  code="$(signed_call good /data/primus/.ac18-device-key)"
-  # the guard's log line can trail the HTTP reply through the s6 log pipe: poll briefly
-  local seen=0 i
-  for i in $(seq 1 15); do docker logs "$hc" 2>&1 | grep -q "verified $agent -> primus" && { seen=1; break; }; sleep 1; done
-  if [ "$code" = "200" ] && [ "$seen" = 1 ]; then
+  local t0
+  t0="$(now_utc)"; code="$(signed_call good /data/primus/.ac18-device-key)"
+  if [ "$code" = "200" ] && log_since "$hc" "$t0" "verified $agent -> primus"; then
     pass "AC18 signed call" "message/send 200 through the edge; guard logged 'verified $agent -> primus'"
   else
     fail "AC18 signed call" "answered $code: $(head -c 200 /tmp/ac18-rpc.json)"; docker logs "$hc" 2>&1 | grep a2a-guard | tail -5
   fi
-  docker exec "$hc" sh -c "$py $guard keygen --state-dir /tmp/ac18-mallory" >/dev/null
-  code="$(signed_call forged /tmp/ac18-mallory)"
+  docker exec "$hc" sh -c "$py $guard keygen --state-dir /data/primus/.ac18-mallory" >/dev/null
+  t0="$(now_utc)"; code="$(signed_call forged /data/primus/.ac18-mallory)"
   if [ "$code" != "200" ] || ! grep -q '"result"' /tmp/ac18-rpc.json; then
-    seen=0; for i in $(seq 1 15); do docker logs "$hc" 2>&1 | grep -q "inbound refused: bad signature" && { seen=1; break; }; sleep 1; done
-    if [ "$seen" = 1 ]; then
+    if log_since "$hc" "$t0" "inbound refused: bad signature"; then
       pass "AC18 forged refused" "another key claiming $agent: refused (guard: bad signature)"
     else
       fail "AC18 forged refused" "refused ($code) but no guard 'bad signature' line"
@@ -2451,7 +2458,10 @@ ac18_signed_identity() {
     fail "AC18 forged refused" "a forged signature was DELIVERED"
   fi
 
-  # 7. strict: both report ready, the owner flips it in the console, the live sync lands
+  # 7. strict: both report ready, the owner flips it in the console, the live sync lands.
+  #    The E2E "device" is a registrant only (no agent, no guard), so its readiness report is
+  #    SYNTHETIC by necessity and labelled so; primus's readiness must be its REAL guard's
+  #    status.json, reported by its real registrant, and is asserted below.
   local dev_ver csrf session page_csrf
   dev_ver="$(psql_val "SELECT version FROM identity_blobs WHERE device_id='$E2E_DEVICE_UUID'")"
   curl -s -o /dev/null -X POST "$BASE_URL/v1/a2a-key" -H "Authorization: Bearer $E2E_DEVICE_KEY" \
@@ -2459,7 +2469,12 @@ ac18_signed_identity() {
     -d "{\"balena_uuid\":\"$E2E_DEVICE_UUID\",\"ed25519\":\"$dev_pub\",\"guard_status\":{\"running\":true,\"outbound_peers\":[\"primus\"]},\"bundle_version\":$dev_ver}"
   sleep 20  # the guard writes status.json on start + every 15 s
   $COMPOSE restart primus-registrant >/dev/null 2>&1   # reports primus's REAL guard status + applied version
-  sleep 10
+  deadline=$((SECONDS + 60))
+  until [ "$(psql_val "SELECT (guard_status->>'schema') || ',' || (guard_status->>'running') || ',' || (guard_status->'outbound_peers' ? '$agent') FROM a2a_public_keys WHERE device_id='$primus_uuid'")" = "vs.a2a-guard.status/1,true,true" ]; do
+    [ $SECONDS -ge $deadline ] && { fail "AC18 primus readiness (real)" "primus's reported guard status is not the real guard's"; return; }
+    sleep 2
+  done
+  pass "AC18 primus readiness (real)" "primus-registrant reported the REAL guard status.json (running, outbound peer $agent)"
   csrf="$(tls_curl -D - -o /dev/null "$BASE_URL/admin/login" | tr -d '\r' | grep -i '^set-cookie: vsigma_csrf=' | cut -d' ' -f2- | cut -d';' -f1 | tr -d ' ')"
   session="$(tls_curl -D - -o /dev/null -X POST "$BASE_URL/admin/login" -H "Cookie: ${csrf}" \
     --data-urlencode "admin_key=$E2E_ADMIN_KEY" --data-urlencode "_csrf=${csrf#vsigma_csrf=}" \
@@ -2481,11 +2496,10 @@ ac18_signed_identity() {
   done
   sleep 20  # guard hot-reload tick (15 s)
   mkbody "ac18-unsigned-$$"
-  code="$(curl -s -o /tmp/ac18-rpc.json -w '%{http_code}' -m 120 "$base/a2a/primus" \
+  t0="$(now_utc)"; code="$(curl -s -o /tmp/ac18-rpc.json -w '%{http_code}' -m 120 "$base/a2a/primus" \
     -H "Authorization: Bearer $master" -H 'Content-Type: application/json' -H 'A2A-Version: 1.0' \
     --data-binary @/tmp/ac18-body-ac18-unsigned-$$.json)"
-  seen=0; for i in $(seq 1 15); do docker logs "$hc" 2>&1 | grep -q "inbound refused: unsigned request" && { seen=1; break; }; sleep 1; done
-  if [ "$seen" = 1 ] && ! grep -q '"result"' /tmp/ac18-rpc.json; then
+  if log_since "$hc" "$t0" "inbound refused: unsigned request" && ! grep -q '"result"' /tmp/ac18-rpc.json; then
     pass "AC18 strict refuses unsigned" "valid key, no signature: refused live (no container recreate)"
   else
     fail "AC18 strict refuses unsigned" "unsigned call answered $code: $(head -c 200 /tmp/ac18-rpc.json)"
@@ -2499,10 +2513,24 @@ ac18_signed_identity() {
   page_csrf="$(awk 'match($0, /name="_csrf" value="[^"]*"/) { print substr($0, RSTART+20, RLENGTH-21); exit }' /tmp/ac18-a2a.html)"
   tls_curl -o /dev/null -X POST "$BASE_URL/admin/a2a/strict" -H "Cookie: ${csrf}; ${session}" \
     --data-urlencode "_csrf=$page_csrf" --data-urlencode "strict=off"
-  if [ "$(psql_val "SELECT strict FROM mesh_settings WHERE id=1")" = "f" ]; then
-    pass "AC18 strict off" "console rollback accepted"
+  if [ "$(psql_val "SELECT strict FROM mesh_settings WHERE id=1")" != "f" ]; then
+    fail "AC18 strict off" "console rollback not accepted"; return
+  fi
+  $COMPOSE restart primus-registrant >/dev/null 2>&1   # live bundle sync: strict=false lands
+  deadline=$((SECONDS + 60))
+  until docker exec "$hc" grep -q '"strict": false' /data/primus/config/a2a.json 2>/dev/null; do
+    [ $SECONDS -ge $deadline ] && { fail "AC18 strict off" "primus a2a.json never showed strict false"; return; }
+    sleep 2
+  done
+  sleep 20  # guard hot-reload tick
+  mkbody "ac18-unsigned-off-$$"
+  t0="$(now_utc)"; code="$(curl -s -o /tmp/ac18-rpc.json -w '%{http_code}' -m 240 "$base/a2a/primus" \
+    -H "Authorization: Bearer $master" -H 'Content-Type: application/json' -H 'A2A-Version: 1.0' \
+    --data-binary @/tmp/ac18-body-ac18-unsigned-off-$$.json)"
+  if [ "$code" = "200" ] && log_since "$hc" "$t0" "legacy bearer passthrough"; then
+    pass "AC18 strict off (live)" "rollback reached the running guard: an unsigned call is accepted again (dual)"
   else
-    fail "AC18 strict off" "strict still on"
+    fail "AC18 strict off (live)" "after rollback the unsigned call answered $code"
   fi
 }
 
