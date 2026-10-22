@@ -262,6 +262,11 @@ export async function approveDeviceKey(db: NodePgDatabase, clock: Clock, deviceI
 
 /** Owner action: drop the conflicting key only (the active key stays). */
 export async function rejectConflict(db: NodePgDatabase, clock: Clock, deviceId: string): Promise<void> {
+  const row = (await db.select().from(a2aPublicKeys).where(eq(a2aPublicKeys.deviceId, deviceId)))[0];
+  if (!row) throw new A2aKeyError('no key reported for this device', 'no_key', 404);
+  if (row.conflictEd25519 === null || row.conflictEd25519 === undefined) {
+    throw new A2aKeyError('this device has no conflicting key to reject', 'no_conflict', 409);
+  }
   const now = clock.now();
   await db
     .update(a2aPublicKeys)
@@ -273,7 +278,8 @@ export async function rejectConflict(db: NodePgDatabase, clock: Clock, deviceId:
 /** Owner action: revoke the device's key entirely. Peers stop accepting it on their next reload. */
 export async function revokeDeviceKey(db: NodePgDatabase, clock: Clock, deviceId: string): Promise<void> {
   const now = clock.now();
-  await db.delete(a2aPublicKeys).where(eq(a2aPublicKeys.deviceId, deviceId));
+  const removed = await db.delete(a2aPublicKeys).where(eq(a2aPublicKeys.deviceId, deviceId)).returning({ id: a2aPublicKeys.deviceId });
+  if (removed.length === 0) throw new A2aKeyError('no key reported for this device', 'no_key', 404);
   await audit(db, { deviceId, outcome: 'admin', reason: 'a2a_key_revoked', occurredAt: now });
   await resyncMeshKeys(db, clock);
 }
