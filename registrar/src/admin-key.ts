@@ -6,8 +6,28 @@
  *
  * Usage: node dist/admin-key.js <label>
  */
+import { fileURLToPath } from 'node:url';
 import { hashKey } from './db/key-crypto.js';
 import { mintAdminKey } from './keys.js';
+
+/** A SQL string literal: single quotes doubled, so the operator's label can't break the INSERT. */
+export function sqlLiteral(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+/** The operator-facing output: the key (shown once), its hash, and the INSERT to run. */
+export function renderAdminKeyOutput(key: string, hash: string, label: string): string {
+  return [
+    'Admin key (shown once, never stored — save it now):',
+    `  ${key}`,
+    '',
+    'argon2id hash:',
+    `  ${hash}`,
+    '',
+    'SQL INSERT for the registrar database:',
+    `  INSERT INTO admin_keys (hash, label) VALUES (${sqlLiteral(hash)}, ${sqlLiteral(label)});`,
+  ].join('\n');
+}
 
 async function main(): Promise<void> {
   const label = process.argv[2];
@@ -17,17 +37,12 @@ async function main(): Promise<void> {
   }
   const key = mintAdminKey();
   const hash = await hashKey(key);
-  console.log('Admin key (shown once, never stored — save it now):');
-  console.log(`  ${key}`);
-  console.log('');
-  console.log('argon2id hash:');
-  console.log(`  ${hash}`);
-  console.log('');
-  console.log('SQL INSERT for the registrar database:');
-  console.log(`  INSERT INTO admin_keys (hash, label) VALUES ('${hash}', '${label}');`);
+  console.log(renderAdminKeyOutput(key, hash, label));
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === process.argv[1]) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
