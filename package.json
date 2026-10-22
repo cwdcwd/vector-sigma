@@ -11,8 +11,9 @@
   ],
   "scripts": {
     "build": "npm run build -w @vector-sigma/shared && npm run build -w @vector-sigma/registrar && npm run build -w @vector-sigma/registrant && tsc -p test/e2e/tsconfig.json",
-    "test": "npm run test -w @vector-sigma/registrar && npm run test -w @vector-sigma/registrant",
-    "db:generate": "npm run db:generate -w @vector-sigma/registrar"
+    "test": "npm run test -w @vector-sigma/shared && npm run test -w @vector-sigma/registrar && npm run test -w @vector-sigma/registrant",
+    "db:generate": "npm run db:generate -w @vector-sigma/registrar",
+    "test:coverage": "npm run test:coverage -w @vector-sigma/shared && npm run test:coverage -w @vector-sigma/registrar && npm run test:coverage -w @vector-sigma/registrant"
   },
   "engines": {
     "node": ">=22"
