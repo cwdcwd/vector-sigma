@@ -2624,6 +2624,64 @@ case "${1:-}" in
   *) echo "usage: test/e2e/e2e.sh [--up|--down]"; exit 64 ;;
 esac
 
+# AC19 (console mints, owner path): log in to the console, give the E2E device a GATEWAY_URL on a
+# DIFFERENT hostname than the registrar's mint address, click "Mint memory keys", and prove the
+# delivered FLEET_MEMORY_BASE_URL is that device gateway + /v1 and answers from INSIDE the device
+# container with the minted key. On this stack the registrar has no GATEWAY_KEY_CREATOR_KEY, so
+# the mint also exercises the bootstrapped creator key (registrar-v1.5.9 / -v1.5.10 regressions).
+ac19_console_mints() {
+  note "AC19: console Mint memory keys — device-reachable memory URL, bootstrapped creator key"
+  local csrf session_cookie page_csrf code dev_gw="http://gateway-edge:4000" container="$PROJECT-device-1"
+  csrf="$(tls_curl -D - -o /dev/null "$BASE_URL/admin/login" \
+    | tr -d '\r' | grep -i '^set-cookie: vsigma_csrf=' | cut -d' ' -f2- | cut -d';' -f1 | tr -d ' ')"
+  session_cookie="$(tls_curl -D - -o /dev/null -X POST "$BASE_URL/admin/login" -H "Cookie: ${csrf}" \
+    --data-urlencode "admin_key=$E2E_ADMIN_KEY" --data-urlencode "_csrf=${csrf#vsigma_csrf=}" \
+    | tr -d '\r' | grep -i '^set-cookie: vsigma_admin=' | cut -d' ' -f2- | cut -d';' -f1 | tr -d ' ')"
+  if [ -z "$session_cookie" ]; then fail AC19 "console login failed"; return; fi
+  local cookies="${csrf}; ${session_cookie}"
+
+  # 1. Point the device at a gateway hostname distinct from the mint address (keep every file).
+  tls_curl -H "Cookie: $cookies" "$BASE_URL/admin/devices/$E2E_DEVICE_UUID/bundle" > /tmp/e2e-ac19-editor.html
+  page_csrf="$(awk 'match($0, /name="_csrf" value="[^"]*"/) { print substr($0, RSTART+20, RLENGTH-21); exit }' /tmp/e2e-ac19-editor.html)"
+  local -a keep=()
+  local i=0 p
+  while IFS= read -r p; do
+    keep+=(--data-urlencode "existing_path_$i=$p" --data-urlencode "existing_content_$i=")
+    i=$((i + 1))
+  done < <(grep -o 'name="existing_path_[0-9]*" value="[^"]*"' /tmp/e2e-ac19-editor.html | sed -E 's/.*value="([^"]*)"/\1/')
+  code="$(tls_curl -o /dev/null -w '%{http_code}' -X POST "$BASE_URL/admin/devices/$E2E_DEVICE_UUID/bundle" \
+    -H "Cookie: $cookies" --data-urlencode "_csrf=$page_csrf" --data-urlencode "existing_count=$i" \
+    --data-urlencode "new_count=0" "${keep[@]}" --data-urlencode "structured_extra_env=GATEWAY_URL=$dev_gw")"
+  expect "AC19 device GATEWAY_URL set via the console" "$code" "303"
+
+  # 2. Mint memory keys from the device page.
+  tls_curl -H "Cookie: $cookies" "$BASE_URL/admin/devices/$E2E_DEVICE_UUID" > /tmp/e2e-ac19-device.html
+  page_csrf="$(awk 'match($0, /name="_csrf" value="[^"]*"/) { print substr($0, RSTART+20, RLENGTH-21); exit }' /tmp/e2e-ac19-device.html)"
+  tls_curl -X POST "$BASE_URL/admin/devices/$E2E_DEVICE_UUID/mint-memory-keys" -H "Cookie: $cookies" \
+    --data-urlencode "_csrf=$page_csrf" > /tmp/e2e-ac19-mint.html
+  if grep -q 'Memory keys minted' /tmp/e2e-ac19-mint.html; then
+    pass "AC19 Mint memory keys" "console mint succeeded on a master with no GATEWAY_KEY_CREATOR_KEY (bootstrapped creator key)"
+  else
+    fail "AC19 Mint memory keys" "$(grep -o 'class="danger"[^<]*<[^<]*' /tmp/e2e-ac19-mint.html | head -c 300)"
+    return
+  fi
+  local shared
+  shared="$(grep -o 'GATEWAY_MEMORY_SHARED_KEY=[^<[:space:]]*' /tmp/e2e-ac19-mint.html | head -1 | cut -d= -f2-)"
+
+  # 3. The delivered memory URL is the DEVICE's gateway + /v1, never the registrar's mint address.
+  local mem_url
+  mem_url="$(psql_val "SELECT bundle FROM identity_blobs WHERE device_id='$E2E_DEVICE_UUID'" \
+    | grep -o 'FLEET_MEMORY_BASE_URL=[^\\"]*' | head -1 | cut -d= -f2-)"
+  expect "AC19 FLEET_MEMORY_BASE_URL is the device gateway + /v1" "$mem_url" "$dev_gw/v1"
+
+  # 4. That URL answers from inside the device's network, with the minted key, exactly as the
+  #    memory plugin calls it (${base}/memory).
+  if [ -z "$shared" ]; then fail "AC19 memory reachable from the device" "no shared key on the mint page"; return; fi
+  code="$(docker exec -e U="$mem_url/memory" -e K="$shared" "$container" node -e \
+    'fetch(process.env.U,{headers:{Authorization:`Bearer ${process.env.K}`}}).then(r=>console.log(r.status)).catch(()=>console.log("000"))' 2>/dev/null)"
+  expect "AC19 memory reachable from the device" "$code" "200"
+}
+
 ac2_replay_425
 ac3_rearm_redelivers
 ac4_status_version
@@ -2647,6 +2705,7 @@ ac15_memory_plane
 ac16_agent_memory_tools
 ac17_mesh_enroll_capability
 ac18_signed_identity
+ac19_console_mints
 ac_logo_plane
 echo
 echo "[e2e] ===== RESULT: $PASS passed, $FAIL failed ====="
