@@ -108,6 +108,12 @@ const BalenaUuid = z
   )
   .transform(normalizeBalenaUuid);
 
+/** An absolute http(s) URL: z.string().url() alone also accepts `file:`, `javascript:` or `host:port`. */
+const HttpUrl = z
+  .string()
+  .url()
+  .refine((v) => URL.canParse(v) && /^https?:$/.test(new URL(v).protocol), 'must be an http:// or https:// URL');
+
 /** API contracts (versioned /v1). */
 
 export const BootstrapRequestSchema = z.object({
@@ -159,9 +165,9 @@ export const MeshEnrollRequestSchema = z.object({
     .max(64)
     .regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/, 'agent_name must be [a-zA-Z0-9_.-], starting alphanumeric'),
   /** The enrollee's A2A origin the gateway card row dials (proxy-reachable). */
-  origin_url: z.string().url(),
+  origin_url: HttpUrl,
   /** The mesh edge the enrollee's peers reach it through (its public_url). */
-  public_url: z.string().url(),
+  public_url: HttpUrl,
 });
 export type MeshEnrollRequest = z.infer<typeof MeshEnrollRequestSchema>;
 
