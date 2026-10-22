@@ -49,9 +49,19 @@ jobs:
         run: |
           set -euo pipefail
           for attempt in $(seq 1 90); do
-            run="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/build-images.yml/runs?head_sha=${GITHUB_SHA}&branch=main&per_page=20" \
-              --jq '[.workflow_runs[] | select(.event == "push")] | sort_by(.created_at) | last // empty | "\(.status) \(.conclusion) \(.id) \(.html_url)"')"
+            # Filter on the branch in jq, not with the API's branch= parameter: on 2026-10-22 that
+            # parameter intermittently returned zero runs during a GitHub degradation and failed two
+            # releases of a commit main had built. head_sha alone is exact; the jq keeps the same
+            # contract (a push run on main for this commit).
+            run="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/build-images.yml/runs?head_sha=${GITHUB_SHA}&per_page=20" \
+              --jq '[.workflow_runs[] | select(.event == "push" and .head_branch == "main")] | sort_by(.created_at) | last // empty | "\(.status) \(.conclusion) \(.id) \(.html_url)"')"
             if [ -z "$run" ]; then
+              # A just-merged commit's run can take a moment to appear: retry briefly, then fail closed.
+              if [ "$attempt" -le 10 ]; then
+                echo "no build-images run visible yet for ${GITHUB_SHA} on main — retrying (${attempt}/10)"
+                sleep 30
+                continue
+              fi
               echo "::error::no build-images run on main for ${GITHUB_SHA} — releases must be cut from a commit main has built and published"
               exit 1
             fi

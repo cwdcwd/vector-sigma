@@ -181,8 +181,11 @@ describe('build once, deploy many: releases reuse main\'s verified images', () =
     const doc = loadWf(RESOLVE);
     expect(needsList(doc.jobs.resolve)).toContain('require-main-success');
     const gate = stepsText(doc.jobs['require-main-success']);
-    expect(gate).toContain('actions/workflows/build-images.yml/runs?head_sha=${GITHUB_SHA}&branch=main');
-    expect(gate).toContain('select(.event == \\"push\\")');
+    // The commit is the exact query; "a push run on main" is enforced on the response, because the
+    // API's branch= parameter intermittently returned nothing during a GitHub degradation (2026-10-22).
+    expect(gate).toContain('actions/workflows/build-images.yml/runs?head_sha=${GITHUB_SHA}&per_page=20');
+    expect(gate).not.toContain('&branch=main');
+    expect(gate).toContain('select(.event == \\"push\\" and .head_branch == \\"main\\")');
     expect(gate).toMatch(/conclusion.*= success/);
   });
 
