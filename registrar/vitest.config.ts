@@ -11,7 +11,7 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       include: ['src/**/*.ts'],
-      // Thin process entry points (argv/env wiring only); their logic is exported and tested.
+      // Process glue only (pool + real deps -> startRegistrar in server.ts, which is tested).
       exclude: ['src/index.ts'],
       reporter: ['text-summary', 'json-summary'],
       // Floors (ratchet: raise as coverage rises, never lower): CI fails below them.
