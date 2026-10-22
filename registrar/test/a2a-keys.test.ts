@@ -17,6 +17,7 @@ import {
   readiness,
   registerDeviceKey,
   reportGuardStatus,
+  rejectConflict,
   revokeDeviceKey,
   setStrict,
 } from '../src/a2a-keys.js';
@@ -90,6 +91,32 @@ describe('signed A2A identity: registrar', () => {
     const ok = await report(A, { ed25519: pub });
     expect(ok.status).toBe(200);
     expect(ok.body).toEqual({ status: 'active', fingerprint: keyFingerprint(pub) });
+  });
+
+  it('reject and revoke refuse (no audit row) when there is nothing to act on', async () => {
+    const before = (await getAuditRows(env)).length;
+    await expect(revokeDeviceKey(env.db, env.clock, A.uuid)).rejects.toMatchObject({ code: 'no_key', status: 404 });
+    await expect(rejectConflict(env.db, env.clock, A.uuid)).rejects.toMatchObject({ code: 'no_key', status: 404 });
+    await report(A, { ed25519: newPublicKey() });
+    await expect(rejectConflict(env.db, env.clock, A.uuid)).rejects.toMatchObject({ code: 'no_conflict', status: 409 });
+    const audits = await getAuditRows(env);
+    expect(audits.filter((r) => /a2a_key_(revoked|conflict_rejected)/.test(String(r.reason)))).toHaveLength(0);
+    expect(audits.length).toBeGreaterThanOrEqual(before);
+  });
+
+  it('reject drops only the conflicting key; revoke removes the key and is audited', async () => {
+    const first = newPublicKey();
+    await report(A, { ed25519: first });
+    await report(A, { ed25519: newPublicKey() });
+    await rejectConflict(env.db, env.clock, A.uuid);
+    let row = (await env.db.select().from(a2aPublicKeys).where(eq(a2aPublicKeys.deviceId, A.uuid)))[0]!;
+    expect(row.ed25519).toBe(first);
+    expect(row.conflictFingerprint).toBeNull();
+    await revokeDeviceKey(env.db, env.clock, A.uuid);
+    expect(await env.db.select().from(a2aPublicKeys).where(eq(a2aPublicKeys.deviceId, A.uuid))).toHaveLength(0);
+    const reasons = (await getAuditRows(env)).map((r) => String(r.reason));
+    expect(reasons).toContain('a2a_key_conflict_rejected');
+    expect(reasons).toContain('a2a_key_revoked');
   });
 
   it('a different key later is a conflict alarm, never a replacement', async () => {
