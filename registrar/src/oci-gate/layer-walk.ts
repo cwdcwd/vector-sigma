@@ -155,6 +155,9 @@ export function walkAllLayers(layout: LoadedOciLayout, layerDescs: OciDescriptor
   function isDeletedAtOrAbove(normalized: string, fromLayer: number): boolean {
     for (let j = fromLayer; j < perLayerEntries.length; j++) {
       if (whiteoutsByLayer[j]!.has(normalized)) return true;
+      // OCI image-spec: an opaque whiteout hides the directory's contents from LOWER layers
+      // only; files in the same layer as the marker are retained.
+      if (j === fromLayer) continue;
       for (const dir of opaqueDirsByLayer[j]!) {
         if (isAncestorDir(dir, normalized) && normalized !== dir) return true;
       }
