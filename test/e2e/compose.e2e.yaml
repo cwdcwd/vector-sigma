@@ -49,6 +49,11 @@ services:
     build:
       context: ../..
       dockerfile: images/litellm/Dockerfile
+    # AC19: a second name for the same gateway, so a device's GATEWAY_URL can differ from the
+    # registrar's mint address (http://litellm:4000). Values seeded from the wrong one then fail.
+    networks:
+      default:
+        aliases: [gateway-edge]
 
   scotty:
     image: vs-e2e/scotty:ci
