@@ -11,6 +11,7 @@ import {
 import { identityBlobs } from '../src/db/schema.js';
 import { eq } from 'drizzle-orm';
 import type { IdentityBundle } from '@vector-sigma/shared';
+import { MEMORY_KEY_ALLOWED_ROUTES } from '../src/gateway-mint.js';
 
 /**
  * POST /admin/devices/:uuid/mint-model-key — route contract (fleet-ops-1py.46).
@@ -364,5 +365,71 @@ describe('console mints on a bootstrapped master (no GATEWAY_KEY_CREATOR_KEY)', 
     expect(res.html).toContain('GATEWAY_KEY_CREATOR_KEY');
     expect(res.html).toContain('LITELLM_MASTER_KEY');
     expect(calls.length).toBe(0);
+  });
+});
+
+describe('mint-memory-keys route: FLEET_MEMORY_BASE_URL is the agent-reachable gateway', () => {
+  beforeEach(async () => {
+    await seedDevice(env.db, { uuid: env.device.uuid, hash: env.device.hash, agentName: AGENT, bundle: null });
+    setCreatorEnv();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string | URL, init?: RequestInit) => {
+        const u = new URL(String(url));
+        if (u.pathname === '/team/list') return respond(200, []);
+        if (u.pathname === '/team/new') return respond(200, { team_id: 'memory-team' });
+        if (u.pathname === '/key/generate') {
+          const alias = (JSON.parse(String(init?.body)) as { key_alias: string }).key_alias;
+          return respond(200, { key: `sk-${alias}` });
+        }
+        return respond(200, {}); // /user/new, /team/member_add
+      }),
+    );
+  });
+
+  async function mintAndReadEnv(): Promise<{ html: string; agentEnv: string }> {
+    const c = await loginClient();
+    const csrf = await c.csrfFrom(`/admin/devices/${env.device.uuid}`);
+    const res = await c.postForm(`/admin/devices/${env.device.uuid}/mint-memory-keys`, { _csrf: csrf });
+    expect(res.status).toBe(200);
+    const bundle = await currentBundle(env.device.uuid);
+    return { html: res.html, agentEnv: bundle?.files.find((f) => f.path === 'config/agent.env')?.content ?? '' };
+  }
+
+  /** The URL the gateway-memory plugin will hit: tools.py requests f"{base}{path}" with path /memory... */
+  const pluginUrl = (agentEnv: string, path: string) =>
+    new URL(`${(agentEnv.match(/^FLEET_MEMORY_BASE_URL=(.*)$/m)?.[1] ?? '').replace(/\/+$/, '')}${path}`);
+
+  it("a device's bundle: seeded from ITS GATEWAY_URL (the mesh edge), never the registrar's internal mint address", async () => {
+    await putBundle(env.device.uuid, bundleWith('GATEWAY_URL=https://vs-master.example.ts.net:8443/\n'));
+    const { html, agentEnv } = await mintAndReadEnv();
+    expect(agentEnv).toContain('FLEET_MEMORY_BASE_URL=https://vs-master.example.ts.net:8443/v1\n');
+    // the plugin's real request lands on the memory key's allowed route, on the device-reachable host
+    const u = pluginUrl(agentEnv, '/memory');
+    expect(u.host).toBe('vs-master.example.ts.net:8443');
+    expect(MEMORY_KEY_ALLOWED_ROUTES).toContain(u.pathname);
+    expect(MEMORY_KEY_ALLOWED_ROUTES).toContain(pluginUrl(agentEnv, '/memory/conventions').pathname.replace(/\/[^/]+$/, '/*'));
+    expect(agentEnv).not.toContain(`FLEET_MEMORY_BASE_URL=${MINT_BASE_TEST}`);
+    expect(agentEnv).toMatch(/^GATEWAY_MEMORY_SHARED_KEY=sk-memory-shared-wheeljack$/m);
+    expect(html).toContain('the memory tools activate when the agent container restarts');
+  });
+
+  it('no GATEWAY_URL in the bundle: falls back to the mint base URL', async () => {
+    await putBundle(env.device.uuid, bundleWith('AGENT_NAME=wheeljack\n'));
+    const { agentEnv } = await mintAndReadEnv();
+    expect(agentEnv).toContain(`FLEET_MEMORY_BASE_URL=${MINT_BASE_TEST}/v1\n`);
+    expect(MEMORY_KEY_ALLOWED_ROUTES).toContain(pluginUrl(agentEnv, '/memory').pathname);
+  });
+
+  it('a GATEWAY_URL that already ends in /v1 is not doubled', async () => {
+    await putBundle(env.device.uuid, bundleWith('GATEWAY_URL=https://edge:8443/v1\n'));
+    const { agentEnv } = await mintAndReadEnv();
+    expect(agentEnv).toContain('FLEET_MEMORY_BASE_URL=https://edge:8443/v1\n');
+  });
+
+  it('an operator-set FLEET_MEMORY_BASE_URL is never clobbered', async () => {
+    await putBundle(env.device.uuid, bundleWith('GATEWAY_URL=https://edge:8443\nFLEET_MEMORY_BASE_URL=https://memory.example\n'));
+    const { agentEnv } = await mintAndReadEnv();
+    expect(agentEnv.match(/^FLEET_MEMORY_BASE_URL=.*$/gm)).toEqual(['FLEET_MEMORY_BASE_URL=https://memory.example']);
   });
 });
