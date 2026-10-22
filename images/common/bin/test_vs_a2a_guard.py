@@ -280,8 +280,9 @@ def _http(url, body=None, headers=None):
             return e.code, json.loads(e.read())
 
 
-class Listeners(unittest.TestCase):
-    """bob's inbound guard in front of a fake Hermes; alice's outbound guard aimed at bob directly."""
+class ListenerFixture(unittest.TestCase):
+    """bob's inbound guard in front of a fake Hermes; alice's outbound guard aimed at bob directly.
+    Fixture only (no tests of its own), so each subclass runs just its own tests."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -321,6 +322,8 @@ class Listeners(unittest.TestCase):
             s.server_close()
         self.tmp.cleanup()
 
+
+class Listeners(ListenerFixture):
     def test_signed_call_reaches_hermes_with_local_token_only(self):
         code, resp = _http(self.alice_url + "/peer/bob", HERMES_V1, {"Authorization": "Bearer alice-outbound"})
         self.assertEqual(code, 200, resp)
@@ -404,9 +407,6 @@ class Listeners(unittest.TestCase):
             srv.shutdown()
             srv.server_close()
 
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class BundleMode(unittest.TestCase):
@@ -518,3 +518,245 @@ class BundleMode(unittest.TestCase):
                 self.assertFalse(self.bob.cfg.legacy_bearer)  # strict kept
                 self.assertEqual(self.signed()[0], 200)
                 self.assertEqual(_http(self.url, HERMES_V1, {"Authorization": "Bearer legacy"})[0], 401)
+
+
+class RefusalPaths(unittest.TestCase):
+    """Key-file, canonicalization, header and bundle refusals that the happy paths never reach."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.alice = g.keygen(Path(self.tmp.name) / "alice")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_a_non_ed25519_key_file_is_refused(self):
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        path = Path(self.tmp.name) / "ec.pem"
+        path.write_bytes(ec.generate_private_key(ec.SECP256R1()).private_bytes(
+            serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+        os.chmod(path, 0o600)
+        with self.assertRaisesRegex(g.GuardError, "not an Ed25519 key"):
+            g.load_private_key(path)
+
+    def test_public_keys_must_be_32_bytes(self):
+        for text in (g._b64u(b"x" * 31), g._b64u(b"x" * 33), g._b64u(b"x" * 64)):
+            with self.subTest(len(text)), self.assertRaisesRegex(ValueError, "32 bytes"):
+                g.load_public_key(text)
+
+    def test_unknown_role_and_missing_message_id_cannot_be_signed(self):
+        for label, mutate, err in (
+                ("role", lambda m: m.__setitem__("role", "ROLE_ROOT"), "unknown message role"),
+                ("messageId", lambda m: m.__setitem__("messageId", ""), "messageId missing")):
+            rpc = copy.deepcopy(HERMES_V1)
+            mutate(rpc["params"]["message"])
+            with self.subTest(label), self.assertRaisesRegex(g.GuardError, err):
+                g.sign(self.alice, "alice", "bob", rpc)
+
+    def test_a_non_numeric_timestamp_is_refused(self):
+        registry = {"alice": {"key": g.load_public_key(g.public_key_text(self.alice))}}
+        header = g.sign(self.alice, "alice", "bob", HERMES_V1).replace(";ts=", ";ts=x", 1)
+        with self.assertRaisesRegex(g.GuardError, "bad ts") as ctx:
+            g.verify(header, HERMES_V1, registry, "bob", g.NonceCache(), 300)
+        self.assertEqual(ctx.exception.code, 401)
+
+    def test_nonces_expire_with_the_window(self):
+        cache = g.NonceCache(ttl=10)
+        self.assertTrue(cache.check_and_add("alice", "n1", now=100))
+        self.assertFalse(cache.check_and_add("alice", "n1", now=105))  # replay inside the window
+        self.assertTrue(cache.check_and_add("alice", "n1", now=111))   # pruned after it
+        self.assertTrue(cache.check_and_add("bob", "n1", now=111))     # nonces are per signer
+
+    def test_bundle_without_peer_keys_means_no_signed_peers(self):
+        path = Path(self.tmp.name) / "a2a.json"
+        path.write_text(json.dumps({"strict": True}))
+        self.assertEqual(g.load_bundle_registry(path), ({}, True))
+        path.write_text("[]")
+        with self.assertRaisesRegex(ValueError, "not a JSON object"):
+            g.load_bundle_registry(path)
+
+    def test_env_values_come_from_the_environment_first_then_the_file(self):
+        env_file = Path(self.tmp.name) / ".env"
+        env_file.write_text("OTHER=1\nVS_TEST_KEY='from-file'\n")
+        os.environ.pop("VS_TEST_KEY", None)
+        self.assertEqual(g.read_env_value("VS_TEST_KEY", env_file), "from-file")
+        self.assertEqual(g.read_env_value("VS_TEST_KEY", None), "")
+        self.assertEqual(g.read_env_value("VS_TEST_KEY", Path(self.tmp.name) / "missing.env"), "")
+        os.environ["VS_TEST_KEY"] = " from-env "
+        try:
+            self.assertEqual(g.read_env_value("VS_TEST_KEY", env_file), "from-env")
+        finally:
+            del os.environ["VS_TEST_KEY"]
+
+
+class _Streaming(_Upstream):
+    """An upstream that answers with an SSE stream (no Content-Length), like a streaming Hermes."""
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        for i in range(3):
+            self.wfile.write(f"data: chunk-{i}\n\n".encode())
+            self.wfile.flush()
+        self.close_connection = True
+
+    def do_GET(self):  # a card endpoint that is not JSON: relayed untouched
+        body = b"not json"
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+class ListenerRefusals(ListenerFixture):
+    """The live listeners' refusals: body limits, verified-but-untrusted peers, missing gateway key."""
+
+    def _raw_post(self, url, data: bytes, headers=None):
+        req = urllib.request.Request(url, data=data, method="POST",
+                                     headers={"Content-Type": "application/json", **(headers or {})})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status, r.read()
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, e.read()
+
+    def test_inbound_body_must_be_a_json_rpc_object_within_the_cap(self):
+        for label, data, code in (("empty", b"", 400), ("not JSON", b"{nope", 400), ("a JSON array", b"[1]", 400)):
+            with self.subTest(label):
+                status, _ = self._raw_post(self.bob_url + "/", data, {"X-A2A-Sig": "v1;kid=a"})
+                self.assertEqual(status, code)
+        # Over the cap: refused from the declared length alone, before any body is read.
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", self.bob_srv.server_address[1], timeout=10)
+        try:
+            conn.putrequest("POST", "/")
+            conn.putheader("Content-Type", "application/json")
+            conn.putheader("Content-Length", str(2 * g.MAX_BODY))
+            conn.putheader("X-A2A-Sig", "v1;kid=a")
+            conn.endheaders()
+            resp = conn.getresponse()
+            self.assertEqual(resp.status, 413)
+            self.assertEqual(resp.getheader("Connection"), "close")  # unread bytes never reach a next request
+            resp.read()
+        finally:
+            conn.close()
+        self.assertEqual(self.hermes.seen, [])
+
+    def test_a_verified_peer_without_a_local_token_is_refused_403(self):
+        bob_key = g.load_private_key(g.key_path(Path(self.tmp.name) / "bob"))
+        header = g.sign(bob_key, "bob", "bob", HERMES_V1)  # bob is in the registry; bob holds no token for "bob"
+        code, resp = _http(self.bob_url + "/", HERMES_V1, {"X-A2A-Sig": header})
+        self.assertEqual(code, 403)
+        self.assertIn("no local token", resp["error"]["message"])
+        self.assertEqual(self.hermes.seen, [])
+
+    def test_outbound_unknown_peer_is_a_json_rpc_404(self):
+        code, resp = _http(self.alice_url + "/peer/nobody/.well-known/agent-card.json",
+                           headers={"Authorization": "Bearer alice-outbound"})
+        self.assertEqual(code, 404)
+        self.assertIn("unknown peer", resp["error"]["message"])
+
+    def test_outbound_via_gateway_without_the_gateway_key_is_refused_500(self):
+        base = Path(self.tmp.name)
+        os.environ.pop("VS_TEST_GATEWAY_KEY", None)
+        (base / "alice" / "gw.json").write_text(json.dumps({
+            "agent_name": "alice", "state_dir": ".", "registry": "../a2a-keys.json",
+            "outbound": {"listen_port": 0, "gateway_key_env": "VS_TEST_GATEWAY_KEY",
+                         "peers": {"bob": {"url": self.bob_url, "gateway_agent_id": "uuid-b"}}}}))
+        srv = _start(g.make_outbound(g.Guard(g.Config(base / "alice" / "gw.json"))))
+        try:
+            code, resp = _http(f"http://127.0.0.1:{srv.server_address[1]}/peer/bob", HERMES_V1,
+                               {"Authorization": "Bearer alice-outbound"})
+            self.assertEqual(code, 500)
+            self.assertIn("VS_TEST_GATEWAY_KEY not set", resp["error"]["message"])
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+    def test_streamed_replies_and_non_json_cards_are_relayed_untouched(self):
+        stream_srv = _start(type("Stream", (_Streaming,), {"seen": []}))
+        base = Path(self.tmp.name)
+        cfg = json.loads((base / "bob" / "guard.json").read_text())
+        cfg["inbound"]["upstream"] = f"http://127.0.0.1:{stream_srv.server_address[1]}"
+        (base / "bob" / "guard-stream.json").write_text(json.dumps(cfg))
+        bob_stream = _start(g.make_inbound(g.Guard(g.Config(base / "bob" / "guard-stream.json"))))
+        bob_url = f"http://127.0.0.1:{bob_stream.server_address[1]}"
+        try:
+            header = g.sign(g.load_private_key(g.key_path(base / "alice")), "alice", "bob", HERMES_V1)
+            req = urllib.request.Request(bob_url + "/", data=json.dumps(HERMES_V1).encode(), method="POST",
+                                         headers={"Content-Type": "application/json", "X-A2A-Sig": header})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                self.assertEqual(r.headers.get("Content-Type"), "text/event-stream")
+                self.assertEqual(r.read().decode().count("data: chunk-"), 3)
+            with urllib.request.urlopen(bob_url + "/.well-known/agent-card.json", timeout=10) as r:
+                self.assertEqual(r.read(), b"not json")
+        finally:
+            for srv in (bob_stream, stream_srv):
+                srv.shutdown()
+                srv.server_close()
+
+
+class GuardState(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        g.keygen(base)
+        (base / "a2a-keys.json").write_text(json.dumps({"peers": {}}))
+        self.cfg_path = base / "guard.json"
+        self.cfg_path.write_text(json.dumps({"agent_name": "bob", "state_dir": ".", "registry": "a2a-keys.json"}))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_local_tokens_must_be_a_json_object(self):
+        tok = Path(self.tmp.name) / "local-peer-tokens.json"
+        tok.write_text("[]")
+        os.chmod(tok, 0o600)
+        with self.assertRaisesRegex(ValueError, "not a JSON object"):
+            g.Guard(g.Config(self.cfg_path))
+
+    def test_status_write_failure_is_logged_not_fatal(self):
+        guard = g.Guard(g.Config(self.cfg_path))
+        guard.cfg.status_path = Path(self.tmp.name) / "missing-dir" / "status.json"
+        with self.assertLogs(g.log, "WARNING") as logs:
+            guard.write_status()
+        self.assertIn("could not write", logs.output[0])
+
+    def test_a_vanished_key_source_reads_as_no_stamp(self):
+        guard = g.Guard(g.Config(self.cfg_path))
+        (Path(self.tmp.name) / "a2a-keys.json").unlink()
+        self.assertIsNone(guard._source_stamp())
+        guard.tick()  # and a tick with no source keeps the last good state
+        self.assertEqual(guard.registry, {})
+
+
+class Cli(unittest.TestCase):
+    def test_keygen_pubkey_and_sign(self):
+        import contextlib
+        import io
+        with tempfile.TemporaryDirectory() as d:
+            sd = Path(d) / "state"
+
+            def run(*argv):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    self.assertEqual(g.main(list(argv)), 0)
+                return out.getvalue().strip()
+
+            made = json.loads(run("keygen", "--state-dir", str(sd)))
+            self.assertEqual(json.loads(run("pubkey", "--state-dir", str(sd))), made)
+            self.assertEqual(made["fingerprint"], g.fingerprint(made["ed25519"]))
+            body = Path(d) / "body.json"
+            body.write_text(json.dumps(HERMES_V1))
+            header = run("sign", "--state-dir", str(sd), "--kid", "alice", "--aud", "bob", "--body", str(body))
+            registry = {"alice": {"key": g.load_public_key(made["ed25519"])}}
+            self.assertEqual(g.verify(header, HERMES_V1, registry, "bob", g.NonceCache(), 300), "alice")
+
+
+if __name__ == "__main__":
+    unittest.main()

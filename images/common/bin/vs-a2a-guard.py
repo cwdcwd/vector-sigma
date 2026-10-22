@@ -421,8 +421,12 @@ def _jsonrpc_error(handler: BaseHTTPRequestHandler, code: int, message: str, rpc
     handler.send_response(code)
     handler.send_header("Content-Type", "application/json")
     handler.send_header("Content-Length", str(len(body)))
+    # A refusal may leave request bytes unread (e.g. an over-cap body refused by its declared
+    # length): close the connection so a keep-alive client cannot desync on its next request.
+    handler.send_header("Connection", "close")
     handler.end_headers()
     handler.wfile.write(body)
+    handler.close_connection = True
 
 
 def _read_json_body(handler: BaseHTTPRequestHandler) -> tuple[bytes, dict]:
