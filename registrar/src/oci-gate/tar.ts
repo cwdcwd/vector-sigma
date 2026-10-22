@@ -109,6 +109,18 @@ export function parseTar(buf: Buffer): TarEntry[] {
     const prefix = readString(header, 345, 155);
     if (prefix) name = `${prefix}/${name}`;
 
+    // A PAX 'size' record governs where THIS entry's body ends, exactly as Docker's reader
+    // (Go archive/tar) applies it. It must be applied before the body is sliced: reading the
+    // body with the ustar size field instead would let a crafted layer (ustar size 0, PAX size N)
+    // hide N bytes from the scan. Those bytes would be parsed as further headers (a decoy
+    // archive), while Docker extracts them as the file. A non-numeric PAX size fails closed.
+    if (typeflag !== 'L' && typeflag !== 'x' && typeflag !== 'g' && pendingPax?.size !== undefined) {
+      if (!/^\d+$/.test(pendingPax.size)) {
+        throw new Error(`tar: malformed PAX size ${JSON.stringify(pendingPax.size)} for "${name}"`);
+      }
+      size = Number(pendingPax.size);
+    }
+
     offset += BLOCK_SIZE;
     const dataStart = offset;
     const dataLen = size;
@@ -134,9 +146,6 @@ export function parseTar(buf: Buffer): TarEntry[] {
     }
     if (pendingPax?.path) {
       name = pendingPax.path;
-    }
-    if (pendingPax?.size) {
-      size = parseInt(pendingPax.size, 10);
     }
     pendingPax = undefined;
 
