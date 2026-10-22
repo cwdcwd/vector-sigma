@@ -64,6 +64,19 @@ describe('local identity state', () => {
     const bundlePath = (store as unknown as { bundlePath(): string }).bundlePath();
     await writeFile(bundlePath, raw);
     expect(await store.readBundle()).toBeNull();
+    // ...and run() then fetches a fresh identity instead of trusting the broken file.
+    let bootstraps = 0;
+    const fetchImpl = (async (url: string) => {
+      if (url.endsWith('/v1/bootstrap')) {
+        bootstraps += 1;
+        return reply(200, { bundle: bundle(2), bundle_version: 2, delivered_at: '2026-01-01T00:00:00Z' });
+      }
+      return reply(404, {});
+    }) as unknown as typeof fetch;
+    const result = await run(config(dir), { clockProbe: new StaticProbe(true), fetchImpl, oneShot: true });
+    expect(result).toEqual({ kind: 'bootstrapped', bundleVersion: 2 });
+    expect(bootstraps).toBe(1);
+    expect((await store.readBundle())?.bundle_version).toBe(2);
   });
 });
 
