@@ -280,8 +280,9 @@ def _http(url, body=None, headers=None):
             return e.code, json.loads(e.read())
 
 
-class Listeners(unittest.TestCase):
-    """bob's inbound guard in front of a fake Hermes; alice's outbound guard aimed at bob directly."""
+class ListenerFixture(unittest.TestCase):
+    """bob's inbound guard in front of a fake Hermes; alice's outbound guard aimed at bob directly.
+    Fixture only (no tests of its own), so each subclass runs just its own tests."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -321,6 +322,8 @@ class Listeners(unittest.TestCase):
             s.server_close()
         self.tmp.cleanup()
 
+
+class Listeners(ListenerFixture):
     def test_signed_call_reaches_hermes_with_local_token_only(self):
         code, resp = _http(self.alice_url + "/peer/bob", HERMES_V1, {"Authorization": "Bearer alice-outbound"})
         self.assertEqual(code, 200, resp)
@@ -609,7 +612,7 @@ class _Streaming(_Upstream):
         self.wfile.write(body)
 
 
-class ListenerRefusals(Listeners):
+class ListenerRefusals(ListenerFixture):
     """The live listeners' refusals: body limits, verified-but-untrusted peers, missing gateway key."""
 
     def _raw_post(self, url, data: bytes, headers=None):
@@ -638,6 +641,7 @@ class ListenerRefusals(Listeners):
             conn.endheaders()
             resp = conn.getresponse()
             self.assertEqual(resp.status, 413)
+            self.assertEqual(resp.getheader("Connection"), "close")  # unread bytes never reach a next request
             resp.read()
         finally:
             conn.close()
