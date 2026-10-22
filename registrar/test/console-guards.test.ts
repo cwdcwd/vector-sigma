@@ -44,7 +44,7 @@ const OTHER_POSTS = [
   '/admin/logout',
 ];
 const GETS = ['/admin/devices', '/admin/audit', '/admin/a2a', '/admin/admin-keys', '/admin/mesh-enroll-keys', '/admin/new-device'];
-const DEVICE_GETS = ['', '/bundle'];
+const DEVICE_GETS = ['', '/bundle', '/logo'];
 
 describe('console guards', () => {
   it.each([...GETS, ...DEVICE_GETS.map((p) => `/admin/devices/${randomUUID()}${p}`)])('GET %s without a session redirects to login', async (url) => {
@@ -68,6 +68,14 @@ describe('console guards', () => {
     const res = await c.postForm(url, { strict: 'on', agent_name: 'x', label: 'x' });
     expect(res.status).toBe(403);
     expect((await getAuditRows(env)).length).toBe(auditBefore);
+  });
+
+  // The logo upload is multipart: its CSRF refusal (403, nothing stored) is pinned in logo.test.ts,
+  // since the token travels as a multipart field, not in the urlencoded body these rows send.
+  it('POST logo without a session redirects to login; for an unknown device it is 404', async () => {
+    expect((await new AdminClient(env.app).postForm(`/admin/devices/${env.device.uuid}/logo`, {})).status).toBe(302);
+    const c = await loggedIn();
+    expect((await c.postForm(`/admin/devices/${randomUUID()}/logo`, {})).status).toBe(404);
   });
 
   it.each([...DEVICE_POSTS, ...DEVICE_GETS.map((p) => `GET${p}`)])('%s for an unknown device is 404', async (route) => {
