@@ -15,7 +15,7 @@ export default defineConfig({
       exclude: ['src/index.ts'],
       reporter: ['text-summary', 'json-summary'],
       // Floors (ratchet: raise as coverage rises, never lower): CI fails below them.
-      thresholds: { lines: 92, branches: 78, functions: 90, statements: 89 },
+      thresholds: { lines: 95, branches: 85, functions: 92, statements: 94 },
     },
   },
 });
