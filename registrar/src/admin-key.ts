@@ -29,6 +29,7 @@ export function renderAdminKeyOutput(key: string, hash: string, label: string): 
   ].join('\n');
 }
 
+/* v8 ignore start -- argv wiring only; the output is renderAdminKeyOutput (tested) */
 async function main(): Promise<void> {
   const label = process.argv[2];
   if (!label) {
@@ -46,3 +47,4 @@ if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === process.
     process.exit(1);
   });
 }
+/* v8 ignore stop */

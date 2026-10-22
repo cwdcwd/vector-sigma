@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Render each workspace's vitest coverage-summary.json (written by `npm run test:coverage`) as a
-// markdown table: to $GITHUB_STEP_SUMMARY in CI, else stdout. Report-only: never fails the job on
-// low numbers; a missing summary is an error, because then coverage silently stopped running.
+// markdown table: to $GITHUB_STEP_SUMMARY in CI, else stdout. The floors live in each vitest.config.ts
+// (vitest fails the run below them); a missing summary is an error, because then coverage silently stopped running.
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 
 const workspaces = ['shared', 'registrar', 'registrant'];
@@ -17,7 +17,7 @@ for (const ws of workspaces) {
   rows.push(`| ${ws} | ${pct('lines')} | ${pct('branches')} | ${pct('functions')} | ${pct('statements')} |`);
 }
 const md = [
-  '### Unit test coverage (report only)',
+  '### Unit test coverage',
   '',
   '| Workspace | Lines | Branches | Functions | Statements |',
   '|---|---|---|---|---|',
