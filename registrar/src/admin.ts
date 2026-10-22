@@ -827,7 +827,7 @@ export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): v
           messages: [
             {
               kind: 'ok',
-              text: `A2A mesh enrolled (${outcome.action}): key alias ${outcome.alias} — bundles merged both sides (v${outcome.bundleVersion}), gateway card row registered. Delivered on the next device sync.`,
+              text: `A2A mesh enrolled (${outcome.action}): key alias ${outcome.alias} — bundles merged both sides (v${outcome.bundleVersion}), gateway card row registered. Delivered on the next device sync; takes effect on each side when its agent container restarts.`,
             },
           ],
         }),
@@ -1276,9 +1276,14 @@ export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): v
       else lines[idx] = `${k}=${v}`;
     }
     // FLEET_MEMORY_BASE_URL: only seed when the bundle doesn't already
-    // carry one (an operator-set gateway URL wins, not clobbered).
+    // carry one (an operator-set gateway URL wins, not clobbered). The
+    // agent calls memory from ITS host, so the seed is the bundle's own
+    // GATEWAY_URL (a device's mesh edge); the registrar's mint address
+    // (compose-internal http://litellm:4000 on the master) is only the
+    // fallback, since it does not resolve from a device.
     if (!lines.some((l) => l.startsWith('FLEET_MEMORY_BASE_URL='))) {
-      const gwUrl = (process.env['GATEWAY_KEY_MINT_BASE_URL'] ?? '').replace(/\/+$/, '');
+      const deviceGw = (lines.find((l) => l.startsWith('GATEWAY_URL=')) ?? '').slice('GATEWAY_URL='.length).trim();
+      const gwUrl = (deviceGw !== '' ? deviceGw : (process.env['GATEWAY_KEY_MINT_BASE_URL'] ?? '')).replace(/\/+$/, '');
       if (gwUrl !== '') lines.push(`FLEET_MEMORY_BASE_URL=${gwUrl}`);
     }
     const nextAgentEnv = lines.join('\n') + (lines.length > 0 ? '\n' : '');
@@ -1315,7 +1320,7 @@ export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): v
           messages: [
             {
               kind: 'ok',
-              text: `Memory keys minted (${memoryKeyAlias(loaded.device.agentName, 'shared')} + private) and merged into the bundle — delivered on the next device sync.`,
+              text: `Memory keys minted (${memoryKeyAlias(loaded.device.agentName, 'shared')} + private) and merged into the bundle — delivered on the next device sync; the memory tools activate when the agent container restarts.`,
             },
           ],
           keyOnce: `GATEWAY_MEMORY_SHARED_KEY=${minted.shared.key}\nGATEWAY_MEMORY_PRIVATE_KEY=${minted.private.key}`,
@@ -1463,7 +1468,7 @@ export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): v
           messages: [
             {
               kind: 'ok',
-              text: `Model key provisioned (${provisioned.alias}) and merged into the bundle — delivered on the next device sync.`,
+              text: `Model key provisioned (${provisioned.alias}) and merged into the bundle — delivered on the next device sync; it takes effect when the agent container restarts.`,
             },
             {
               kind: 'ok',
