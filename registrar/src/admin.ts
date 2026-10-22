@@ -1280,11 +1280,13 @@ export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): v
     // agent calls memory from ITS host, so the seed is the bundle's own
     // GATEWAY_URL (a device's mesh edge); the registrar's mint address
     // (compose-internal http://litellm:4000 on the master) is only the
-    // fallback, since it does not resolve from a device.
+    // fallback, since it does not resolve from a device. The plugin
+    // requests `${base}/memory...` and the store lives at /v1/memory, so
+    // the base is the gateway root + /v1 (never doubled).
     if (!lines.some((l) => l.startsWith('FLEET_MEMORY_BASE_URL='))) {
       const deviceGw = (lines.find((l) => l.startsWith('GATEWAY_URL=')) ?? '').slice('GATEWAY_URL='.length).trim();
       const gwUrl = (deviceGw !== '' ? deviceGw : (process.env['GATEWAY_KEY_MINT_BASE_URL'] ?? '')).replace(/\/+$/, '');
-      if (gwUrl !== '') lines.push(`FLEET_MEMORY_BASE_URL=${gwUrl}`);
+      if (gwUrl !== '') lines.push(`FLEET_MEMORY_BASE_URL=${gwUrl.replace(/\/v1$/, '')}/v1`);
     }
     const nextAgentEnv = lines.join('\n') + (lines.length > 0 ? '\n' : '');
 
