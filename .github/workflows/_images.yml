@@ -117,10 +117,16 @@ jobs:
         run: |
           set -euo pipefail
           tar="${{ runner.temp }}/${{ matrix.component }}-${{ matrix.arch_tag }}.tar"
-          img="$(docker load -i "$tar" | awk '/Loaded image/ {print $NF}' | tail -1)"
-          [ -n "$img" ] || { echo "::error::could not load $tar"; exit 1; }
+          img="vs-brotli-check/${{ matrix.component }}:${{ matrix.arch_tag }}"
+          # buildx type=oci archives need skopeo, not docker load, on the runners' classic image
+          # store (scripts/e2e-load-images.sh); the layer diff IDs prove these are the scanned bytes.
+          want="$(node scripts/oci-layout-diffids.mjs "$tar")"
+          skopeo copy --quiet "oci-archive:$tar" "docker-daemon:$img"
+          got="$(docker image inspect -f '{{json .RootFS.Layers}}' "$img")"
+          [ "$got" = "$want" ] || { echo "::error::$img layers $got != layout $want"; exit 1; }
           docker run --rm --platform "${{ matrix.platform }}" --entrypoint sh \
             -v "$PWD/scripts/brotli-cve-check.sh:/brotli-cve-check.sh:ro" "$img" /brotli-cve-check.sh
+          docker image rm "$img" >/dev/null
       - name: Upload scanned descriptor for index assembly
         uses: actions/upload-artifact@v4
         with:

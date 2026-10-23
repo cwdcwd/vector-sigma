@@ -33,7 +33,8 @@ RUN --mount=from=ghcr.io/astral-sh/uv:0.12.24@sha256:3af4716e991d6956a41e573eab7
 # brotli 1.2.1); upgrade exactly those packages and fail the build unless the
 # loaded versions are fixed.
 RUN apk add --no-cache --upgrade nodejs-26 libbrotlicommon1 libbrotlidec1 libbrotlienc1 \
-    && [ "$(node -v)" = "v26.12.1" ] || { echo "brotli-cve: node is $(node -v), expected v26.12.1" >&2; exit 1; } \
+    && node -e 'const [a,b,c]=process.versions.node.split(".").map(Number); \
+         if (a !== 26 || b < 12 || (b === 12 && c < 1)) { console.error("brotli-cve: node " + process.version + " < v26.12.1"); process.exit(1) }' \
     && /app/.venv/bin/python -c 'import ctypes, sys; \
 v = ctypes.CDLL("libbrotlidec.so.1").BrotliDecoderVersion(); \
 print("brotli-cve: libbrotlidec 0x%x" % v); sys.exit(0 if v >= 0x1002001 else 1)'

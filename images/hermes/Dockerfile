@@ -114,8 +114,10 @@ RUN apt-get update \
 # The final check fails the build unless all three report fixed versions.
 COPY --from=node:26.12.1-trixie-slim@sha256:36793bcbb160a6a16cede1e62b93f84e26b78a972a8a4c0b879c1c12f22761ec /usr/local/bin/node /usr/local/bin/node
 COPY --from=brotli /opt/brotli/ /tmp/brotli/
-RUN libdir="$(dirname "$(readlink -f "$(ldconfig -p | awk '/libbrotlidec\.so\.1 /{print $NF; exit}')")")" \
-    && [ -d "$libdir" ] || { echo "brotli-cve: cannot find Debian's libbrotlidec.so.1" >&2; exit 1; } \
+RUN deb="$(ldconfig -p | awk '/libbrotlidec\.so\.1 /{print $NF; exit}')" \
+    && [ -n "$deb" ] || { echo "brotli-cve: ldconfig has no libbrotlidec.so.1 (did the base drop libbrotli1?)" >&2; exit 1; } \
+    && libdir="$(dirname "$(readlink -f "$deb")")" \
+    && [ -d "$libdir" ] && [ "$libdir" != "/" ] || { echo "brotli-cve: bad library dir '$libdir'" >&2; exit 1; } \
     && for lib in common dec enc; do \
          src="$(ls /tmp/brotli/lib*/libbrotli${lib}.so.1.*.* | head -1)"; \
          cp -f "$src" "$libdir/" && ln -sf "$(basename "$src")" "$libdir/libbrotli${lib}.so.1"; \

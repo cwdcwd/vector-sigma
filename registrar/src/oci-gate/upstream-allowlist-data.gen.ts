@@ -362,6 +362,22 @@ export const UPSTREAM_IMAGE_ALLOWLIST: readonly UpstreamFileEntry[] = [
     occurrences: [{ literal: "10.0.1.0" }, { literal: "192.168.1.5" }, { literal: "192.168.1.1" }, { literal: "10.0.0.1" }, { literal: "192.168.0.1" }, { literal: "192.168.1.0" }, { literal: "10.0.0.0" }, { literal: "172.16.0.0" }, { literal: "192.168.0.0" }],
   },
   {
+    // 2026-10-23 (CVE-2026-111497 base bump): node 26.12.1 bundles npm 11.20.0 -> ip-address@10.5.0,
+    // whose dist/common.js documents isInSubnet() with the JSDoc example '10.0.0.0/8' but never
+    // names IPv4/Address4, so npm-ip-address-package's shape predicate cannot cover it. Provenance:
+    // byte-identical to dist/common.js in the npm registry tarball ip-address@10.5.0
+    // (dist.shasum fcd6d7dfe9e68416b7cb71afe9bc960b3e38c13b), verified in node:26.12.1-slim and -alpine.
+    name: "npm-ip-address-10.5.0-common",
+    patterns: ["rfc1918_private_ip"],
+    matchKind: 'suffix',
+    match: "node_modules/npm/node_modules/ip-address/dist/common.js",
+    fileSha256: "58a09ce1369f3199e69dc22435f138c4a783808f9a4e36fb583bec497d1e8a25",
+    fileSha256s: null,
+    markers: null,
+    markerFn: null,
+    occurrences: [{ literal: "10.0.0.0" }],
+  },
+  {
     name: "cpython-ipaddress-stdlib-real",
     patterns: ["rfc1918_private_ip"],
     matchKind: 're',

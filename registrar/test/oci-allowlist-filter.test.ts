@@ -47,3 +47,15 @@ describe('filterExcusedFindings: fail-closed eligibility', () => {
     expect(filterExcusedFindings([entry('opt/app/creds.txt', SECRET)], f)).toEqual(f);
   });
 });
+
+describe('npm ip-address@10.5.0 dist/common.js (byte-identity provenance)', () => {
+  // The real file is excused only by its exact upstream bytes (sha256 pin); the base-image
+  // integration (scotty on node 26.12.1) proves the positive case. Any edit to the file, even one
+  // that keeps the same allowed literal, falls outside the pin and keeps its finding.
+  it('a same-path file with different bytes is not excused', () => {
+    const text = '/**\n * `10.0.0.0/8` is not in `10.0.0.0/16`.\n */\nfunction isInSubnet(address) {}\n';
+    const path = 'usr/local/lib/node_modules/npm/node_modules/ip-address/dist/common.js';
+    const f = [finding(path, 'rfc1918_private_ip')];
+    expect(filterExcusedFindings([entry(path, text)], f)).toEqual(f);
+  });
+});
