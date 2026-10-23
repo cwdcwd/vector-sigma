@@ -14,7 +14,7 @@
 # module imports them.
 
 # ---- build stage ------------------------------------------------------
-FROM node:22-bookworm-slim AS build
+FROM node:22.23.4-bookworm-slim AS build
 WORKDIR /app
 
 # Manifests first (layer-cache friendly). Every workspace manifest is
@@ -35,7 +35,7 @@ COPY --exclude=credential-scan --exclude=oci-gate --exclude=registry registrar/s
 RUN npm run build -w @vector-sigma/registrar
 
 # ---- runtime stage -----------------------------------------------------
-FROM node:22-bookworm-slim
+FROM node:22.23.4-bookworm-slim
 WORKDIR /app
 
 # fleet-ops-1py.14 round 7b: npm's download cache must NOT ship in the

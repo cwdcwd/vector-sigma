@@ -8,7 +8,7 @@
 # bytes that get promoted.
 #
 # Context is the REPO ROOT (compose.e2e.yaml sets build.context: ..).
-FROM node:22-bookworm-slim
+FROM node:22.23.4-bookworm-slim
 
 WORKDIR /app
 
