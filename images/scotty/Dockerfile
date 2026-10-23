@@ -98,10 +98,15 @@ RUN npm ci
 # Release CVE gate: next 16.3.4 (scotty's upstream lock at cc55734) carries a
 # fixable CRITICAL; 16.3.6 is the patch release that fixes it.
 # 16.3.8 + sharp >= 0.35.5 (next's image optimizer dep): the fixable HIGHs
-# reported 2026-10-20. sharp can't be a direct dependency (upstream's
+# reported 2026-10-20.
+# 16.4.1 (2026-10-23): two CRITICAL unauthenticated RCEs fixed only from 16.4.1 on the 16 line,
+# GHSA-2464-fhr4-w9xw (Image Optimization API + SVG) and GHSA-673q-mjm6-r5xr (`use cache`
+# functions returning typed arrays); they blocked registrar-v1.5.13's trivy gate. The installed
+# version is asserted so a resolution change cannot silently undo the pin. sharp can't be a direct dependency (upstream's
 # `overrides: { sharp: ^0.35.4 }` forbids it), so the lock is updated within
 # that range and the result asserted.
-RUN npm install --no-audit --no-fund --save-exact next@16.3.8 \
+RUN npm install --no-audit --no-fund --save-exact next@16.4.1 \
+    && node -e 'const v=require("next/package.json").version; if (v!=="16.4.1") { console.error("next "+v+" != 16.4.1"); process.exit(1); } console.log("next "+v)' \
     && npm update --no-audit --no-fund sharp \
     && node -e 'const v=JSON.parse(require("fs").readFileSync("node_modules/sharp/package.json","utf8")).version.split(".").map(Number); if (v[0]!==0||v[1]!==35||v[2]<5) { console.error("sharp "+v.join(".")+" < 0.35.5"); process.exit(1); } console.log("sharp "+v.join("."))'
 COPY --from=source /scotty/src/ ./
