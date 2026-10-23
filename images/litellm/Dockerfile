@@ -27,6 +27,16 @@ FROM ghcr.io/berriai/litellm@sha256:b7b9e2c306343721802253d0dd9436b9634a2eb4e14d
 RUN --mount=from=ghcr.io/astral-sh/uv:0.12.24@sha256:3af4716e991d6956a41e573eab705d0ee08500cd829ed30293eb8472f372c65a,source=/uv,target=/tmp/uv \
     /tmp/uv pip install --no-cache --python /app/.venv/bin/python 'certifi==2026.10.19' \
     && /app/.venv/bin/python -c 'import certifi, sys; v = certifi.__version__; print("certifi", v); sys.exit(v != "2026.10.19")'
+# CVE-2026-111497 (GHSA-9v8h-qqgm-4m35, Brotli decoder out-of-bounds write): the
+# pinned base ships nodejs-26 26.11.1 (Brotli built into node:zlib) and Wolfi's
+# brotli 1.2.0 shared libraries. Wolfi has both fixes (nodejs-26 26.12.1,
+# brotli 1.2.1); upgrade exactly those packages and fail the build unless the
+# loaded versions are fixed.
+RUN apk add --no-cache --upgrade nodejs-26 libbrotlicommon1 libbrotlidec1 libbrotlienc1 \
+    && [ "$(node -v)" = "v26.12.1" ] || { echo "brotli-cve: node is $(node -v), expected v26.12.1" >&2; exit 1; } \
+    && /app/.venv/bin/python -c 'import ctypes, sys; \
+v = ctypes.CDLL("libbrotlidec.so.1").BrotliDecoderVersion(); \
+print("brotli-cve: libbrotlidec 0x%x" % v); sys.exit(0 if v >= 0x1002001 else 1)'
 COPY images/litellm/litellm-config.yaml /app/config.yaml
 COPY images/litellm/litellm-entrypoint.sh /app/litellm-entrypoint.sh
 

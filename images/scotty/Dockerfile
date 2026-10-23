@@ -21,7 +21,7 @@
 # at /usr/local/bin/bd (scotty's default BD_BIN) with the real binary at
 # /usr/local/bin/bd.real — the two-layer read-only posture (see bd-readonly).
 
-FROM node:26.4.0-slim AS source
+FROM node:26.12.1-slim AS source
 # NOTE: cloned with --filter=blob:none is NOT used: we need working-tree bytes
 # to build. Depth-1 clone at the pinned SHA; the tag object is verified at
 # build time by asserting the checked-out HEAD equals the pin.
@@ -42,7 +42,7 @@ RUN sha256sum /tmp/scotty-8ea-deep-link.patch | grep -q '^8f75790df31eda440666a3
     && git apply /tmp/scotty-8ea-deep-link.patch
 
 # ── bd 1.2.2: prebuilt release binary (upstream scotty Dockerfile shape) ─────
-FROM node:26.4.0-alpine AS bd
+FROM node:26.12.1-alpine AS bd
 # Pinned per the fleet convention (fleet/conventions/bd-version-pin: bd 1.3.x
 # auto-migrates the shared Dolt schema — NEVER bump past the fleet pin).
 # f57.21: the release asset arch is derived INSIDE the RUN from `uname -m`,
@@ -79,7 +79,7 @@ RUN arch="$(uname -m)" \
 # by scanning the filesystem (lib/showcase/generate.ts) — never imported, so
 # Next's standalone tracing does NOT include it. Install complete here and
 # copy into the runner below (version kept in sync with upstream package.json).
-FROM node:26.4.0-alpine AS eleventy
+FROM node:26.12.1-alpine AS eleventy
 WORKDIR /eleventy
 # markdown-it (pulled in transitively by eleventy) ships source maps containing
 # a stock RFC1918 example literal. This stage installs without a lockfile, so
@@ -91,7 +91,7 @@ WORKDIR /eleventy
 RUN npm install --no-save @11ty/eleventy@3.1.6 markdown-it@14.3.2
 
 # ── Builder: scotty npm ci + build (upstream shape, 8ea-patched tree) ─────────
-FROM node:26.4.0-alpine AS builder
+FROM node:26.12.1-alpine AS builder
 WORKDIR /app
 COPY --from=source /scotty/src/package.json /scotty/src/package-lock.json ./
 RUN npm ci
@@ -111,7 +111,7 @@ ENV NEXT_STANDALONE=1
 RUN npm run build
 
 # ── Runner: upstream shape + our wrapper layer ───────────────────────────────
-FROM node:26.4.0-slim AS runner
+FROM node:26.12.1-slim AS runner
 WORKDIR /app
 # Release CVE gate: the base image's pending Debian security fixes, and no
 # npm/corepack in the runtime (it runs `node server.js`; npm's own bundled

@@ -40,6 +40,27 @@
 # images/agent/Dockerfile .): CI builds it once, scans it, E2Es those
 # bytes and promotes them to GHCR; balena pulls the published digest.
 
+# ── CVE-2026-111497 (GHSA-9v8h-qqgm-4m35): Brotli decoder out-of-bounds write ──
+# Fixed upstream in Brotli 1.2.1; Debian trixie's libbrotli1 1.1.0-2+b7 has no
+# fix yet, and libcurl, freetype, libjxl and ffmpeg in the base link it (libcurl
+# decompresses Content-Encoding: br from any server). Build 1.2.1 from Google's
+# release tarball (sha256-pinned) and drop its shared libraries in place of
+# Debian's below: same soname (.1), additive ABI. Remove this stage once Debian
+# ships a fixed libbrotli1 (the final RUN's version check will still pass).
+FROM debian:trixie-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad AS brotli
+ARG BROTLI_VERSION=1.2.1
+ARG BROTLI_SHA256=98d35d11a78dc453aebb7d10c3748f3f73ff78c8267c0dc697b8631f67bf7e8f
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl cmake gcc make libc6-dev \
+    && curl -fsSL -o /tmp/brotli.tar.gz "https://github.com/google/brotli/archive/refs/tags/v${BROTLI_VERSION}.tar.gz" \
+    && echo "${BROTLI_SHA256}  /tmp/brotli.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/brotli.tar.gz -C /tmp \
+    && cmake -S "/tmp/brotli-${BROTLI_VERSION}" -B /tmp/build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+         -DBROTLI_DISABLE_TESTS=ON -DCMAKE_INSTALL_PREFIX=/opt/brotli \
+    && cmake --build /tmp/build -j"$(nproc)" \
+    && cmake --install /tmp/build \
+    && ls /opt/brotli/lib*/libbrotlidec.so.1
+
 FROM nousresearch/hermes-agent:v2026.9.21
 
 # Release CVE gate (trivy, fixable CRITICAL blocks) — the upstream base's
@@ -93,6 +114,33 @@ RUN apt-get update \
          echo "cve-override: $name $have -> $now at $dir"; \
        done \
     && rm -rf /tmp/cve-pack /tmp/.npm-cve-cache /root/.npm
+
+# CVE-2026-111497 (Brotli, see the brotli stage above): three copies to fix.
+#   - node: the base's /usr/local/bin/node is v26.5.1 (Brotli is built into
+#     node:zlib); the official 26.12.1 binary replaces it (same major).
+#   - libbrotli1: the 1.2.1 build replaces Debian's shared libraries in place.
+#   - brotlicffi 1.2.0.2 in the Hermes venv vendors the vulnerable decoder;
+#     1.2.1.0 vendors the fix.
+# The final check fails the build unless all three report fixed versions.
+COPY --from=node:26.12.1-trixie-slim@sha256:36793bcbb160a6a16cede1e62b93f84e26b78a972a8a4c0b879c1c12f22761ec /usr/local/bin/node /usr/local/bin/node
+COPY --from=brotli /opt/brotli/ /tmp/brotli/
+RUN libdir="$(dirname "$(readlink -f "$(ldconfig -p | awk '/libbrotlidec\.so\.1 /{print $NF; exit}')")")" \
+    && [ -d "$libdir" ] || { echo "brotli-cve: cannot find Debian's libbrotlidec.so.1" >&2; exit 1; } \
+    && for lib in common dec enc; do \
+         src="$(ls /tmp/brotli/lib*/libbrotli${lib}.so.1.*.* | head -1)"; \
+         cp -f "$src" "$libdir/" && ln -sf "$(basename "$src")" "$libdir/libbrotli${lib}.so.1"; \
+         for old in "$libdir"/libbrotli${lib}.so.1.*.*; do \
+           [ "$(basename "$old")" = "$(basename "$src")" ] || rm -f "$old"; \
+         done; \
+       done \
+    && rm -rf /tmp/brotli && ldconfig \
+    && uv pip install --no-cache --python /opt/hermes/.venv/bin/python 'brotlicffi==1.2.1.0' \
+    && [ "$(node -v)" = "v26.12.1" ] || { echo "brotli-cve: node is $(node -v), expected v26.12.1" >&2; exit 1; } \
+    && /opt/hermes/.venv/bin/python -c 'import ctypes, importlib.metadata as m, sys; \
+v = ctypes.CDLL("libbrotlidec.so.1").BrotliDecoderVersion(); \
+c = m.version("brotlicffi"); \
+print("brotli-cve: libbrotlidec 0x%x, brotlicffi %s" % (v, c)); \
+sys.exit(0 if v >= 0x1002001 and c == "1.2.1.0" else 1)'
 
 # ── GitHub App identity wrapper + wiring hook (fleet-ops-e5o.5) ────────
 # The pinned official image ships git + openssl + the runtime venv

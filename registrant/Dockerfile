@@ -7,7 +7,7 @@
 # uses). Dependencies come from the root package-lock.json (`npm ci`).
 
 # ---- build stage: full deps + compile --------------------------------
-FROM node:22-bookworm-slim AS build
+FROM node:22.23.4-bookworm-slim AS build
 WORKDIR /app
 
 COPY package.json package-lock.json ./
@@ -25,7 +25,7 @@ COPY registrant/src/ registrant/src/
 RUN npm run build -w @vector-sigma/registrant
 
 # ---- runtime stage: prod deps + built output only ---------------------
-FROM node:22-bookworm-slim
+FROM node:22.23.4-bookworm-slim
 WORKDIR /app
 
 # fleet-ops-1py.14 round 7b: npm's download cache never reaches a published
