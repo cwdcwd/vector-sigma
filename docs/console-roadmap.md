@@ -253,6 +253,14 @@ Designed for now, built later:
 - Billing, quotas and usage reporting (model spend per agent is already
   visible through the gateway).
 
+## Related spike: secrets management
+
+Central rotation and audit, bring-your-own secret stores, and keeping
+secret values off agents are investigated in
+[secrets-management-spike.md](secrets-management-spike.md). Its outcome
+adds a **Secrets** section to the console (catalog, grants, rotation
+fan-out, usage) and feeds the substrate adapter's identity delivery.
+
 ## Security notes
 
 - New attack surface: user sign-in, SSE streams, the primus pane. Each
