@@ -22,6 +22,13 @@
       "when": 1792604233853,
       "tag": "0002_a2a_signed_identity",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1798291200000,
+      "tag": "0003_credential_rotations",
+      "breakpoints": true
     }
   ]
 }

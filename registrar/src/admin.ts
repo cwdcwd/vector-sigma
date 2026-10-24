@@ -6,7 +6,7 @@ import { eq, desc } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { LOGO_128, LOGO_256, FAVICON_32 } from './brand-assets.js';
-import { devices, identityBlobs, deliveryLog, deliverySlots, adminKeys, meshEnrollKeys } from './db/schema.js';
+import { devices, identityBlobs, deliveryLog, deliverySlots, adminKeys, meshEnrollKeys, credentialRotations } from './db/schema.js';
 import { keyFingerprint, hashKey } from './db/key-crypto.js';
 import { audit } from './audit.js';
 import { AuthRateLimiter } from './rate-limit.js';
@@ -43,8 +43,16 @@ import {
   deviceServeUrl,
   MASTER_AGENT_ORIGIN_HOST,
   resolveMeshTopology,
+  readA2aFromBundle,
   type CreatorKeyEnv,
 } from './mesh-enroll.js';
+import {
+  startIdentityRotation,
+  startModelRotation,
+  advanceRotations,
+  RotationError,
+} from './credential-rotation.js';
+import { appliedBundleVersion, OPEN_ROTATION_STATUSES } from './rotation-state.js';
 import { BALENA_UUID_SHORT_RE, BALENA_UUID_CANONICAL_RE, normalizeBalenaUuid, BINARY_MAX_DECODED_BYTES } from '@vector-sigma/shared';
 import type { Clock } from './clock.js';
 import type { RegistrarConfig } from './config.js';
@@ -894,7 +902,298 @@ export function registerAdminRoutes(app: FastifyInstance, opts: AdminOptions): v
       // 1py.5: does the current bundle carry a logo entry? Drives the
       // detail page's avatar + upload card.
       hasLogo: bundle?.files.some((f) => f.path === CANONICAL_PATHS.logo) ?? false,
+      // fleet-ops-1py.24: rotation eligibility flags — the a2a.json
+      // carries an identity key (A2A rotation target) and agent.env
+      // carries a non-empty GATEWAY_API_KEY (model-key rotation target).
+      hasA2aIdentity:
+        bundle !== null &&
+        (() => {
+          const a2a = readA2aFromBundle(bundle.files as never);
+          return a2a !== null && typeof a2a.identity_key === 'string' && a2a.identity_key !== '';
+        })(),
+      hasModelKey: (() => {
+        const env = bundle?.files.find((f) => f.path === 'config/agent.env');
+        if (!env) return false;
+        const line = env.content
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .find((l) => l.startsWith(`${MODEL_KEY_ENV_VAR}=`));
+        return line !== undefined && line.slice(MODEL_KEY_ENV_VAR.length + 1).trim() !== '';
+      })(),
     };
+  }
+
+  /** Rotation console mint limit — shared across the rotation routes. */
+  const rotationMintLimiter = new MeshMintRateLimiter(clock);
+
+  /** Render the device page with one danger message from a rotation failure. */
+  function rotationFailurePage(
+    reply: FastifyReply,
+    loaded: NonNullable<Awaited<ReturnType<typeof loadDevice>>>,
+    session: AdminSession,
+    err: unknown,
+  ): FastifyReply {
+    const message =
+      err instanceof RotationError
+        ? err.message
+        : err instanceof MintConfigError
+          ? err.message
+          : err instanceof MeshEnrollError
+            ? `Gateway mint failed: ${err.message}`
+            : err instanceof MintCallError
+              ? `Gateway call failed: ${err.message} (HTTP ${err.status ?? '—'})`
+              : 'Rotation failed unexpectedly — see the registrar logs.';
+    return securityHeaders(reply).type('text/html').send(
+      html.deviceDetailPage({
+        ...loaded,
+        csrfToken: session.csrfToken,
+        messages: [{ kind: 'danger', text: message }],
+      }),
+    );
+  }
+
+  app.post('/admin/devices/:uuid/rotate-a2a-key', async (request, reply) => {
+    const session = await requireSession(request);
+    if (!session) return redirectToLogin(reply);
+    if (!(await csrfGate(request, session))) return reply.status(403).type('text/html').send(csrfErrorPage());
+    const uuid = (request.params as { uuid: string }).uuid;
+    const loaded = await loadDevice(uuid);
+    if (!loaded) return reply.status(404).type('text/html').send(notFoundPage());
+    if (!rotationMintLimiter.mintAllowed(loaded.device.agentName)) {
+      await audit(db, {
+        deviceId: uuid,
+        outcome: 'denied',
+        reason: 'rotation_mint_rate_limited',
+        sourceIp: request.ip,
+        occurredAt: clock.now(),
+      });
+      return rotationFailurePage(
+        reply,
+        loaded,
+        session,
+        new RotationError('alias_live', 'Mint rate limit: this agent has already minted a credential this hour. Rotation is a rare fleet act — wait the window.'),
+      );
+    }
+    try {
+      const result = await startIdentityRotation(db, clock, await mintEnv(), loaded.device.agentName, {
+        keyId: null,
+        sourceIp: request.ip,
+      });
+      rotationMintLimiter.recordMint(loaded.device.agentName);
+      const reloaded = await loadDevice(uuid);
+      if (!reloaded) return reply.status(404).type('text/html').send(notFoundPage());
+      await audit(db, {
+        deviceId: uuid,
+        outcome: 'admin',
+        reason: `identity_rotation_started:${result.newAlias}`,
+        sourceIp: request.ip,
+        occurredAt: clock.now(),
+      });
+      return securityHeaders(reply).type('text/html').send(
+        html.deviceDetailPage({
+          ...reloaded,
+          csrfToken: session.csrfToken,
+          messages: [
+            {
+              kind: 'ok',
+              text: `A2A identity rotation started (registry #${result.rotationId}). ${result.peers} peer bundle${result.peers === 1 ? '' : 's'} received the NEW key plus the OLD one as overlap — no fleet send can fail. The device still presents the old key; the flip, target confirmation and old-key revocation are tracked in Rotations.`,
+            },
+          ],
+        }),
+      );
+    } catch (err) {
+      return rotationFailurePage(reply, loaded, session, err);
+    }
+  });
+
+  app.post('/admin/devices/:uuid/rotate-model-key', async (request, reply) => {
+    const session = await requireSession(request);
+    if (!session) return redirectToLogin(reply);
+    if (!(await csrfGate(request, session))) return reply.status(403).type('text/html').send(csrfErrorPage());
+    const uuid = (request.params as { uuid: string }).uuid;
+    const loaded = await loadDevice(uuid);
+    if (!loaded) return reply.status(404).type('text/html').send(notFoundPage());
+    if (!rotationMintLimiter.mintAllowed(loaded.device.agentName)) {
+      await audit(db, {
+        deviceId: uuid,
+        outcome: 'denied',
+        reason: 'rotation_mint_rate_limited',
+        sourceIp: request.ip,
+        occurredAt: clock.now(),
+      });
+      return rotationFailurePage(
+        reply,
+        loaded,
+        session,
+        new RotationError('alias_live', 'Mint rate limit: this agent has already minted a credential this hour. Wait the window (or use the untracked mint action).'),
+      );
+    }
+    try {
+      const result = await startModelRotation(db, clock, await mintEnv(), loaded.device.agentName, {
+        keyId: null,
+        sourceIp: request.ip,
+      });
+      rotationMintLimiter.recordMint(loaded.device.agentName);
+      const reloaded = await loadDevice(uuid);
+      if (!reloaded) return reply.status(404).type('text/html').send(notFoundPage());
+      await audit(db, {
+        deviceId: uuid,
+        outcome: 'admin',
+        reason: `model_key_rotation_started:${result.newAlias}`,
+        sourceIp: request.ip,
+        occurredAt: clock.now(),
+      });
+      return securityHeaders(reply).type('text/html').send(
+        html.deviceDetailPage({
+          ...reloaded,
+          csrfToken: session.csrfToken,
+          messages: [
+            {
+              kind: 'ok',
+              text: `Model key rotation started (registry #${result.rotationId}). The NEW key (${result.newAlias}) is merged into the bundle and delivered on the next sync; the OLD key stays live at the gateway until the device confirms the new bundle applied — then the sweep revokes it. A device that cannot report (no A2A guard) needs the Rotations page's force revoke once you have verified the new key locally.`,
+            },
+          ],
+        }),
+      );
+    } catch (err) {
+      return rotationFailurePage(reply, loaded, session, err);
+    }
+  });
+
+  app.get('/admin/rotations', async (request, reply) => {
+    const session = await requireSession(request);
+    if (!session) return redirectToLogin(reply);
+    const rows = await db
+      .select()
+      .from(credentialRotations)
+      .orderBy(desc(credentialRotations.id))
+      .limit(50);
+    const views = await rotationRowViews(rows);
+    return securityHeaders(reply).type('text/html').send(
+      html.rotationsPage({ rows: views, csrfToken: session.csrfToken }),
+    );
+  });
+
+  app.post('/admin/rotations/:id/reconcile', async (request, reply) => {
+    const session = await requireSession(request);
+    if (!session) return redirectToLogin(reply);
+    if (!(await csrfGate(request, session))) return reply.status(403).type('text/html').send(csrfErrorPage());
+    const id = Number.parseInt((request.params as { id: string }).id, 10);
+    if (!Number.isInteger(id) || id <= 0) return reply.status(404).type('text/html').send(notFoundPage());
+    const body = (request.body ?? new Map<string, string>()) as Map<string, string>;
+    const force = body.get('force') === '1';
+    let env: Record<string, string | undefined> | undefined;
+    try {
+      env = await mintEnv();
+    } catch {
+      env = undefined; // sweep still runs for stages that need no gateway
+    }
+    let outcome: Awaited<ReturnType<typeof advanceRotations>>;
+    try {
+      outcome = await advanceRotations(db, clock, env, {
+        keyId: null,
+        sourceIp: request.ip,
+        forceRevoke: force ? id : undefined,
+        rotationId: id,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const rows = await db
+        .select()
+        .from(credentialRotations)
+        .orderBy(desc(credentialRotations.id))
+        .limit(50);
+      return securityHeaders(reply).type('text/html').send(
+        html.rotationsPage({
+          rows: await rotationRowViews(rows),
+          csrfToken: session.csrfToken,
+          messages: [{ kind: 'danger', text: `Reconcile failed: ${message}` }],
+        }),
+      );
+    }
+    await audit(db, {
+      deviceId: null,
+      outcome: 'admin',
+      reason: `rotation_reconcile:${id}${force ? ':force_revoke' : ''}`,
+      sourceIp: request.ip,
+      occurredAt: clock.now(),
+    });
+    const lines: string[] = [];
+    for (const f of outcome.flipped) lines.push(`# ${f.id}: target bundle flipped (${f.agent}) — awaiting its applied report`);
+    for (const c of outcome.targetConfirmed) lines.push(`# ${c.id}: target confirmed (${c.agent})`);
+    for (const r of outcome.revoked) lines.push(`# ${r.id}: OLD key revoked (${r.agent})`);
+    for (const c of outcome.cleaned) lines.push(`# ${c.id}: overlap entries cleaned from ${c.peers} peer bundle${c.peers === 1 ? '' : 's'} (${c.agent}) — rotation complete`);
+    for (const e of outcome.errors) lines.push(`# ${e.id}: sweep error — ${e.error}`);
+    if (force && outcome.revoked.length === 0 && outcome.errors.length > 0) {
+      lines.push(`# ${id}: force revoke encountered the error above — retry after resolving it`);
+    }
+    if (lines.length === 0) lines.push(`# ${id}: nothing to advance — the rotation is waiting on its confirmations (see the peer/target applied versions below)`);
+    return securityHeaders(reply).type('text/html').send(await renderRotationsAfterReconcile(session, lines));
+  });
+
+  /** Rotation list re-render with reconcile results (route-local view build). */
+  async function renderRotationsAfterReconcile(
+    session: AdminSession,
+    messages: string[],
+  ): Promise<string> {
+    const rows = await db
+      .select()
+      .from(credentialRotations)
+      .orderBy(desc(credentialRotations.id))
+      .limit(50);
+    const views = await rotationRowViews(rows);
+    return html.rotationsPage({
+      rows: views,
+      csrfToken: session.csrfToken,
+      messages: linesToMessages(messages),
+    });
+  }
+
+  async function rotationRowViews(
+    rows: Array<typeof credentialRotations.$inferSelect>,
+  ): Promise<html.RotationRowView[]> {
+    const views: html.RotationRowView[] = [];
+    for (const r of rows) {
+      const payload = (r.payload ?? null) as { peers?: Array<{ agent: string; uuid: string; version: number }> } | null;
+      const peers = Array.isArray(payload?.peers) ? payload.peers : [];
+      const peerViews: html.RotationPeerView[] = [];
+      for (const p of peers) {
+        const applied = await appliedBundleVersion(db, p.uuid);
+        peerViews.push({
+          agent: p.agent,
+          version: p.version,
+          applied,
+          confirmed: applied !== null && applied >= p.version,
+        });
+      }
+      const iso = (t: unknown): string | null => (t instanceof Date ? t.toISOString() : null);
+      views.push({
+        id: r.id,
+        kind: r.kind,
+        agentName: r.agentName,
+        oldAlias: r.oldAlias,
+        newAlias: r.newAlias,
+        status: r.status,
+        newBundleVersion: r.newBundleVersion,
+        peers: peerViews,
+        createdAt: iso(r.createdAt),
+        flipAt: iso(r.flipAt),
+        targetConfirmedAt: iso(r.targetConfirmedAt),
+        revokedAt: iso(r.revokedAt),
+        completedAt: iso(r.completedAt),
+        gatewayError: r.gatewayError,
+        open: OPEN_ROTATION_STATUSES.includes(r.status as never),
+      });
+    }
+    return views;
+  }
+
+  function linesToMessages(lines: string[]): Array<{ kind: 'ok' | 'danger'; text: string }> {
+    return lines.map((text) =>
+      text.includes('sweep error') || text.includes('force revoke encountered')
+        ? { kind: 'danger', text }
+        : { kind: 'ok', text },
+    );
   }
 
   // ---------- Pages ----------
