@@ -40,7 +40,7 @@ export interface BlobRowView {
 export interface PageOpts {
   csrfToken?: string;
   showNav?: boolean;
-  /** Nav highlight key (1py.6): 'devices' | 'audit' | 'new-device' | 'admin-keys' | 'mesh-enroll-keys'. */
+  /** Nav highlight key (1py.6): 'devices' | 'audit' | 'new-device' | 'admin-keys' | 'mesh-enroll-keys' | 'rotations'. */
   active?: string;
 }
 
@@ -52,7 +52,7 @@ export interface PageOpts {
 function nav(csrfToken: string, active?: string): string {
   const link = (key: string, href: string, label: string) =>
     `<a href="${href}"${active === key ? ' class="active" aria-current="page"' : ''}>${label}</a>`;
-  return `<header class="site-header"><a class="brand" href="/admin/devices"><img src="/admin/static/logo-128.png" alt="" class="brand-logo"><span class="brand-name">vector-sigma <span class="brand-sub">registrar</span></span></a><nav class="nav">${link('devices', '/admin/devices', 'Devices')}${link('new-device', '/admin/new-device', 'New device')}${link('audit', '/admin/audit', 'Audit')}${link('admin-keys', '/admin/admin-keys', 'Admin keys')}${link('mesh-enroll-keys', '/admin/mesh-enroll-keys', 'Mesh-enroll keys')}${link('a2a', '/admin/a2a', 'Signed identity')}<form method="post" action="/admin/logout" class="inline-form"><input type="hidden" name="_csrf" value="${esc(csrfToken)}"><button type="submit" class="linklike">Log out</button></form></nav></header>`;
+  return `<header class="site-header"><a class="brand" href="/admin/devices"><img src="/admin/static/logo-128.png" alt="" class="brand-logo"><span class="brand-name">vector-sigma <span class="brand-sub">registrar</span></span></a><nav class="nav">${link('devices', '/admin/devices', 'Devices')}${link('new-device', '/admin/new-device', 'New device')}${link('audit', '/admin/audit', 'Audit')}${link('admin-keys', '/admin/admin-keys', 'Admin keys')}${link('mesh-enroll-keys', '/admin/mesh-enroll-keys', 'Mesh-enroll keys')}${link('a2a', '/admin/a2a', 'Signed identity')}${link('rotations', '/admin/rotations', 'Rotations')}<form method="post" action="/admin/logout" class="inline-form"><input type="hidden" name="_csrf" value="${esc(csrfToken)}"><button type="submit" class="linklike">Log out</button></form></nav></header>`;
 }
 
 export function page(title: string, body: string, opts?: PageOpts): string {
@@ -213,6 +213,10 @@ export interface DeviceDetailView {
   keyOnce?: string | null;
   /** fleet-ops-1py.5: device has a logo entry in the current bundle. */
   hasLogo?: boolean;
+  /** fleet-ops-1py.24: the bundle's a2a.json carries an identity_key (rotation eligibility). */
+  hasA2aIdentity?: boolean;
+  /** fleet-ops-1py.24: config/agent.env carries a non-empty GATEWAY_API_KEY (rotation eligibility). */
+  hasModelKey?: boolean;
 }
 
 export function deviceDetailPage(v: DeviceDetailView): string {
@@ -255,6 +259,8 @@ ${toggleForm}
 <form method="post" action="/admin/devices/${esc(d.balenaUuid)}/mint-memory-keys"><input type="hidden" name="_csrf" value="${esc(v.csrfToken)}"><button type="submit">Mint memory keys</button></form>
 <form method="post" action="/admin/devices/${esc(d.balenaUuid)}/mint-model-key"><input type="hidden" name="_csrf" value="${esc(v.csrfToken)}"><button type="submit">Mint model key</button></form>
 <form method="post" action="/admin/devices/${esc(d.balenaUuid)}/mesh-enroll"><input type="hidden" name="_csrf" value="${esc(v.csrfToken)}"><button type="submit">Enroll in A2A mesh</button></form>
+${v.hasA2aIdentity ? `<form method="post" action="/admin/devices/${esc(d.balenaUuid)}/rotate-a2a-key" data-confirm="Start a TRACKED A2A identity key rotation? Every referencing peer receives the new key now (the old one stays accepted as overlap); the device's own flip and the old key's revocation wait for applied confirmations."><input type="hidden" name="_csrf" value="${esc(v.csrfToken)}"><button type="submit">Rotate A2A key (tracked)</button></form>` : ''}
+${v.hasModelKey ? `<form method="post" action="/admin/devices/${esc(d.balenaUuid)}/rotate-model-key" data-confirm="Start a TRACKED model key rotation? The bundle is re-armed with the new key; the OLD key is revoked only after the device confirms the new bundle applied (or the owner force-revokes from Rotations)."><input type="hidden" name="_csrf" value="${esc(v.csrfToken)}"><button type="submit">Rotate model key (tracked)</button></form>` : ''}
 </div>`;
   return page(
     d.agentName,
@@ -659,6 +665,72 @@ export function meshEnrollKeyMintedPage(
     { csrfToken },
   );
 }
+
+/* ------------------------- Credential rotations (fleet-ops-1py.24) ------------------------- */
+
+export interface RotationPeerView {
+  agent: string;
+  version: number;
+  /** The version that peer's device has REPORTED applied (null: no report yet). */
+  applied: number | null;
+  confirmed: boolean;
+}
+
+export interface RotationRowView {
+  id: number;
+  kind: string;
+  agentName: string;
+  oldAlias: string;
+  newAlias: string;
+  status: string;
+  newBundleVersion: number | null;
+  peers: RotationPeerView[];
+  createdAt: string | null;
+  flipAt: string | null;
+  targetConfirmedAt: string | null;
+  revokedAt: string | null;
+  completedAt: string | null;
+  gatewayError: string | null;
+  open: boolean;
+}
+
+export function rotationsPage(
+  v: { rows: RotationRowView[]; csrfToken: string; messages?: Array<{ kind: 'ok' | 'danger'; text: string }>; active?: string },
+): string {
+  const msgs = (v.messages ?? [])
+    .map((m) => `<p class="${m.kind}">${esc(m.text)}</p>`)
+    .join('\n');
+  const trs = v.rows
+    .map((r) => {
+      const time = (t: string | null) => (t ? esc(t) : '—');
+      const peerCells = r.peers
+        .map((p) => `<li>${esc(p.agent)}: bundle v${p.version}${p.applied === null ? ' — no report yet' : p.confirmed ? ` — applied v${p.applied} ✓` : ` — applied v${p.applied} (needs v${p.version})`}</li>`)
+        .join('');
+      const peersHtml = peerCells === '' ? '<li class="muted">no peers (target-only)</li>' : peerCells;
+      const errorHtml =
+        r.gatewayError !== null && r.gatewayError !== ''
+          ? `<div><code class="danger">${esc(r.gatewayError)}</code></div>`
+          : '';
+      const action = r.open
+        ? `<form method="post" action="/admin/rotations/${r.id}/reconcile"><input type="hidden" name="_csrf" value="${esc(v.csrfToken)}"><button type="submit">Reconcile</button>
+<label class="muted"><input type="checkbox" name="force" value="1"> force revoke</label></form>`
+        : '';
+      return `<tr><td>${r.id}</td><td>${esc(r.kind)}</td><td>${esc(r.agentName)}</td><td><code>${esc(r.oldAlias)}</code> → <code>${esc(r.newAlias)}</code></td><td><strong>${esc(r.status)}</strong>${errorHtml}</td><td><ul class="muted">${peersHtml}</ul></td><td>${time(r.createdAt)}<br>flip: ${time(r.flipAt)}<br>target ✓: ${time(r.targetConfirmedAt)}<br>revoked: ${time(r.revokedAt)}</td><td>${action}</td></tr>`;
+    })
+    .join('\n');
+  return page(
+    'Credential rotations',
+    `<h1>Credential rotations</h1>
+${msgs}
+<p class="muted">Tracked fleet key rotations (safe delivery, then revoke). Ordering per rotation: <strong>delivering</strong> → (all peers applied) → <strong>awaiting_target</strong> → (target applied) → <strong>awaiting_revoke</strong> → <strong>completed</strong>. Model-key flips are confirmed directly (no peer stage). Rows stuck open — e.g. a device that cannot report its applied version — can be force-advanced by the owner: the sweep then treats that rotation's confirmations as asserted, flips/revokes, and the audit trail records the override.</p>
+<table>
+<tr><th>Id</th><th>Kind</th><th>Agent</th><th>Alias</th><th>State</th><th>Peers</th><th>Timeline (UTC)</th><th></th></tr>
+${trs}
+</table>`,
+    { csrfToken: v.csrfToken, active: 'rotations' },
+  );
+}
+
 export interface A2aDeviceRowView {
   deviceId: string;
   agentName: string;

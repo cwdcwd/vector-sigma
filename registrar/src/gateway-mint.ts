@@ -345,6 +345,55 @@ async function findModelKeyRow(cfg: GatewayConfig, alias: string): Promise<boole
   return keys.some((k) => (k as Record<string, unknown>).key_alias === alias);
 }
 
+/**
+ * fleet-ops-1py.24 (credential rotation): the alias row's token, looked up
+ * exactly like findModelKeyRow but returning the row's token so the OLD
+ * credential can be revoked by value (the registrar never learns plaintext
+ * at mint time; the list endpoint is the established revocation oracle —
+ * see mesh-enroll's bootstrap alias probe).
+ */
+export async function findModelKeyToken(
+  cfg: GatewayConfig,
+  alias: string,
+): Promise<string | null> {
+  const res = await gatewayCall(
+    cfg,
+    'GET',
+    `/key/list?key_alias=${encodeURIComponent(alias)}&return_full_object=true`,
+  );
+  if (res.status !== 200) {
+    throw new MintCallError(
+      `gateway /key/list for '${alias}' failed (HTTP ${res.status})`,
+      res.status,
+      null,
+    );
+  }
+  const keys = (res.json as { keys?: unknown[] } | null)?.keys;
+  if (!Array.isArray(keys)) return null;
+  for (const k of keys) {
+    const row = k as Record<string, unknown>;
+    if (row.key_alias === alias) {
+      const token = row.token;
+      return typeof token === 'string' && token !== '' ? token : null;
+    }
+  }
+  return null;
+}
+
+/** Ensure the per-agent gateway user row exists (rotation-path export). */
+export async function ensureUserForAgent(cfg: GatewayConfig, agentName: string): Promise<void> {
+  return ensureUser(cfg, agentName);
+}
+
+/** Mint one route-locked model key under an explicit (rotation) alias. */
+export async function mintModelKeyForAlias(
+  cfg: GatewayConfig,
+  agentName: string,
+  alias: string,
+): Promise<string> {
+  return mintModelKey(cfg, agentName, alias);
+}
+
 /** Mint one route-locked model key; plaintext returned ONCE. */
 async function mintModelKey(cfg: GatewayConfig, agentName: string, alias: string): Promise<string> {
   const res = await gatewayCall(cfg, 'POST', '/key/generate', {

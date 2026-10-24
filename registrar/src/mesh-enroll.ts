@@ -79,6 +79,7 @@ import {
   MintConfigError,
   type GatewayConfig,
 } from './gateway-mint.js';
+import { findOpenRotationByAgent } from './rotation-state.js';
 
 /**
  * Per-DEVICE mint rate limit (in-memory, the AuthRateLimiter posture):
@@ -302,7 +303,7 @@ interface BundleFile {
 }
 
 /** Look up a key row by exact alias; null when absent. */
-async function findKeyRow(
+export async function findKeyRow(
   cfg: GatewayConfig,
   alias: string,
 ): Promise<Record<string, unknown> | null> {
@@ -330,8 +331,9 @@ async function findKeyRow(
 async function mintMeshKey(
   cfg: GatewayConfig,
   agentName: string,
+  aliasOverride?: string,
 ): Promise<{ alias: string; key: string }> {
-  const alias = meshKeyAlias(agentName);
+  const alias = aliasOverride ?? meshKeyAlias(agentName);
   const payload: Record<string, unknown> = {
     key_alias: alias,
     user_id: MESH_KEY_USER_ID,
@@ -362,8 +364,11 @@ async function mintMeshKey(
   return { alias, key };
 }
 
-/** Ensure the mesh user row exists (idempotent, the gateway-mint pattern). */
-async function ensureMeshUser(cfg: GatewayConfig): Promise<void> {
+/**
+ * Ensure the mesh user row exists (idempotent, the gateway-mint pattern).
+ * Re-exported for the credential-rotation flow's versioned alias mint.
+ */
+export async function ensureMeshUser(cfg: GatewayConfig): Promise<void> {
   const res = await gatewayCall(cfg, 'POST', '/user/new', {
     user_id: MESH_KEY_USER_ID,
     user_alias: 'vs a2a mesh identities',
@@ -452,6 +457,12 @@ export function renderA2aJson(
     publicUrl?: string;
     addTrustedPeers?: string[];
     addPeerTokens?: Record<string, string>;
+    /** Rotation overlap (fleet-ops-1py.24): the peer's PREVIOUS token for a
+     * target whose identity key is rotating. Receivers accept both tokens
+     * until the rotation sweep completes and retires them (dual-mode
+     * precedent: same-name token pairs already ship in the guard env). */
+    addPeerTokensOverlap?: Record<string, string>;
+    dropPeerTokensOverlap?: string[];
   },
 ): string {
   const obj: Record<string, unknown> = { ...(current ?? {}) };
@@ -466,6 +477,22 @@ export function renderA2aJson(
       ...updates.addPeerTokens,
     };
     obj.peer_tokens = tokens;
+  }
+  if (updates.addPeerTokensOverlap !== undefined || updates.dropPeerTokensOverlap !== undefined) {
+    const overlap: Record<string, string> = {
+      ...((obj.peer_tokens_overlap as Record<string, string> | undefined) ?? {}),
+    };
+    if (updates.addPeerTokensOverlap !== undefined) {
+      Object.assign(overlap, updates.addPeerTokensOverlap);
+    }
+    if (updates.dropPeerTokensOverlap !== undefined) {
+      for (const name of updates.dropPeerTokensOverlap) delete overlap[name];
+    }
+    if (Object.keys(overlap).length > 0) {
+      obj.peer_tokens_overlap = overlap;
+    } else {
+      delete obj.peer_tokens_overlap;
+    }
   }
   return JSON.stringify(obj, null, 2) + '\n';
 }
@@ -680,11 +707,26 @@ export async function enrollAgent(
     if (peerBlob.length === 0) continue;
     const peerBundle = peerBlob[0].bundle as { files: BundleFile[] };
     const peerA2a = readA2aFromBundle(peerBundle.files);
+    // fleet-ops-1py.24: rotation-aware — when the TARGET has an OPEN
+    // a2a_identity rotation, this peer's canonical entry for the target
+    // is the rotation's NEW token, plus the old one as the overlap entry
+    // so the freshly rendered bundle still accepts the target's in-fleet
+    // presentations (the target runs the old key until the flip).
+    const openTargetRotation = await findOpenRotationByAgent(db, agentName);
+    const targetRotationUpdates =
+      openTargetRotation && openTargetRotation.oldToken && openTargetRotation.newToken
+        ? {
+            addPeerTokens: { [agentName]: openTargetRotation.newToken },
+            addPeerTokensOverlap: { [agentName]: openTargetRotation.oldToken },
+          }
+        : {
+            addPeerTokens: { [agentName]: identityKey },
+          };
     peerNexts.set(
       peer.deviceId,
       renderA2aJson(peerA2a, {
         addTrustedPeers: [agentName],
-        addPeerTokens: { [agentName]: identityKey },
+        ...targetRotationUpdates,
       }),
     );
   }
@@ -895,4 +937,21 @@ export function createCreatorKeyEnv(
     }
     return { ...env, [MESH_CREATOR_KEY_ENV]: await pending };
   };
+}
+
+// ---------------------------------------------------------------------------
+// Credential rotation (fleet-ops-1py.24) — exports for the rotation module.
+// The rotation flow mints a mesh identity key under a VERSIONED alias
+// (`vs-<agent>-a2a-r<n>`) so the OLD key stays live at the gateway through
+// the overlap window; the overlap reaches receivers through
+// renderA2aJson's `addPeerTokensOverlap` support below.
+// ---------------------------------------------------------------------------
+
+/** Mint a mesh identity key under an explicit (versioned rotation) alias. */
+export function mintMeshKeyForAlias(
+  cfg: GatewayConfig,
+  agentName: string,
+  alias: string,
+): Promise<{ alias: string; key: string }> {
+  return mintMeshKey(cfg, agentName, alias);
 }

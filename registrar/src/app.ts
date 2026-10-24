@@ -25,6 +25,7 @@ import { rotateBundle, rearmSlot } from './rotate.js';
 import { RearmRequestSchema, RotateRequestSchema, MeshEnrollRequestSchema, A2aKeyReportSchema } from '@vector-sigma/shared';
 import { registerDeviceKey, reportGuardStatus, resolveKeyPolicy, resyncMeshKeys, A2aKeyError } from './a2a-keys.js';
 import { enrollAgent, createCreatorKeyEnv, MeshEnrollError, MeshMintRateLimiter } from './mesh-enroll.js';
+import { advanceRotations, upsertBundleReport } from './credential-rotation.js';
 import { SessionManager, SESSION_COOKIE } from './session.js';
 
 export interface BuildOptions {
@@ -339,6 +340,23 @@ export function buildApp(opts: BuildOptions): FastifyInstance {
         await reportGuardStatus(db, clock, parsed.data.balena_uuid,
           (parsed.data.guard_status ?? null) as Record<string, unknown> | null, parsed.data.bundle_version ?? null);
       }
+      // fleet-ops-1py.24: the applied-version confirmation channel. The
+      // reported bundle_version feeds the rotation sweep's applied-checks;
+      // then any open rotation whose confirmations are now complete
+      // advances (deliver-then-revoke ordering is enforced inside the
+      // sweep — the device report NEVER triggers a mint, only flips and
+      // revocations of already-delivered keys). A sweep failure never
+      // fails the report: registry rows persist and retry on the next
+      // report cycle or via the console's reconcile action.
+      if (parsed.data.bundle_version != null && parsed.data.bundle_version > 0) {
+        await upsertBundleReport(db, clock, parsed.data.balena_uuid, parsed.data.bundle_version);
+      }
+      const sweepEnv = await creatorKeyEnv().catch(() => undefined);
+      const sweep = await advanceRotations(db, clock, sweepEnv, { keyId, sourceIp: ip }).catch((err: unknown) => {
+        request.log.error({ err }, 'rotation sweep failed');
+        return null;
+      });
+      void sweep;
       return reply.status(200).send({ status: result.status, fingerprint: result.fingerprint });
     } catch (err) {
       if (err instanceof A2aKeyError) return reply.status(err.status).send({ error: err.code });
