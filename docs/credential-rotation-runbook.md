@@ -67,6 +67,56 @@ completed` (model rotations skip `awaiting_target` — no peer stage).
    and writes the override to the audit trail (`delivery_log`). Never force
    while the device might still be on the OLD key.
 
+## Reading rotation status (fleet-ops-1py.25)
+
+Where the status lives: the **Rotations** console page (`/admin/rotations`) is the
+only status surface — all rows come straight from the Postgres rotation registry
+(`credential_rotations`), rebuilt fresh on every page load (most recent 50 rows),
+and the sweep is the same code the device-report paths run, so status and truth
+always agree.
+
+| Column | Meaning |
+|---|---|
+| Id | Registry row id; quote it in reports and use it to match Reconcile actions. |
+| Kind | `a2a_identity` (fleet-wide peer rollout) or `model_key` (target-device only). |
+| Agent | Rotation subject. |
+| Alias | `oldAlias → newAlias` (e.g. `vs-romeo-a2a → vs-romeo-a2a-r1`). |
+| State | The stage below; an in-cell gateway error means the row stays open and the next sweep retries. |
+| Peers | Per peer: delivered bundle version, and the applied version the peer last reported (`applied vX ✓` = confirmed, `needs vX` = waiting, `no report yet`). Target-only rotations show none. |
+| Timeline | UTC: `createdAt`, `flipAt` (A2A only), `target ✓`, `revoked` — a stale cell is a rotation waiting on that stage. |
+
+### Stage reference (state machine: delivering → awaiting_target → awaiting_revoke → completed)
+
+- **delivering** — the peer/token bundles are delivered; waiting on peer
+  applied-reports. Stuck: device page shows slot state and last sync; the row
+  has no `flipAt` yet. Model-key rows here wait for the device applied-report.
+- **awaiting_target** — every peer confirmed at `flipAt`; the target's bundle is
+  flipped to the new key. Stuck: no `target ✓` timestamp; check the target
+  reports and its slot. **Model-key rows never have this stage.**
+- **awaiting_revoke** — target confirmed; the old key is being revoked by alias
+  at the next sweep (or Reconcile). Stuck: `gatewayError` in-cell (mint service
+  down, key missing) — fix the gateway, then Reconcile; the sweep retries.
+- **completed** — closed; the old key revoked (by the sweep or an owner force),
+  overlap cleaned from peers, tokens wiped (aliases only remain). No actions
+  remain on the row.
+
+### Operator loop when a row is stuck
+
+1. Identify the waiting stage (no peer confirmed / no flip / no target ✓ / no
+   revoke) and check the party that must send the next report: device page
+   (slot state, last sync, applied bundle version) and, for the target, the
+   registrant logs (`bundle_version` reports on `/v1/a2a-key`).
+2. If a device cannot report at all (guard dead, device key lost,
+   decommissioning): verify out of band that the device is on the new key, then
+   tick **force revoke** and Reconcile — the gates are skipped, the audit trail
+   (`delivery_log`) records the override, and the row completes. Never force
+   while a device could still be on the OLD key.
+3. Otherwise let the sweep advance it, or click Reconcile to run it now. The
+   sweep is idempotent and restart-safe: stage-1 delivery happens once at the
+   start; sweeps only flip/confirm/revoke/clean, and the same advance code runs
+   on every device report. If rows are open across restarts they survive in
+   Postgres — nothing to re-run.
+
 ## Failure, retry, and safety properties
 
 - A gateway failure during revoke (e.g. mint service down) is recorded in the
