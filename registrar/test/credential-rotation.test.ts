@@ -84,6 +84,9 @@ function stubGateway(): void {
       if (c.method === 'POST' && u.includes('/user/new')) {
         return respond(200, {});
       }
+      if (c.method === 'POST' && u.includes('/v1/agents')) {
+        return respond(200, {});
+      }
       return respond(404, { error: `unexpected gateway call ${c.method} ${u}` });
     }),
   );
@@ -141,6 +144,28 @@ async function seedAgent(
     status: 'active',
     agentName: name,
     bundle: meshBundle(name, peers, opts),
+  });
+  return uuid;
+}
+
+/** Env-only bundle (no a2a.json), optionally with a base64-encoded env. Shared by both edge describes. */
+export async function seedPlain(
+  env: TestEnv,
+  name: string,
+  opts?: { modelKey?: string; b64Env?: boolean },
+): Promise<string> {
+  const uuid = randomUUID();
+  const hash = await hashKey(`dk_${name}_${randomUUID()}`, { memoryCostKiB: 256, timeCost: 1 });
+  const envContent = `AGENT_NAME=${name}${opts?.modelKey !== undefined ? `\nGATEWAY_API_KEY=${opts.modelKey}` : ''}\n`;
+  const files = opts?.b64Env
+    ? [{ path: 'config/agent.env', mode: '0600', content: Buffer.from(envContent).toString('base64'), encoding: 'base64' }]
+    : [{ path: 'config/agent.env', mode: '0600', content: envContent }];
+  await seedDevice(env.db, {
+    uuid,
+    hash,
+    status: 'active',
+    agentName: name,
+    bundle: { schema_version: 1, bundle_version: 1, generated_at: '2026-01-01T00:00:00Z', files } as IdentityBundle,
   });
   return uuid;
 }
@@ -492,6 +517,116 @@ describe('credential rotation — console', () => {
     expect(f.html).toContain('Rotate A2A key (tracked)');
     expect(f.html).toContain('Rotate model key (tracked)');
   });
+
+  it('console: a2a start route, rate-limit + no-key failure pages, reconcile validations, gateway-error retry', async () => {
+    calls.length = 0;
+    keySeq = 0;
+    keyList = [];
+    deletedKeys = [];
+    const env = await createTestEnv();
+    await seedAdminKey(env.db, 'ak_test_admin');
+    const romeo = await seedAgent(env, 'romeo', ['hotel']);
+    await seedAgent(env, 'hotel', ['romeo']); // hotel's a2a references romeo → a delivery peer
+    const kilo = await seedAgent(env, 'kilo', []); // a2a present, model key absent
+    process.env['GATEWAY_KEY_CREATOR_KEY'] = ENV.GATEWAY_KEY_CREATOR_KEY;
+    process.env['GATEWAY_KEY_MINT_BASE_URL'] = ENV.GATEWAY_KEY_MINT_BASE_URL;
+    stubGateway();
+    const admin = new AdminClient(env.app);
+    await admin.login('ak_test_admin');
+
+    // Empty registry: the page renders without any action buttons.
+    const empty = await admin.get('/admin/rotations');
+    expect(empty.status).toBe(200);
+    expect(empty.html).not.toContain('Reconcile');
+
+    // The A2A start route through the console.
+    const detail = await admin.get(`/admin/devices/${romeo}`);
+    const startRes = await admin.postForm(`/admin/devices/${romeo}/rotate-a2a-key`, {
+      _csrf: extractCsrf(detail.html),
+    });
+    expect(startRes.status).toBe(200);
+    expect(startRes.html).toContain('A2A identity rotation started (registry #1). 1 peer bundle');
+
+    // The peer cell renders its unreported state.
+    const page0 = await admin.get('/admin/rotations');
+    expect(page0.html).toContain('no report yet');
+    const page0Csrf = extractCsrf(page0.html) ?? extractCsrf(detail.html);
+
+    // A second mint for the same agent → the rate limit failure page.
+    const again = await admin.postForm(`/admin/devices/${romeo}/rotate-a2a-key`, {
+      _csrf: page0Csrf,
+    });
+    expect(again.status).toBe(200);
+    expect(again.html).toContain('Mint rate limit');
+
+    // rotate-model-key for an agent with no GATEWAY_API_KEY → failure page.
+    const kiloDetail = await admin.get(`/admin/devices/${kilo}`);
+    const kiloStart = await admin.postForm(`/admin/devices/${kilo}/rotate-model-key`, {
+      _csrf: extractCsrf(kiloDetail.html),
+    });
+    expect(kiloStart.status).toBe(200);
+    expect(kiloStart.html).toContain('no GATEWAY_API_KEY');
+
+    // Reconcile validations: malformed id → 4xx.
+    const badId = await admin.postForm('/admin/rotations/abc/reconcile', {
+      _csrf: page0Csrf,
+    });
+    expect(badId.status).toBeGreaterThanOrEqual(400);
+
+    // Non-force reconcile while the peer hasn't reported: nothing to advance.
+    const nf = await admin.postForm('/admin/rotations/1/reconcile', {
+      _csrf: page0Csrf,
+    });
+    expect(nf.status).toBe(200);
+    expect(nf.html).toContain('nothing to advance');
+
+    const fr = await admin.postForm('/admin/rotations/1/reconcile', {
+      _csrf: extractCsrf(nf.html) ?? page0Csrf,
+      force: '1',
+    });
+    expect(fr.status).toBe(200);
+    expect(fr.html).toContain('target bundle flipped (romeo) — awaiting its applied report');
+
+    // Break the gateway: /key/delete now 500s.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string | URL, init?: RequestInit) => {
+        const u = String(url);
+        const method = init?.method ?? 'GET';
+        if (method === 'GET' && u.includes('/key/list')) {
+          return respond(200, { keys: keyList });
+        }
+        if (method === 'POST' && u.includes('/key/delete')) return respond(500, { error: 'gateway down' });
+        if (method === 'POST' && u.includes('/key/generate')) return respond(200, { key: 'sk-never' });
+        return respond(200, {});
+      }),
+    );
+
+    // The device reports the flipped bundle (v2); the next force pass
+    // runs the revoke — which the broken gateway refuses.
+    await upsertBundleReport(env.db, env.clock, romeo, 2);
+    const frMid = await admin.postForm('/admin/rotations/1/reconcile', {
+      _csrf: extractCsrf(fr.html) ?? page0Csrf,
+      force: '1',
+    });
+    expect(frMid.status).toBe(200);
+    expect(frMid.html).toContain('force revoke encountered the error above');
+    const rows = await rotationRows(env);
+    expect(rows[0].status).toBe('awaiting_revoke');
+    expect(rows[0].gatewayError).toContain('gateway down');
+
+    // Heal the gateway: the SAME reconcile retries the revoke → completed.
+    stubGateway();
+    const fr2 = await admin.postForm('/admin/rotations/1/reconcile', {
+      _csrf: extractCsrf(frMid.html) ?? page0Csrf,
+      force: '1',
+    });
+    expect(fr2.status).toBe(200);
+    const doneRows = await rotationRows(env);
+    expect(doneRows[0].status).toBe('completed');
+    expect(doneRows[0].oldToken).toBeNull();
+    expect(deletedKeys.length).toBe(1);
+  });
 });
 
 describe('credential rotation — enroll-time propagation of an open rotation', () => {
@@ -512,5 +647,321 @@ describe('credential rotation — enroll-time propagation of an open rotation', 
     expect(rot).toContain('dropPeerTokensOverlap');
     expect(rot).toContain('revokeMeshKey');
     expect(rot).toContain('revokeModelKey');
+  });
+});
+describe('credential rotation — edges (guards, stalls, envelope variants)', () => {
+  let env: TestEnv;
+  beforeEach(async () => {
+    calls.length = 0;
+    keySeq = 0;
+    keyList = [];
+    deletedKeys = [];
+    env = await createTestEnv();
+    stubGateway();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete process.env['GATEWAY_KEY_CREATOR_KEY'];
+    delete process.env['GATEWAY_KEY_MINT_BASE_URL'];
+  });
+
+  it('start refuses agents with no device (404) or no mesh identity', async () => {
+    await expect(
+      startIdentityRotation(env.db, env.clock, ENV, 'ghost', { keyId: null }),
+    ).rejects.toMatchObject({ code: 'no_bundle' });
+    await seedPlain(env, 'plain');
+    await expect(
+      startIdentityRotation(env.db, env.clock, ENV, 'plain', { keyId: null }),
+    ).rejects.toMatchObject({ code: 'no_bundle' });
+    // No registry rows were opened for either refusal.
+    expect(await rotationRows(env)).toHaveLength(0);
+  });
+
+  it('model start refuses an agent whose bundle carries no GATEWAY_API_KEY; base64 envs rotate fine', async () => {
+    await expect(
+      startModelRotation(env.db, env.clock, ENV, 'nobody', { keyId: null }),
+    ).rejects.toMatchObject({ code: 'no_bundle' });
+    await seedPlain(env, 'brutus');
+    await expect(
+      startModelRotation(env.db, env.clock, ENV, 'brutus', { keyId: null }),
+    ).rejects.toMatchObject({ code: 'no_bundle' });
+    expect(await rotationRows(env)).toHaveLength(0);
+
+    // base64-encoded agent.env: the value is decoded for the guard and the
+    // rotation re-merges it (the merge writes the updated env back).
+    const b64 = await seedPlain(env, 'cordelia', { modelKey: 'sk-cordelia-old', b64Env: true });
+    const result = await startModelRotation(env.db, env.clock, ENV, 'cordelia', { keyId: null });
+    expect(result.newAlias).toBe('model-cordelia-r1');
+    const { bundle } = await bundleOf(env, b64);
+    expect(bundledEnvValue(bundle.files, 'GATEWAY_API_KEY')).toBe('sk-rotated-1');
+    expect(bundledEnvValue(bundle.files, 'AGENT_NAME')).toBe('cordelia');
+    // bundledEnvValue tolerates a missing env file.
+    expect(bundledEnvValue([{ path: 'config/a2a.json', mode: '0600', content: '{}' }], 'GATEWAY_API_KEY')).toBe('');
+  });
+
+  it('a peerless a2a rotation skips the peer stage and flips on the first sweep', async () => {
+    const kilo = await seedAgent(env, 'kilo', []); // no agent references kilo
+    await startIdentityRotation(env.db, env.clock, ENV, 'kilo', { keyId: null });
+    const noConfirm = await advanceRotations(env.db, env.clock, ENV, { keyId: null });
+    expect(noConfirm.flipped.length).toBe(1); // peersConfirmed([]) === true
+    let rows = await rotationRows(env);
+    expect(rows[0].status).toBe('awaiting_target');
+
+    // The target confirms: revoke + complete (no peers to clean).
+    await upsertBundleReport(env.db, env.clock, kilo, 2);
+    const done = await advanceRotations(env.db, env.clock, ENV, { keyId: null });
+    expect(done.revoked.length).toBe(1);
+    rows = await rotationRows(env);
+    expect(rows[0].status).toBe('completed');
+    expect(rows[0].oldToken).toBeNull();
+  });
+
+  it("an env-undefined sweep can't revoke: the row stays open with a gateway_error, retried later", async () => {
+    const juliet = await seedAgent(env, 'juliet', [], { modelKey: 'sk-jul...-old' });
+    await startModelRotation(env.db, env.clock, ENV, 'juliet', { keyId: null });
+    await upsertBundleReport(env.db, env.clock, juliet, 2); // target confirms
+    const stalled = await advanceRotations(env.db, env.clock, undefined, { keyId: null });
+    expect(stalled.revoked.length).toBe(0);
+    expect(stalled.errors.length).toBe(1); // the refusal is visible to the console
+    expect(stalled.errors[0].error).toContain('gateway not configured');
+    const rows = await rotationRows(env);
+    expect(rows[0].status).toBe('awaiting_revoke');
+    // With the env restored the SAME sweep completes the rotation.
+    const done = await advanceRotations(env.db, env.clock, ENV, { keyId: null });
+    expect(done.revoked.length).toBe(1);
+    expect((await rotationRows(env))[0].status).toBe('completed');
+  });
+
+  it('force narrows to the given row: other open rows are left untouched', async () => {
+    await seedAgent(env, 'gamma2', []);
+    await seedAgent(env, 'romeo2', [], { modelKey: 'sk-rom2-old' });
+    const a2a = await startIdentityRotation(env.db, env.clock, ENV, 'gamma2', { keyId: null });
+    await startModelRotation(env.db, env.clock, ENV, 'romeo2', { keyId: null });
+
+    // Force the MODEL row — the a2a row must NOT advance with it.
+    const rows = await rotationRows(env);
+    const modelRow = rows.find((r) => r.kind === 'model_key')!;
+    const outcome = await advanceRotations(env.db, env.clock, ENV, {
+      keyId: null,
+      forceRevoke: modelRow.id,
+    });
+    expect(outcome.revoked.some((r) => r.id === modelRow.id)).toBe(true);
+    const after = await rotationRows(env);
+    expect(after.find((r) => r.id === a2a.rotationId)!.status).toBe('delivering'); // untouched
+    expect(after.find((r) => r.id === modelRow.id)!.status).toBe('completed'); // force completed it
+  });
+
+  it('an awaiting_target row with newBundleVersion null (crash-truncated write) never confirms itself', async () => {
+    const kilo2 = await seedAgent(env, 'kilo2', []);
+    await env.db.insert(credentialRotations).values({
+      kind: 'a2a_identity',
+      deviceId: null as string | null,
+      agentName: 'kilo2',
+      oldAlias: 'vs-kilo2-a2a',
+      newAlias: 'vs-kilo2-a2a-r1',
+      newBundleVersion: null,
+      status: 'awaiting_target',
+    } as never);
+    const outcome = await advanceRotations(env.db, env.clock, ENV, { keyId: null });
+    expect(outcome.targetConfirmed.length).toBe(0);
+    const rows = await rotationRows(env);
+    expect(rows.find((r) => r.agentName === 'kilo2')!.status).toBe('awaiting_target');
+    // The seeded device is irrelevant; the guard is on the row's own fields.
+    void kilo2;
+  });
+
+  it('model revoke treats an alias that is not live anymore as goal state and completes without a delete', async () => {
+    keyList = []; // /key/list never finds the old alias
+    const juliet2 = await seedAgent(env, 'juliet2', [], { modelKey: 'sk-juliet2-old' });
+    await startModelRotation(env.db, env.clock, ENV, 'juliet2', { keyId: null });
+    await upsertBundleReport(env.db, env.clock, juliet2, 2);
+    const outcome = await advanceRotations(env.db, env.clock, ENV, { keyId: null });
+    expect(outcome.revoked.length).toBe(1);
+    expect(deletedKeys).toEqual([]); // nothing to delete — the alias was absent
+    expect((await rotationRows(env))[0].status).toBe('completed');
+    const completed = (await rotationRows(env))[0];
+    // The absent-alias completion is still audited distinctly.
+    expect(completed.gatewayError).toBeNull();
+  });
+
+  it('findModelKeyToken tolerates a non-array /key/list envelope (key treated as absent)', async () => {
+    // Re-stub with a malformed envelope for the list endpoint only.
+    vi.unstubAllGlobals();
+    const realStub = stubGateway;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string | URL, init?: RequestInit) => {
+        const u = String(url);
+        const method = init?.method ?? 'GET';
+        if (method === 'GET' && u.includes('/key/list')) return respond(200, { keys: 'not-an-array' });
+        if (method === 'GET' && u.includes('nope')) return respond(200, {});
+        if (method === 'POST' && u.includes('/key/generate')) return respond(200, { key: 'sk-tightrope' });
+        if (method === 'POST' && u.includes('/user/new')) return respond(200, {});
+        return respond(200, { deleted_keys: [] });
+      }),
+    );
+    void realStub;
+    keyList = [];
+    const ghost2 = await seedAgent(env, 'ghost2', [], { modelKey: 'sk-ghost2-old' });
+    await startModelRotation(env.db, env.clock, ENV, 'ghost2', { keyId: null });
+    await upsertBundleReport(env.db, env.clock, ghost2, 2);
+    const outcome = await advanceRotations(env.db, env.clock, ENV, { keyId: null });
+    // list envelope malformed → the old alias reads as absent → completed w/o delete
+    expect(outcome.revoked.length).toBe(1);
+    expect(deletedKeys).toEqual([]);
+  });
+
+  it('a mid-rotation mesh enroll of a peer renders the NEW token canonical + OLD overlap', async () => {
+    const { enrollAgent, MeshMintRateLimiter, MESH_CREATOR_KEY_ENV, MESH_GATEWAY_BASE_URL_ENV, MESH_TAILNET_SUFFIX_ENV, MESH_EDGE_HOST_ENV } = await import('../src/mesh-enroll.js');
+    const enrollEnv: Record<string, string | undefined> = {
+      ...ENV,
+      [MESH_CREATOR_KEY_ENV]: ENV.GATEWAY_KEY_CREATOR_KEY,
+      [MESH_GATEWAY_BASE_URL_ENV]: ENV.GATEWAY_KEY_MINT_BASE_URL,
+      [MESH_TAILNET_SUFFIX_ENV]: '.synth-tailnet.ts.net',
+      [MESH_EDGE_HOST_ENV]: 'vsigma-master.synth-tailnet.ts.net',
+    };
+    const gamma3 = await seedAgent(env, 'gamma3', ['alpha3']);
+    void gamma3;
+    const alpha3 = await seedAgent(env, 'alpha3', ['gamma3']);
+    await startIdentityRotation(env.db, env.clock, ENV, 'gamma3', { keyId: null });
+    // A FRESH enroll of alpha3 (e.g. lost device key) during gamma3's open rotation:
+    // enrollAgent MINTs (the alias is already live), heals and re-renders — and the
+    // rotation block feeds it gamma3's NEW token canonical + OLD one as overlap.
+    const outcome = await enrollAgent(env.db, enrollEnv, 'alpha3', {
+      keyId: null,
+      sourceIp: null,
+      originUrl: 'https://alpha3.synth-tailnet.ts.net:9900/a2a/gamma3',
+      publicUrl: 'https://alpha3.synth-tailnet.ts.net:9900',
+      clock: env.clock,
+      mintLimiter: new MeshMintRateLimiter(env.clock),
+    });
+    const a2a = await a2aOf(env, alpha3);
+    expect((a2a['peer_tokens'] as Record<string, string>)['gamma3']).toMatch(/sk-rotated-./);
+    expect((a2a['peer_tokens_overlap'] as Record<string, string>)['gamma3']).toContain('sk-gamma3-');
+    void outcome;
+  });
+});
+
+describe('credential rotation — edges 2 (sweep internals)', () => {
+  let env: TestEnv;
+  beforeEach(async () => {
+    calls.length = 0;
+    keySeq = 0;
+    keyList = [];
+    deletedKeys = [];
+    // Scrub the gateway env so "env === undefined" truly means unconfigured.
+    delete process.env['GATEWAY_KEY_CREATOR_KEY'];
+    delete process.env['GATEWAY_KEY_MINT_BASE_URL'];
+    env = await createTestEnv();
+    stubGateway();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete process.env['GATEWAY_KEY_CREATOR_KEY'];
+    delete process.env['GATEWAY_KEY_MINT_BASE_URL'];
+  });
+
+  it('env-undefined and broken-gateway revokes surface as sweep errors; rotationId/force narrow correctly; crash-truncated targets refuse safely', async () => {
+    // A mesh-less device shares the fleet (the peer scan must skip it silently).
+    await seedPlain(env, 'plain2');
+
+    // ── a2a rotation driven to awaiting_revoke, then swept WITHOUT env ──
+    const romeo4 = await seedAgent(env, 'romeo4', ['hotel4']);
+    await seedAgent(env, 'hotel4', ['romeo4']);
+    await startIdentityRotation(env.db, env.clock, ENV, 'romeo4', { keyId: null });
+    const rows0 = await rotationRows(env);
+    const a2aRow = rows0.find((r) => r.kind === 'a2a_identity')!;
+    const hotel4Row = (await env.db.select().from(devices).where(eq(devices.agentName, 'hotel4')))[0];
+    await upsertBundleReport(env.db, env.clock, hotel4Row.balenaUuid, 2); // peer applied the delivered v2
+    await upsertBundleReport(env.db, env.clock, romeo4, 2); // target applied v2
+    // Break the gateway BEFORE the flip pass: confirm + revoke run in one
+    // sweep, the delete 500s, and the row is left OPEN at awaiting_revoke.
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      const method = init?.method ?? 'GET';
+      if (method === 'POST' && u.includes('/key/delete')) return respond(500, { error: 'delete outage' });
+      if (method === 'GET' && u.includes('/key/list')) return respond(200, { keys: keyList });
+      return respond(200, {});
+    }));
+    const flipPass = await advanceRotations(env.db, env.clock, ENV, { keyId: null });
+    expect(flipPass.flipped.length).toBe(1);
+    expect(flipPass.targetConfirmed.length).toBe(0);
+    const confirmPass = await advanceRotations(env.db, env.clock, ENV, { keyId: null });
+    expect(confirmPass.targetConfirmed.length).toBe(1);
+    expect(confirmPass.revoked.length).toBe(0); // the delete 500 blocked it
+    const midRows = await rotationRows(env);
+    expect(midRows.find((r) => r.id === a2aRow.id)!.status).toBe('awaiting_revoke');
+    expect(midRows.find((r) => r.id === a2aRow.id)!.gatewayError).toContain('delete outage');
+
+    // A sweep that runs with NO env (the var lost between restarts) cannot
+    // even attempt the revoke: the refusal is recorded and the row stays open.
+    const stalledA2a = await advanceRotations(env.db, env.clock, undefined, { keyId: null });
+    expect(stalledA2a.errors.length).toBe(1); // revoke refused: gateway not configured
+    expect(stalledA2a.errors[0].error).toContain('gateway not configured');
+    expect((await rotationRows(env)).find((r) => r.id === a2aRow.id)!.status).toBe('awaiting_revoke');
+
+    // ── a2a retry WITH env completes (old token wiped) ──
+    stubGateway(); // heal the gateway
+    const healed = await advanceRotations(env.db, env.clock, ENV, { keyId: null });
+    expect(healed.revoked.length).toBe(1);
+    expect((await rotationRows(env)).find((r) => r.id === a2aRow.id)!.status).toBe('completed');
+
+    // ── model rotation: /key/delete refuses (500) → noteFailure + errors ──
+    keyList = [{ key_alias: 'model-juliet4', key: 'sk-jul4-old', token: 'sk-jul4-old' }];
+    const juliet4 = await seedAgent(env, 'juliet4', [], { modelKey: 'sk-jul4-old' });
+    await startModelRotation(env.db, env.clock, ENV, 'juliet4', { keyId: null });
+    // The gateway refuses before the flip pass — the model flow confirms and
+    // revokes in ONE sweep, so the break must be in place beforehand.
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      const method = init?.method ?? 'GET';
+      if (method === 'GET' && u.includes('/key/list')) return respond(200, { keys: keyList });
+      if (method === 'POST' && u.includes('/key/delete')) return respond(500, { error: 'still down' });
+      return respond(200, {});
+    }));
+    await upsertBundleReport(env.db, env.clock, juliet4, 2);
+    const refused = await advanceRotations(env.db, env.clock, ENV, { keyId: null }); // flip + revoke refused
+    expect(refused.errors.length).toBe(1);
+    const modelRows = await rotationRows(env);
+    const modelRow = modelRows.find((r) => r.kind === 'model_key')!;
+    expect(modelRow.status).toBe('awaiting_revoke');
+    expect(modelRow.gatewayError).toContain('still down');
+
+    // ── rotationId narrows: the completed a2a row is not scanned again ──
+    stubGateway();
+    const narrowed = await advanceRotations(env.db, env.clock, ENV, { keyId: null, rotationId: modelRow.id });
+    expect(narrowed.revoked.length).toBe(1);
+    expect(narrowed.scanned).toBe(1);
+    expect((await rotationRows(env)).find((r) => r.id === modelRow.id)!.status).toBe('completed');
+
+    // ── crash-truncated rows: delivering + deviceId=null refuses; a target whose bundle LOST a2a.json refuses ──
+    await env.db.insert(credentialRotations).values({
+      kind: 'a2a_identity',
+      deviceId: null,
+      agentName: 'kilo4',
+      oldAlias: 'vs-kilo4-a2a',
+      newAlias: 'vs-kilo4-a2a-r1',
+      newBundleVersion: null,
+      status: 'delivering',
+    } as never);
+    const truncated = await advanceRotations(env.db, env.clock, ENV, { keyId: null });
+    expect(truncated.errors.some((e) => e.error.includes('no target device'))).toBe(true);
+
+    const delta4 = await seedAgent(env, 'delta4', []);
+    await startIdentityRotation(env.db, env.clock, ENV, 'delta4', { keyId: null });
+    const deltaRow = (await rotationRows(env)).find((r) => r.agentName === 'delta4')!;
+    // Rip the a2a.json out of delta4's bundle before the flip can run.
+    const deltaBlob = (await env.db.select().from(identityBlobs).where(eq(identityBlobs.deviceId, delta4)))[0];
+    const bundleVal = deltaBlob.bundle as { files: Array<{ path: string; content: string; [k: string]: unknown }> };
+    await env.db
+      .update(identityBlobs)
+      .set({
+        bundle: { ...bundleVal, files: bundleVal.files.filter((f) => f.path !== 'config/a2a.json') },
+      })
+      .where(eq(identityBlobs.deviceId, delta4));
+    const afterRip = (await env.db.select().from(identityBlobs).where(eq(identityBlobs.deviceId, delta4)))[0];
+    expect(JSON.stringify(afterRip.bundle)).not.toContain('config/a2a.json'); // the rip landed
+    const lost = await advanceRotations(env.db, env.clock, ENV, { keyId: null, forceRevoke: deltaRow.id });
+    expect(lost.errors.some((e) => e.error.includes('lost its a2a.json'))).toBe(true);
   });
 });

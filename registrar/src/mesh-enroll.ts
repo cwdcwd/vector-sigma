@@ -502,6 +502,8 @@ export interface MeshPeer {
   agentName: string;
   deviceId: string;
   identityKey: string;
+  /** fleet-ops-1py.24: the peer's OLD token when a rotation is in flight (NEW canonical + OLD overlap). */
+  overlapKey?: string | null;
 }
 
 /**
@@ -528,8 +530,17 @@ export async function resolveMeshPeers(
   for (const row of rows) {
     if (row.agentName === targetAgentName) continue;
     const files = ((row.bundle as { files?: BundleFile[] }).files ?? []) as BundleFile[];
-    const key = bundleIdentityKey(files);
-    if (key !== '') peers.push({ agentName: row.agentName, deviceId: row.deviceId, identityKey: key });
+    let key = bundleIdentityKey(files);
+    let overlapKey: string | null = null;
+    // fleet-ops-1py.24: rotation-aware — an in-flight peer rotation's
+    // canonical is the NEW token (the peer presents the old until the
+    // flip), so the render pairs NEW canonical + OLD overlap.
+    const open = await findOpenRotationByAgent(db, row.agentName);
+    if (open !== null && open.newToken !== null && open.newToken !== '') {
+      key = open.newToken;
+      overlapKey = open.oldToken ?? null;
+    }
+    if (key !== '') peers.push({ agentName: row.agentName, deviceId: row.deviceId, identityKey: key, overlapKey });
   }
   return peers;
 }
@@ -687,12 +698,17 @@ export async function enrollAgent(
   const peers = await resolveMeshPeers(db, agentName);
   const targetA2a = readA2aFromBundle(currentBundle.files);
   const peerTokenAdds: Record<string, string> = {};
-  for (const peer of peers) peerTokenAdds[peer.agentName] = peer.identityKey;
+  const peerTokenOverlaps: Record<string, string> = {};
+  for (const peer of peers) {
+    peerTokenAdds[peer.agentName] = peer.identityKey;
+    if (peer.overlapKey) peerTokenOverlaps[peer.agentName] = peer.overlapKey;
+  }
   const targetNext = renderA2aJson(targetA2a, {
     identityKey,
     publicUrl: opts.publicUrl,
     addTrustedPeers: peers.map((p) => p.agentName),
     addPeerTokens: peerTokenAdds,
+    ...(Object.keys(peerTokenOverlaps).length > 0 ? { addPeerTokensOverlap: peerTokenOverlaps } : {}),
   });
 
   // ── Merge leg 2: every existing peer's bundle ────────────────────────

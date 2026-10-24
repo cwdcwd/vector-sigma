@@ -154,7 +154,7 @@ export async function startIdentityRotation(
   opts: RotationOptions = {},
 ): Promise<{ rotationId: number; newAlias: string; peers: number }> {
   const loaded = await loadRotationTarget(db, agentName);
-  if (loaded.bundle === null) {
+  if (loaded.bundle === null || loaded.oldToken === null || loaded.oldToken === '') {
     await auditDenied(db, loaded.device.balenaUuid, 'rotation_no_mesh_identity', opts);
     throw new RotationError(
       'no_bundle',
@@ -181,20 +181,13 @@ export async function startIdentityRotation(
   const peerSet = await referencingPeerDevices(db, agentName, loaded.device.balenaUuid);
   const peerLedger: RotationPayload['peers'] = [];
   const oldToken = loaded.oldToken;
+  // The peer scan already read each peer's bundle + rendered a2a json —
+  // deliver straight from it (one query per peer total, no re-read race).
   for (const peer of peerSet) {
-    const peerBlob = await db
-      .select()
-      .from(identityBlobs)
-      .where(eq(identityBlobs.deviceId, peer.uuid));
-    if (peerBlob.length === 0) continue;
-    const peerBundle = peerBlob[0].bundle as { files: BundleFileLike[] } | null;
-    if (peerBundle === null) continue;
-    const peerA2a = readA2aFromBundle(peerBundle.files as never);
-    if (peerA2a === null) continue;
     // Canonical = the NEW token (freshly-rendering peers bootstrap right);
     // overlap = the OLD one (already-applied peers keep accepting the key
     // the target still presents). Both planes are covered either way.
-    const next = renderA2aJson(peerA2a, {
+    const next = renderA2aJson(peer.a2a, {
       addPeerTokens: { [agentName]: minted.key },
       addPeerTokensOverlap: { [agentName]: oldToken },
     });
@@ -202,7 +195,7 @@ export async function startIdentityRotation(
       db,
       clock,
       peer.uuid,
-      mergeSpecForA2aReplace(peerBundle.files, next),
+      mergeSpecForA2aReplace(peer.files, next),
       {
         keyId: opts.keyId ?? null,
         sourceIp: opts.sourceIp ?? null,
@@ -408,6 +401,9 @@ export async function advanceRotations(
               .where(eq(credentialRotations.id, row.id));
             outcome.revoked.push({ id: row.id, agent: row.agentName });
             outcome.cleaned.push({ id: row.id, agent: row.agentName, peers });
+          } else if (row.gatewayError !== null && row.gatewayError !== '') {
+            // The refusal is visible to the console (retried next sweep).
+            outcome.errors.push({ id: row.id, error: row.gatewayError });
           }
         }
       } else if (row.kind === 'model_key') {
@@ -441,6 +437,8 @@ export async function advanceRotations(
               })
               .where(eq(credentialRotations.id, row.id));
             outcome.revoked.push({ id: row.id, agent: row.agentName });
+          } else if (row.gatewayError !== null && row.gatewayError !== '') {
+            outcome.errors.push({ id: row.id, error: row.gatewayError });
           }
         }
       }
@@ -637,9 +635,10 @@ async function noteFailure(
   row: RotationRecord,
   message: string,
 ): Promise<void> {
+  row.gatewayError = message.slice(0, 500);
   await db
     .update(credentialRotations)
-    .set({ gatewayError: message.slice(0, 500), updatedAt: clock.now() })
+    .set({ gatewayError: row.gatewayError, updatedAt: clock.now() })
     .where(eq(credentialRotations.id, row.id));
 }
 
@@ -716,15 +715,17 @@ export async function referencingPeerDevices(
   db: NodePgDatabase,
   agentName: string,
   excludeDeviceId: string,
-): Promise<Array<{ agent: string; uuid: string }>> {
+): Promise<Array<{ agent: string; uuid: string; files: BundleFileLike[]; a2a: Record<string, unknown> }>> {
   const rows = await db
     .select({ agent: devices.agentName, uuid: devices.balenaUuid, blob: identityBlobs.bundle })
     .from(devices)
     .innerJoin(identityBlobs, eq(identityBlobs.deviceId, devices.balenaUuid));
-  const peers: Array<{ agent: string; uuid: string }> = [];
+  const peers: Array<{ agent: string; uuid: string; files: BundleFileLike[]; a2a: Record<string, unknown> }> = [];
   for (const r of rows) {
     if (r.uuid === excludeDeviceId) continue;
-    const a2a = readA2aFromBundle((r.blob as { files: BundleFileLike[] } | null)?.files as never);
+    const bundle = r.blob as { files: BundleFileLike[] } | null;
+    if (bundle === null) continue;
+    const a2a = readA2aFromBundle(bundle.files as never);
     if (a2a === null) continue;
     const tokens = (a2a as Record<string, unknown>).peer_tokens;
     const trusted = (a2a as Record<string, unknown>).trusted_peers;
@@ -733,7 +734,7 @@ export async function referencingPeerDevices(
         tokens !== null &&
         (tokens as Record<string, unknown>)[agentName] !== undefined) ||
       (Array.isArray(trusted) && trusted.includes(agentName));
-    if (references) peers.push({ agent: r.agent, uuid: r.uuid });
+    if (references) peers.push({ agent: r.agent, uuid: r.uuid, files: bundle.files, a2a: a2a as Record<string, unknown> });
   }
   return peers;
 }
