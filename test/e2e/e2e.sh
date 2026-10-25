@@ -1810,30 +1810,35 @@ ac20_boot_workflows() {
     fail "AC20 router dark" "the router's idle line missing from the hermes boot logs — the longrun is not dark-gated"
   fi
 
-  # 2. restart the hermes container over the SAME volume: every cont-init
-  #    hook re-runs into the existing workspace (restart idempotency),
-  #    and bd still answers for the runtime user afterwards.
+  # 2. restart the hermes container over the SAME volume and WAIT FOR THE
+  #    HOOK: docker restart returns as soon as the process is up — the
+  #    cont-init hooks run seconds later — so the idempotency proof polls
+  #    for the 03- hook's own log line, not for process liveness. bd
+  #    answering for the runtime user is the follow-on assertion.
   docker restart "$hcontainer" >/dev/null 2>&1 || true
-  until docker exec -u hermes -w /data/primus/vs-queue "$hcontainer" bd status >/dev/null 2>&1; do
+  deadline=$((SECONDS + 90))
+  until docker logs "$hcontainer" 2>&1 | grep -q 'already seeded — first-boot-only contract'; do
     [ $SECONDS -ge $deadline ] && {
-      fail "AC20 restart idempotency" "bd status never answered after the hermes restart"
+      fail "AC20 restart idempotency" "no 'already seeded — first-boot-only contract' line within 90s of the restart"
       docker logs "$hcontainer" 2>&1 | tail -20
       return
     }
     sleep 2
   done
-  if docker logs "$hcontainer" 2>&1 | grep -q 'already seeded — first-boot-only contract'; then
-    pass "AC20 restart idempotency" "03- hook re-ran into the existing workspace: 'already seeded — first-boot-only contract' in the boot log"
+  pass "AC20 restart idempotency" "03- hook re-ran into the existing workspace: 'already seeded — first-boot-only contract' in the boot log"
+  if docker exec -u hermes -w /data/primus/vs-queue "$hcontainer" bd status >/dev/null 2>&1; then
+    pass "AC20 queue after restart" "post-restart bd status answers as the runtime user (the join contract is untouched)"
   else
-    fail "AC20 restart idempotency" "no 'already seeded' line after the restart — the 03- hook is not first-boot-only"
+    fail "AC20 queue after restart" "bd status refused after the restarted boot"
   fi
 
   # 3. queue-unavailable: stop dolt; the in-container bd fails with a
-  #    network-class exit (<130, no crash-y 137/139), then recovers by
-  #    itself once dolt returns — retry semantics, no manual repair.
+  #    network-class exit (<130, no crash-y 137/139; the 60s probe cap
+  #    also bounds a client-side retry loop), then recovers by itself
+  #    once dolt returns — retry semantics, no manual repair.
   docker stop "$dolt_container" >/dev/null 2>&1
   local rc
-  docker exec -u hermes -w /data/primus/vs-queue "$hcontainer" bd status >/dev/null 2>&1
+  timeout 60 docker exec -u hermes -w /data/primus/vs-queue "$hcontainer" bd status >/dev/null 2>&1
   rc=$?
   if [ "$rc" -ne 0 ] && [ "$rc" -lt 130 ]; then
     pass "AC20 queue unavailable" "bd status failed cleanly (rc=$rc) with dolt down — a network-class error a client can retry"
