@@ -42,12 +42,20 @@ import base64
 import datetime
 import json
 import os
+import re
 import ssl
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
+
+
+# Primus and device identities are scoped to this single repository. The
+# installation token is additionally minted for this repository only.
+TARGET_REPOSITORY = "cwdcwd/vector-sigma"
+TARGET_REPOSITORY_NAME = "vector-sigma"
 
 # The public API root, overridable ONLY for in-repo CI simulation (the
 # functional wrapper test mocks the API on a loopback server). Production
@@ -81,6 +89,10 @@ def load_config():
     if not app_id or not slug:
         die("GH_APP_ID and GH_APP_SLUG must be set (registrar bundle -> "
             "05-vs-github-identity hook -> .env). No GitHub identity wired.")
+    if not re.fullmatch(r"[1-9][0-9]*", app_id):
+        die("GH_APP_ID must be a positive numeric App id; identity is disabled.")
+    if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?", slug):
+        die("GH_APP_SLUG has an invalid format; identity is disabled.")
     if not os.path.isfile(pem_path):
         die(f"App private key not found at {pem_path} (bundle field "
             "github_app_pem delivers it to config/github-app.pem — ask "
@@ -184,22 +196,55 @@ def parse_expiry(s) -> float:
 def installation_id(cfg, jwt_token) -> str:
     st, body = api("/app/installations", bearer=jwt_token)
     insts = as_json_list(body)
-    if st != 200 or not insts:
-        die(f"no installations visible for app {cfg['app_id']} "
-            f"({st}): {str(body)[:200]}")
-    first = as_json_obj(insts[0]) if insts else {}
-    return str(first.get("id", ""))
+    if st != 200:
+        die(f"installation lookup failed ({st}); identity is disabled.")
+    matches = []
+    for installation in insts:
+        item = as_json_obj(installation)
+        account = as_json_obj(item.get("account"))
+        if account.get("login", "").lower() == "cwdcwd":
+            matches.append(item)
+    if len(matches) != 1 or not matches[0].get("id"):
+        die("expected exactly one GitHub App installation for cwdcwd; "
+            "identity is disabled.")
+    return str(matches[0]["id"])
 
 
 def installation_token(cfg, jwt_token):
-    """Mint on demand (no cache — 1h TTL, per-use mint is the audit story)."""
+    """Mint a one-hour token scoped to this installation and repository."""
     inst = installation_id(cfg, jwt_token)
     st, body = api(f"/app/installations/{inst}/access_tokens",
-                   data={}, method="POST", bearer=jwt_token)
+                   data={"repositories": [TARGET_REPOSITORY_NAME]},
+                   method="POST", bearer=jwt_token)
     obj = as_json_obj(body)
     if st != 201 or "token" not in obj:
-        die(f"token mint failed ({st}): {str(body)[:200]}")
+        die(f"token mint failed ({st}); identity is disabled.")
+    repositories = obj.get("repositories")
+    if (not isinstance(repositories, list)
+            or [as_json_obj(repo).get("full_name", "").lower() for repo in repositories]
+            != [TARGET_REPOSITORY]):
+        die(f"installation token is not restricted to {TARGET_REPOSITORY}; "
+            "identity is disabled.")
     return obj["token"], parse_expiry(obj.get("expires_at"))
+
+
+def validate_repository_path(path):
+    """Reject every API path outside the one repo this fleet identity serves."""
+    parsed = urlsplit(path)
+    if parsed.scheme or parsed.netloc or parsed.fragment:
+        die("API path must be a repository-relative path; identity is disabled.")
+    segments = parsed.path.split("/")
+    if (len(segments) < 4 or segments[0] != "" or segments[1] != "repos"
+            or segments[2].lower() != "cwdcwd" or segments[3].lower() != "vector-sigma"
+            or any(segment in (".", "..") for segment in segments)):
+        die(f"API access is restricted to {TARGET_REPOSITORY}; identity is disabled.")
+    if "\\" in parsed.path or "%" in parsed.path:
+        die("encoded path separators are not permitted; identity is disabled.")
+    if len(segments) > 4 and segments[4].lower() not in {
+            "contents", "pulls", "git", "commits"}:
+        die("API access is restricted to repository content and pull requests; "
+            "identity is disabled.")
+    return parsed.path + (("?" + parsed.query) if parsed.query else "")
 
 
 def cmd_whoami(cfg, _args):
@@ -216,7 +261,16 @@ def cmd_whoami(cfg, _args):
     print(f"bot login:    {app.get('slug')}[bot]")
     print(f"installation: {inst} (token expires "
           f"{datetime.datetime.fromtimestamp(exp, datetime.timezone.utc).isoformat()})")
-    print(f"repos:        {repos.get('total_count', '?')} accessible")
+    installed_repositories = repos.get("repositories", [])
+    repository_names = [
+        as_json_obj(repo).get("full_name", "").lower()
+        for repo in installed_repositories if isinstance(installed_repositories, list)
+    ]
+    if st2 != 200 or TARGET_REPOSITORY not in repository_names:
+        die(f"GitHub App installation lacks access to {TARGET_REPOSITORY}; "
+            "identity is disabled.")
+    print(f"repos:        {repos.get('total_count', '?')} accessible; "
+          f"{TARGET_REPOSITORY} verified")
 
 
 def cmd_token(cfg, _args):
@@ -225,9 +279,10 @@ def cmd_token(cfg, _args):
 
 
 def cmd_api(cfg, args):
+    path = validate_repository_path(args.path)
     tok, _ = installation_token(cfg, make_jwt(cfg))
     body = json.loads(args.json) if args.json else None
-    st, out = api(args.path, data=body, method=args.method.upper(), token=tok)
+    st, out = api(path, data=body, method=args.method.upper(), token=tok)
     print(json.dumps(out, indent=2) if isinstance(out, (dict, list)) else out)
     sys.exit(0 if st < 300 else 1)
 

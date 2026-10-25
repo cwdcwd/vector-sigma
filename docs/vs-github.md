@@ -67,13 +67,24 @@ PyJWT when present, else falls back to `openssl`; mints installation
 tokens from your PEM on demand):
 
 ```sh
-vs-github-identity whoami        # identity check: app, bot login, installation, accessible repos
-vs-github-identity token         # mint a fresh installation token (stdout; 1h TTL)
-vs-github-identity api METHOD /repos/<owner>/<repo>/... '["json", "body"]'
+vs-github-identity whoami        # identity check: app, bot login, installation, repo access verified
+vs-github-identity token         # mint a fresh installation token (stdout; 1h TTL; scoped to one repo)
+vs-github-identity api METHOD /repos/cwdcwd/vector-sigma/... '["json", "body"]'
 ```
 
 `whoami` is your preflight before any write session — it proves the PEM,
 the id, and the installation all line up without printing any secret.
+
+**Least-privilege scoping** (baked into the wrapper, fail-closed):
+
+- Token mints request the single repository (`repositories:
+  ["vector-sigma"]`) and verify the minted token's scopes match — a
+  GitHub response granting anything broader refuses the identity.
+- The `api` subcommand only accepts paths under
+  `/repos/cwdcwd/vector-sigma/...`, and only content/pull/commit
+  endpoints — everything else is rejected before a request is sent.
+- `whoami` additionally verifies the installation actually has access
+  to the repo; an installation without it disables the identity.
 
 ## The PR lifecycle
 
