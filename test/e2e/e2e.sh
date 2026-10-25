@@ -1825,7 +1825,11 @@ ac20_boot_workflows() {
   #    fresh container re-runs them (AC18 recreates primus the same way).
   #    A recreate removes the container, so the fresh log tail contains
   #    ONLY the recreated boot — the hook line there is its own proof.
-  "$COMPOSE" up -d --force-recreate --no-deps hermes >/dev/null 2>&1
+  $COMPOSE up -d --force-recreate --no-deps hermes >/dev/null 2>&1 || {
+    fail "AC20 restart recreate" "compose could not recreate the hermes container (rc=$?)";
+    docker logs "$hcontainer" 2>&1 | tail -20 || true;
+    return;
+  }
   deadline=$((SECONDS + 180))
   until docker logs "$hcontainer" 2>&1 | grep -q 'already seeded — first-boot-only contract'; do
     [ $SECONDS -ge $deadline ] && {
