@@ -1896,12 +1896,12 @@ ac20_boot_workflows() {
   local served_rc="0"
   capfile="$(mktemp)"
   timeout 30 docker exec -u hermes \
-    -e VS_HUB_AGENTS=primus:doombot,kangbot:doombot \
+    -e 'VS_HUB_AGENTS={"dev":"primus","review":"kangbot"}' \
     -e VS_QUEUE_DIR=/opt/data/vs-queue \
     -e HOME=/opt/data \
     -e PATH=/opt/hermes/.venv/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     "$hcontainer" /opt/hermes/.venv/bin/python /usr/local/bin/vs-hub-router serve \
-    >/dev/null 2>"$capfile" || served_rc=$?
+    >"$capfile" 2>&1 || served_rc=$?
   if [ "$served_rc" = "124" ] || [ "$served_rc" = "143" ] || [ "$served_rc" = "137" ]; then
     pass "AC20 router roster gate" "with a roster the router's serve loop runs and blocks (probe-terminated rc=$served_rc) — the gate opens for a roster"
   else
