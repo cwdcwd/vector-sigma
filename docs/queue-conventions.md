@@ -60,7 +60,24 @@ own, and a device agent reading the master's map is a regression
 and the origin-fleet coordinator contact each other A2A agent-to-agent —
 NEVER through shared-queue writes. No VS agent writes to the origin fleet's
 `fleet_ops` database; no origin-fleet agent writes to `vs_ops`. Coordination
-crossings happen over A2A, exactly as this bead was dispatched.
+coordination crossings happen over A2A, exactly as this bead was dispatched.
+
+## Hub router (the dispatch spool, fleet-ops-1py.47.1)
+
+The fleet hub coordinates VS agents through A2A only. When an agent's
+bundle names a hub coordinator (`config/a2a.json` → `hub_router_agent`),
+the `04-` wiring hook derives `VS_HUB_TARGET_AGENT` and seeds the durable
+spool at `$HERMES_HOME/vs-hub-queue` (`pending` / `sent` / `dead`); the
+s6 `vs-hub-router` longrun delivers everything in `pending/` through the
+signed outbound route — the agent's own mesh key signs the message, the
+same path the runtime's own outbound a2a call takes — with backoff, a
+retry cap, and a `dead/` parked envelope at the cap instead of a silent
+drop. **Route exclusivity is the contract**: the router's only network
+target is that outbound peer route; it runs no queue-tooling commands and
+answers no inbound traffic, so a hub-assigned dispatch can never be aimed
+at any queue but the agent's own. No bundle key → no target → the service
+idles and the spool just holds; routing appears or disappears with the
+bundle on the next container recreate, no manual steps.
 
 ## Read-only dashboard
 

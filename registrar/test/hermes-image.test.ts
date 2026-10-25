@@ -260,4 +260,55 @@ describe('primus image contract (fleet-ops-b1r)', () => {
     expect(agentBlock).toMatch(/HERMES_HOME: \/data\/agent/);
     expect(agentBlock).toMatch(/HERMES_UID: "1000"/);
   });
+
+  it('1py.47.1: the VS hub router is baked as an s6 longrun, gated on signed identity, delivering hub-assigned dispatches through the signed outbound peer only', () => {
+    // The router is a transport script over the dispatch spool: it enqueues one
+    // hub-assigned JSON-RPC message and delivers it over the signed outbound
+    // route (the agent's own mesh key signs it, exactly like the runtime's own
+    // a2a call). It must never touch the shared-queue tooling and must never
+    // carry any network target other than the guard's peer route.
+    for (const image of [dockerfileCode, stripComments(readFileSync(path.join(repoRoot, 'images/agent/Dockerfile'), 'utf8'))]) {
+      expect(image).toMatch(/COPY images\/common\/bin\/vs-hub-router\.py \/usr\/local\/bin\/vs-hub-router/);
+      expect(image).toMatch(/COPY images\/common\/s6\/vs-hub-router \/etc\/s6-overlay\/s6-rc\.d\/vs-hub-router/);
+      expect(image).toMatch(/touch \/etc\/s6-overlay\/s6-rc\.d\/user\/contents\.d\/vs-hub-router/);
+    }
+    const router = readFileSync(path.join(repoRoot, 'images/common/bin/vs-hub-router.py'), 'utf8');
+    const routerCode = stripComments(router);
+    expect(routerCode).toMatch(/--queue-dir/);
+    expect(routerCode).toMatch(/VS_HUB_TARGET_AGENT/);
+    expect(routerCode).toMatch(/A2A_GUARD_OUTBOUND_TOKEN/);
+    // The single endpoint in code is the a2a-guard's outbound peer route on loopback.
+    expect(routerCode.match(/https?:\/\/[^'"`\s]+/g) ?? []).toEqual(['http://127.0.0.1:9902/peer/']);
+    // No queue-side tooling, no other fleet's queue, no direct inbound binding.
+    expect(routerCode).not.toMatch(/fleet[-_]ops/i);
+    expect(routerCode).not.toMatch(/\bbd\b/);
+    expect(routerCode).not.toMatch(/\b9900\b/);
+    // Durable + idempotent: pending spool, retry with backoff, dead-letter after the
+    // cap, delivered file recorded — a crash or a refused POST never loses a message.
+    const spool = path.join(repoRoot, 'images/common/bin/vs-hub-router.py');
+    expect(stripComments(readFileSync(spool, 'utf8'))).toMatch(/pending/);
+    expect(stripComments(readFileSync(spool, 'utf8'))).toMatch(/sent/);
+    expect(stripComments(readFileSync(spool, 'utf8'))).toMatch(/dead/);
+    expect(stripComments(readFileSync(spool, 'utf8'))).toMatch(/next_attempt/);
+    const s6run = readFileSync(path.join(repoRoot, 'images/common/s6/vs-hub-router/run'), 'utf8');
+    expect(s6run).toMatch(/^#!\/command\/with-contenv sh/);
+    const s6runCode = stripComments(s6run);
+    expect(s6runCode).toMatch(/VS_HUB_TARGET_AGENT/);
+    expect(s6runCode).toMatch(/outbound-token/);
+    expect(s6runCode).toMatch(/guard\.json/);
+    expect(s6runCode).not.toMatch(/\bbd\b/);
+    const s6finish = readFileSync(path.join(repoRoot, 'images/common/s6/vs-hub-router/finish'), 'utf8');
+    expect(stripComments(s6finish)).toMatch(/exit 125/);
+    expect(readFileSync(path.join(repoRoot, 'images/common/s6/vs-hub-router/type'), 'utf8')).toMatch(/longrun/);
+    // The wiring hook derives the target from the bundle (a2a.json
+    // hub_router_agent), seeds the managed env and the durable spool dir every boot.
+    const wiring = readFileSync(path.join(repoRoot, 'images/common/hooks/vs-a2a-wiring.sh'), 'utf8');
+    expect(wiring).toMatch(/hub_router_agent/);
+    expect(wiring).toMatch(/VS_HUB_TARGET_AGENT/);
+    expect(wiring).toMatch(/vs-hub-queue/);
+    // The queue conventions document the router contract.
+    const conv = readFileSync(path.join(repoRoot, 'docs/queue-conventions.md'), 'utf8');
+    expect(conv).toMatch(/vs-hub-router/);
+    expect(conv).toMatch(/VS_HUB_TARGET_AGENT/);
+  });
 });
