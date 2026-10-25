@@ -1817,20 +1817,19 @@ ac20_boot_workflows() {
   done
   pass "AC20 router dark" "no VS_HUB_AGENTS roster: the router longrun logged idle at boot and never swept"
 
-  # 2. restart the hermes container over the SAME volume and WAIT FOR THE
-  #    HOOK: docker restart returns as soon as the process is up — the
-  #    cont-init hooks run seconds later — so the idempotency proof polls
-  #    for the 03- hook's own log line, not for process liveness. bd
-  #    answering for the runtime user is the follow-on assertion.
-  docker restart "$hcontainer" >/dev/null 2>&1 || true
-  # docker logs ACCUMULATES across restarts — the first boot's seeded line
-  # matches forever — so the gate for the second boot is the COUNT: the 03-
-  # hook logs the line at every boot, so two logged occurrences mean the
-  # restart's cont-init ran into the pre-seeded workspace.
-  deadline=$((SECONDS + 120))
-  until [ "$(docker logs "$hcontainer" 2>&1 | grep -c 'already seeded — first-boot-only contract')" -ge 2 ]; do
+  # 2. recreate the hermes container over the SAME volume: every cont-init
+  #    hook re-runs into the existing workspace (restart idempotency).
+  #    NOTE docker restart CANNOT prove this — s6-overlay v3 keeps its
+  #    s6-rc state on the persistent /run, so a plain restart re-launches
+  #    the longruns but SKIPS the oneshot cont-init hooks entirely; only a
+  #    fresh container re-runs them (AC18 recreates primus the same way).
+  #    A recreate removes the container, so the fresh log tail contains
+  #    ONLY the recreated boot — the hook line there is its own proof.
+  "$COMPOSE" up -d --force-recreate --no-deps hermes >/dev/null 2>&1
+  deadline=$((SECONDS + 180))
+  until docker logs "$hcontainer" 2>&1 | grep -q 'already seeded — first-boot-only contract'; do
     [ $SECONDS -ge $deadline ] && {
-      fail "AC20 restart idempotency" "the 03- hook never logged a second 'already seeded — first-boot-only contract' line within 120s of the restart"
+      fail "AC20 restart idempotency" "the recreated hermes boot never logged 'already seeded — first-boot-only contract' within 180s"
       docker logs "$hcontainer" 2>&1 | tail -20
       return
     }
@@ -1868,18 +1867,18 @@ ac20_boot_workflows() {
 
   # 4. the router's gate, behaviorally: WITHOUT a roster the s6 run
   #    script exits 0 (dark-before-children). The probes run seconds after
-  #    step 2's restart, i.e. during the second boot's early phase — wait
-  #    for the s6 environment the with-contenv shebang reads, and retry a
-  #    transient mid-boot exec (125/127) before declaring failure.
-  #    125/127) before declaring failure. The settle-gate is the ROUTER's
-  #    own second-boot log line (count >= 2: first boot + post-restart) —
-  #    when the supervised router re-ran, with-contenv's environment is
-  #    back too, so the direct execs are probing a settled init tree.
+  #    step 2's recreate, i.e. during the fresh boot's early phase — wait
+  #    for the s6 environment the with-contenv shebang sources, and retry a
+  #    transient mid-boot exec (125/127) before declaring failure. After
+  #    the step-2 recreate the container's log history is fresh, so the
+  #    settle-gate is simply the
+  #    supervised router's own idle line: when it re-logged, with-contenv's
+  #    environment is back too and the execs probe a settled init tree.
   local dark_rc=0
   deadline=$((SECONDS + 150))
-  until [ "$(docker logs "$hcontainer" 2>&1 | grep -c 'idle: no VS_HUB_AGENTS roster')" -ge 2 ]; do
+  until docker logs "$hcontainer" 2>&1 | grep -q 'idle: no VS_HUB_AGENTS roster'; do
     [ $SECONDS -ge $deadline ] && {
-      fail "AC20 router run gate" "the router never re-logged idle after the restart (count < 2 within 150s)"
+      fail "AC20 router run gate" "the router never logged idle on the recreated boot (within 150s)"
       docker logs "$hcontainer" 2>&1 | tail -15
       return
     }
