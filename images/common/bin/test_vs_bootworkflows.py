@@ -151,6 +151,16 @@ class BootFixtureMixin(unittest.TestCase):
     def bd_argv(self, log_path):
         return [a for a in Path(log_path).read_text().split("\0") if a]
 
+    def hook_py_has_yaml(self):
+        """Does the python the HOOK resolves (the fixture's PATH) import
+        yaml? — the branch the 06- seed takes; NOT the test interpreter."""
+        probe = subprocess.run(
+            ["/bin/sh", "-c",
+             'command -v python3 >/dev/null 2>&1 || exit 97; '
+             'exec python3 -c "import yaml"'],
+            env=self.env, capture_output=True, timeout=30)
+        return probe.returncode == 0
+
     def run_hook(self, source_path, env, mutations=()):
         """Run a REAL hook script on a sandboxed copy.
 
@@ -536,12 +546,17 @@ class MemoryToolsHookTests(BootFixtureMixin, unittest.TestCase):
             (self._install_dir() / "skills" / "gateway-memory" /
              "__pycache__").exists())
         self.assertIn("plugin installed", proc.stdout)
-        if importlib.util.find_spec("yaml"):
-            self.assertIn("absent — cannot seed", proc.stdout)
-            self.assertFalse(self.config.exists())
+        if self.hook_py_has_yaml():
+            # The hook's python imports yaml: the seed step runs against
+            # the sandbox and warns that config.yaml hasn't been created
+            # yet (stage2 didn't run here; the live proof is AC16).
+            self.assertIn(
+                "config.yaml absent — cannot seed plugins.enabled",
+                proc.stdout)
         else:
-            self.assertIn("no yaml module", proc.stdout)
-            self.assertFalse(self.config.exists())
+            self.assertIn("no yaml module — cannot seed plugins.enabled",
+                          proc.stdout)
+        self.assertFalse(self.config.exists())
 
     def test_repeat_boot_refreshes_the_install(self):
         self._bake_plugin()
@@ -554,12 +569,36 @@ class MemoryToolsHookTests(BootFixtureMixin, unittest.TestCase):
         self.assertFalse(stale.exists())
         self.assertTrue((self._install_dir() / "tools.py").exists())
 
+    def _stub_yaml_python(self):
+        """Make the fixture's `python3` (stub dir wins PATH) import yaml:
+        a throwaway venv with PyYAML behind a shim. Returns True on
+        success (graceful skip only if venv/pip is unusable)."""
+        try:
+            venv = self.tmp / "pyyaml-venv"
+            subprocess.run([sys.executable, "-m", "venv", str(venv)],
+                           check=True, capture_output=True, timeout=180)
+            subprocess.run(
+                [str(venv / "bin" / "python"), "-m", "pip", "install",
+                 "--quiet", "--disable-pip-version-check", "pyyaml"],
+                check=True, capture_output=True, timeout=300)
+        except (subprocess.SubprocessError, OSError):
+            return False
+        shim = self.stub_bin / "python3"
+        shim.write_text(
+            f"#!/bin/sh\nexec '{venv / 'bin' / 'python3'}' \"$@\"\n")
+        shim.chmod(0o755)
+        return True
+
     def test_seeding_appends_to_an_existing_allowlist_when_yaml_exists(self):
+        """With a yaml-importable python AND an existing config.yaml, the
+        hook APPENDS gateway-memory to plugins.enabled (never destroys
+        operator entries). The venv shim makes this fixture-driven: it
+        runs wherever venv+pip work (skip otherwise — and the live proof
+        remains AC16 on the real image)."""
         self._bake_plugin()
-        if not importlib.util.find_spec("yaml"):
-            self.skipTest("PyYAML not importable on this host — the image's "
-                          "venv python carries it; the seed path is proven "
-                          "in the compose E2E (AC16)")
+        if not (self.hook_py_has_yaml() or self._stub_yaml_python()):
+            self.skipTest("cannot stand up a yaml-importable python — "
+                          "the seed path is proven in the compose E2E (AC16)")
         self.config.write_text("plugins:\n  enabled:\n    - other-plugin\n")
         proc = self._run()
         self.assertEqual(proc.returncode, 0, proc.stderr)
