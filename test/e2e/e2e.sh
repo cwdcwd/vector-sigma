@@ -1837,15 +1837,14 @@ ac20_boot_workflows() {
   #    also bounds a client-side retry loop), then recovers by itself
   #    once dolt returns — retry semantics, no manual repair.
   docker stop "$dolt_container" >/dev/null 2>&1
-  local rc
-  timeout 60 docker exec -u hermes -w /data/primus/vs-queue "$hcontainer" bd status >/dev/null 2>&1
-  rc=$?
+  local rc=0
+  timeout 60 docker exec -u hermes -w /data/primus/vs-queue "$hcontainer" bd status >/dev/null 2>&1 || rc=$?
   if [ "$rc" -ne 0 ] && [ "$rc" -lt 130 ]; then
     pass "AC20 queue unavailable" "bd status failed cleanly (rc=$rc) with dolt down — a network-class error a client can retry"
   else
     fail "AC20 queue unavailable" "bd status rc=$rc with dolt stopped (want non-zero <130)"
   fi
-  docker start "$dolt_container" >/dev/null 2>&1
+  docker start "$dolt_container" >/dev/null 2>&1 || true
   deadline=$((SECONDS + 90))
   until docker exec -u hermes -w /data/primus/vs-queue "$hcontainer" bd status >/dev/null 2>&1; do
     [ $SECONDS -ge $deadline ] && {
