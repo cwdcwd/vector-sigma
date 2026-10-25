@@ -36,6 +36,7 @@ const pub = execFileSync('openssl', ['rsa', '-in', keyPath, '-pubout'], { encodi
 
 // ── Mock GitHub API ─────────────────────────────────────────────────────
 const calls = [];
+let wrongTokenScope = false;
 const srv = http.createServer((req, res) => {
   calls.push({ method: req.method, url: req.url, headers: req.headers });
   const send = (code, obj) => {
@@ -47,13 +48,30 @@ const srv = http.createServer((req, res) => {
     return send(200, { name: 'VectorSigma-Wheeljack', slug: 'vectorsigma-wheeljack', id: 5137401 });
   }
   if (req.method === 'GET' && req.url === '/app/installations') {
-    return send(200, [{ id: 99 }]);
+    return send(200, [{ id: 99, account: { login: 'cwdcwd' } }]);
   }
   if (req.method === 'POST' && req.url === '/app/installations/99/access_tokens') {
-    return send(201, { token: 'ghs_mock_token_for_ci', expires_at: '2027-01-01T00:00:00Z' });
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      const requestedRepositories = JSON.parse(body);
+      calls[calls.length - 1].body = requestedRepositories;
+      send(201, {
+        token: 'ghs_mock_token_for_ci',
+        expires_at: '2027-01-01T00:00:00Z',
+        repositories: [{ full_name: wrongTokenScope ? 'cwdcwd/other-repo' : 'cwdcwd/vector-sigma' }],
+      });
+    });
+    return;
   }
   if (req.method === 'GET' && req.url === '/installation/repositories') {
-    return send(200, { total_count: 1 });
+    return send(200, {
+      total_count: 1,
+      repositories: [{ full_name: 'cwdcwd/vector-sigma' }],
+    });
+  }
+  if (req.url.startsWith('/repos/cwdcwd/vector-sigma')) {
+    return send(200, { full_name: 'cwdcwd/vector-sigma' });
   }
   send(404, { message: 'no' });
 });
@@ -98,7 +116,10 @@ const MAXDETAIL = Number(process.env.VS_GH_DEBUG ? 3000 : 300);
   // here; the wrapper anchors to the public CA bundle by construction.
   fs.writeFileSync(path.join(sb, 'garbage-ca.pem'), 'NOT A CERT');
   const r = await run(['whoami'], { SSL_CERT_FILE: path.join(sb, 'garbage-ca.pem') });
-  if (r.rc === 0 && /bot login:\s+vectorsigma-wheeljack\[bot\]/.test(r.out) && /installation: 99/.test(r.out)) {
+  const installationRepos = calls.filter((call) => call.url === '/installation/repositories').at(-1);
+  if (r.rc === 0 && /bot login:\s+vectorsigma-wheeljack\[bot\]/.test(r.out)
+      && /installation: 99/.test(r.out) && /cwdcwd\/vector-sigma verified/.test(r.out)
+      && installationRepos?.headers.authorization?.startsWith('token ghs_mock_token_for_ci')) {
     pass('whoami-shape');
   } else {
     fail('whoami-shape', JSON.stringify(r).slice(0, MAXDETAIL));
@@ -110,8 +131,25 @@ const MAXDETAIL = Number(process.env.VS_GH_DEBUG ? 3000 : 300);
 // ── 2: token mint ───────────────────────────────────────────────────────
 {
   const r = await run(['token']);
-  if (r.rc === 0 && r.out.includes('ghs_mock_token_for_ci')) pass('token-mint');
-  else fail('token-mint', JSON.stringify(r).slice(0, MAXDETAIL));
+  const mint = calls.filter((call) => call.method === 'POST' && call.url === '/app/installations/99/access_tokens').at(-1);
+  if (r.rc === 0 && r.out.includes('ghs_mock_token_for_ci')
+      && JSON.stringify(mint?.body) === JSON.stringify({ repositories: ['vector-sigma'] })) {
+    pass('token-mint-repository-scope');
+  } else {
+    fail('token-mint-repository-scope', JSON.stringify({ result: r, request: mint?.body }).slice(0, MAXDETAIL));
+  }
+}
+
+// ── 2b: fail closed if GitHub reports a token scope broader than requested ──
+{
+  wrongTokenScope = true;
+  const r = await run(['token']);
+  wrongTokenScope = false;
+  if (r.rc !== 0 && /not restricted to cwdcwd\/vector-sigma/.test(r.out)) {
+    pass('token-scope-response-validation');
+  } else {
+    fail('token-scope-response-validation', JSON.stringify(r).slice(0, MAXDETAIL));
+  }
 }
 
 // ── 3: JWT verification (RS256, real key, pyjwt path) ───────────────────
