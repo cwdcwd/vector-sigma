@@ -1823,10 +1823,14 @@ ac20_boot_workflows() {
   #    for the 03- hook's own log line, not for process liveness. bd
   #    answering for the runtime user is the follow-on assertion.
   docker restart "$hcontainer" >/dev/null 2>&1 || true
-  deadline=$((SECONDS + 90))
-  until docker logs "$hcontainer" 2>&1 | grep -q 'already seeded — first-boot-only contract'; do
+  # docker logs ACCUMULATES across restarts — the first boot's seeded line
+  # matches forever — so the gate for the second boot is the COUNT: the 03-
+  # hook logs the line at every boot, so two logged occurrences mean the
+  # restart's cont-init ran into the pre-seeded workspace.
+  deadline=$((SECONDS + 120))
+  until [ "$(docker logs "$hcontainer" 2>&1 | grep -c 'already seeded — first-boot-only contract')" -ge 2 ]; do
     [ $SECONDS -ge $deadline ] && {
-      fail "AC20 restart idempotency" "no 'already seeded — first-boot-only contract' line within 90s of the restart"
+      fail "AC20 restart idempotency" "the 03- hook never logged a second 'already seeded — first-boot-only contract' line within 120s of the restart"
       docker logs "$hcontainer" 2>&1 | tail -20
       return
     }
@@ -1867,18 +1871,23 @@ ac20_boot_workflows() {
   #    step 2's restart, i.e. during the second boot's early phase — wait
   #    for the s6 environment the with-contenv shebang reads, and retry a
   #    transient mid-boot exec (125/127) before declaring failure.
-  deadline=$((SECONDS + 120))
-  until docker exec "$hcontainer" test -f /run/s6/container_environment >/dev/null 2>&1; do
+  #    125/127) before declaring failure. The settle-gate is the ROUTER's
+  #    own second-boot log line (count >= 2: first boot + post-restart) —
+  #    when the supervised router re-ran, with-contenv's environment is
+  #    back too, so the direct execs are probing a settled init tree.
+  local dark_rc=0
+  deadline=$((SECONDS + 150))
+  until [ "$(docker logs "$hcontainer" 2>&1 | grep -c 'idle: no VS_HUB_AGENTS roster')" -ge 2 ]; do
     [ $SECONDS -ge $deadline ] && {
-      fail "AC20 router run gate" "the s6 environment never settled (no /run/s6/container_environment within 120s)"
+      fail "AC20 router run gate" "the router never re-logged idle after the restart (count < 2 within 150s)"
       docker logs "$hcontainer" 2>&1 | tail -15
       return
     }
     sleep 3
   done
-  local dark_rc=0
   capfile="$(mktemp)"
   for _ in 1 2; do
+    dark_rc=0
     timeout 30 docker exec "$hcontainer" /etc/s6-overlay/s6-rc.d/vs-hub-router/run >/dev/null 2>"$capfile" || dark_rc=$?
     [ "$dark_rc" = "0" ] && break
     case "$dark_rc" in 125|127) [ $SECONDS -lt "$deadline" ] && { sleep 5; continue; } ;; esac
@@ -1895,6 +1904,7 @@ ac20_boot_workflows() {
   local served_rc="0"
   capfile="$(mktemp)"
   for _ in 1 2; do
+    served_rc="0"
     timeout 20 docker exec -e VS_HUB_AGENTS=primus:doombot,kangbot:doombot \
       "$hcontainer" /etc/s6-overlay/s6-rc.d/vs-hub-router/run >/dev/null 2>"$capfile" || served_rc=$?
     [ "$served_rc" = "0" ] || case "$served_rc" in 124|143|137) break ;; 125|127) [ $SECONDS -lt "$deadline" ] && { sleep 5; continue; } ;; *) break ;; esac
