@@ -214,6 +214,7 @@ COPY docs/queue-conventions.md \
      docs/gateway-ops.md \
      docs/memory-conventions.md \
      docs/vs-github.md \
+     docs/vs-boot-workflows.md \
      /opt/vs/docs/
 COPY images/agent/hermes-agent-defaults.yaml /opt/vs/hermes-agent-defaults.yaml
 

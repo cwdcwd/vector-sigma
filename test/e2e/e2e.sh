@@ -1789,6 +1789,88 @@ ac13_primus_queue_tooling() {
   fi
 }
 
+# AC20 (fleet-ops-1py.47.3): the boot workflows against the REAL image —
+# restart idempotency, queue-unavailable fail-soft + recovery, and the
+# router's dark->live gate. (The hook-level contracts — queue-join seed,
+# a2a wiring, github identity, memory tools — run hermetically in
+# images/common/bin/test_vs_bootworkflows.py in unit CI; this AC proves
+# them on the actual image over the actual dolt + volume.)
+ac20_boot_workflows() {
+  note "AC20: boot workflows — restart idempotency, queue outage, router gate (1py.47.3)"
+  local hcontainer="$PROJECT-hermes-1"
+  local dolt_container="$PROJECT-dolt-1"
+  local deadline=$((SECONDS + 150))
+
+  # 1. dark posture, from the boot logs: with no VS_HUB_AGENTS roster in
+  #    the composition the router longrun logged idle and never swept —
+  #    the dark-until-configured contract on the real init system.
+  if docker logs "$hcontainer" 2>&1 | grep -q '\[vs-hub-router\] idle: no VS_HUB_AGENTS roster'; then
+    pass "AC20 router dark" "no VS_HUB_AGENTS roster: the router longrun logged idle at boot and never swept"
+  else
+    fail "AC20 router dark" "the router's idle line missing from the hermes boot logs — the longrun is not dark-gated"
+  fi
+
+  # 2. restart the hermes container over the SAME volume: every cont-init
+  #    hook re-runs into the existing workspace (restart idempotency),
+  #    and bd still answers for the runtime user afterwards.
+  docker restart "$hcontainer" >/dev/null 2>&1 || true
+  until docker exec -u hermes -w /data/primus/vs-queue "$hcontainer" bd status >/dev/null 2>&1; do
+    [ $SECONDS -ge $deadline ] && {
+      fail "AC20 restart idempotency" "bd status never answered after the hermes restart"
+      docker logs "$hcontainer" 2>&1 | tail -20
+      return
+    }
+    sleep 2
+  done
+  if docker logs "$hcontainer" 2>&1 | grep -q 'already seeded — first-boot-only contract'; then
+    pass "AC20 restart idempotency" "03- hook re-ran into the existing workspace: 'already seeded — first-boot-only contract' in the boot log"
+  else
+    fail "AC20 restart idempotency" "no 'already seeded' line after the restart — the 03- hook is not first-boot-only"
+  fi
+
+  # 3. queue-unavailable: stop dolt; the in-container bd fails with a
+  #    network-class exit (<130, no crash-y 137/139), then recovers by
+  #    itself once dolt returns — retry semantics, no manual repair.
+  docker stop "$dolt_container" >/dev/null 2>&1
+  local rc
+  docker exec -u hermes -w /data/primus/vs-queue "$hcontainer" bd status >/dev/null 2>&1
+  rc=$?
+  if [ "$rc" -ne 0 ] && [ "$rc" -lt 130 ]; then
+    pass "AC20 queue unavailable" "bd status failed cleanly (rc=$rc) with dolt down — a network-class error a client can retry"
+  else
+    fail "AC20 queue unavailable" "bd status rc=$rc with dolt stopped (want non-zero <130)"
+  fi
+  docker start "$dolt_container" >/dev/null 2>&1
+  deadline=$((SECONDS + 90))
+  until docker exec -u hermes -w /data/primus/vs-queue "$hcontainer" bd status >/dev/null 2>&1; do
+    [ $SECONDS -ge $deadline ] && {
+      fail "AC20 queue recovery" "bd status did not answer within 90s of dolt restarting"
+      return
+    }
+    sleep 3
+  done
+  pass "AC20 queue recovery" "bd status answers again after the outage — retry semantics, no manual repair"
+
+  # 4. the router's gate, behaviorally: WITHOUT a roster the s6 run
+  #    script exits 0 (dark-before-children)…
+  if timeout 30 docker exec "$hcontainer" /etc/s6-overlay/s6-rc.d/vs-hub-router/run >/dev/null 2>&1; then
+    pass "AC20 router run gate" "the s6 run script exits 0 with no roster — dark-before-children verified on the real init tree"
+  else
+    fail "AC20 router run gate" "the run script did not exit 0 with no roster"
+  fi
+  #    …and WITH a roster it blocks inside the serve loop (the probe
+  #    timeout kills it). No HANDOFF comments exist on the CI board at
+  #    this point, so the serve sweep stays read-only.
+  local served_rc="0"
+  timeout 20 docker exec -e VS_HUB_AGENTS=primus:doombot,kangbot:doombot \
+    "$hcontainer" /etc/s6-overlay/s6-rc.d/vs-hub-router/run >/dev/null 2>&1 || served_rc=$?
+  if [ "$served_rc" = "124" ] || [ "$served_rc" = "143" ] || [ "$served_rc" = "137" ]; then
+    pass "AC20 router roster gate" "with a roster the run script entered the serve loop (probe-terminated rc=$served_rc) — the gate opens for a roster"
+  else
+    fail "AC20 router roster gate" "run script with a roster exited rc=$served_rc — the serve loop did not catch"
+  fi
+}
+
 # ---- main ---------------------------------------------------------------------
 
 # AC14 (j7g.1): the A2A mesh chain, end to end through the master
@@ -2700,6 +2782,7 @@ ac10_queue_plane
 ac10_tls_edge
 ac12_primus_self_bootstrap
 ac13_primus_queue_tooling
+ac20_boot_workflows
 ac14_a2a_mesh_chain
 ac15_memory_plane
 ac16_agent_memory_tools
