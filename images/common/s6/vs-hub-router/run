@@ -1,29 +1,40 @@
 #!/command/with-contenv sh
 # shellcheck shell=sh
-# vs-hub-router service (the VS hub-assigned dispatch spool, queue conventions).
-# Always declared so s6 has a supervised slot; it RUNS only when
-# the 04-vs-a2a-wiring hook has BOTH: derived a hub routing target from the
-# bundle ($HERMES_HOME/a2a-guard/guard.json signed identity is on, and
-# VS_HUB_TARGET_AGENT names the fleet's hub coordinator) and seeded the spool
-# ($HERMES_HOME/vs-hub-queue). Without it the script exits 0 and ./finish
-# returns 125 (permanent failure: s6 leaves the slot down), exactly like the
-# stock dashboard service, so a composition without hub routing behaves
-# exactly as before.
-GD="${HERMES_HOME:-/opt/data}/a2a-guard"
-VS_HUB_QUEUE_DIR="${VS_HUB_QUEUE_DIR:-${HERMES_HOME:-/opt/data}/vs-hub-queue}"
-export VS_HUB_QUEUE_DIR
+# vs-hub-router service (the VS hub router, queue conventions).
+# Always declared so s6 has a supervised slot; it RUNS only when the owner
+# has provided a stage roster (VS_HUB_AGENTS, a compose/balena env choice —
+# fleet-ops-1py.47.1). Without it the router is dark: the script exits 0 and
+# ./finish returns 125 (permanent failure: s6 leaves the slot down), exactly
+# like the stock dashboard service, so a composition without hub routing
+# behaves exactly as before.
+#
+# The longrun never reads a queue-tooling env file: the workspace is the
+# first-boot queue join at $HERMES_HOME/vs-queue (03-vs-queue-join hook),
+# handed to the router as VS_QUEUE_DIR. Wake-ups ride the a2a-guard's signed
+# outbound route, so the guard's bearer token (a boot-managed secret written
+# by the 04-vs-a2a-wiring hook) is picked up from the token file when the
+# container env does not already carry it. With neither route the router
+# still boots (gate + sweeps run), it simply reports that dispatch is
+# disabled until a wake-up route exists — never silently dropping work.
+export VS_QUEUE_DIR="${VS_QUEUE_DIR:-${HERMES_HOME:-/opt/data}/vs-queue}"
 if [ ! -x /usr/local/bin/vs-hub-router ]; then
   echo "[vs-hub-router] idle: binary missing" >&2
   exit 0
 fi
-if [ -z "$VS_HUB_TARGET_AGENT" ]; then
-  echo "[vs-hub-router] idle: hub_router_agent not in the bundle" >&2
+if [ -z "$VS_HUB_AGENTS" ]; then
+  echo "[vs-hub-router] idle: no VS_HUB_AGENTS roster (the router is dark)" >&2
   exit 0
 fi
-if [ ! -f "$GD/outbound-token" ] || [ ! -f "$GD/guard.json" ]; then
-  echo "[vs-hub-router] idle: signed identity off (no outbound route)" >&2
-  exit 0
+if [ -z "$A2A_GUARD_OUTBOUND_TOKEN" ]; then
+  TF="${HERMES_HOME:-/opt/data}/a2a-guard/outbound-token"
+  if [ -f "$TF" ]; then
+    A2A_GUARD_OUTBOUND_TOKEN="$(cat "$TF")"
+    export A2A_GUARD_OUTBOUND_TOKEN
+  else
+    echo "[vs-hub-router] note: signed identity off — board-only sweeps (no wake-ups)" >&2
+    export VS_HUB_NOTIFY="${VS_HUB_NOTIFY:-0}"
+  fi
 fi
-# Drop to the runtime user (the wiring hook seeds and chowns the spool to it).
-[ "$(id -u)" = 0 ] || exec /opt/hermes/.venv/bin/python /usr/local/bin/vs-hub-router serve --queue-dir "$VS_HUB_QUEUE_DIR"
-exec s6-setuidgid hermes /opt/hermes/.venv/bin/python /usr/local/bin/vs-hub-router serve --queue-dir "$VS_HUB_QUEUE_DIR"
+# Drop to the runtime user (bd writes the board workspace as hermes).
+[ "$(id -u)" = 0 ] || exec /opt/hermes/.venv/bin/python /usr/local/bin/vs-hub-router serve
+exec s6-setuidgid hermes /opt/hermes/.venv/bin/python /usr/local/bin/vs-hub-router serve

@@ -35,3 +35,5 @@ jobs:
           python -m coverage run --branch --include='images/common/bin/vs-a2a-guard.py' -m unittest images/common/bin/test_vs_a2a_guard.py
           { echo '### a2a-guard coverage'; echo; echo '```'; python -m coverage report; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
           python -m coverage report --fail-under=90 > /dev/null  # floor: raise as coverage rises, never lower
+      - name: vs-hub-router tests
+        run: python -m unittest images/common/bin/test_vs_hub_router.py

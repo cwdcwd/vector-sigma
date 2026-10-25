@@ -1,11 +1,11 @@
 #!/command/with-contenv sh
 # shellcheck shell=sh
-# Companion to ./run. Unconfigured (no hub target / signed identity off): exit 125 so
-# s6-supervise leaves the slot down (no restart loop). Configured: exit 0 so s6 restarts
-# the router should it ever exit. Arguments: $1=run-exit-code, $2=signal-num,
-# $3=service-dir-name, $4=run-pgid (servicedir(7)).
-[ -n "$VS_HUB_TARGET_AGENT" ] || exit 125
-GD="${HERMES_HOME:-/opt/data}/a2a-guard"
-[ -f "$GD/outbound-token" ] || exit 125
-[ -f "$GD/guard.json" ] || exit 125
+# Companion to ./run. Unconfigured (no VS_HUB_AGENTS roster — the owner has
+# not enabled hub routing): exit 125 so s6-supervise leaves the slot down (no
+# restart loop). Configured: exit 0 so s6 restarts the router should it ever
+# exit; the router re-gates the queue contract on every sweep, so a board
+# server outage parks the sweeps without tearing down the service.
+# Arguments: $1=run-exit-code, $2=signal-num, $3=service-dir-name, $4=run-pgid
+# (servicedir(7)).
+[ -n "$VS_HUB_AGENTS" ] || exit 125
 exit 0

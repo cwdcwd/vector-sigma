@@ -282,12 +282,6 @@ try:
 except OSError:
     outbound = ""
 secret(out_path, outbound or secrets.token_urlsafe(32))
-# 1py.47.1: the hub routing target lives in the bundle — a2a.json
-# hub_router_agent (the peer name the owner's hub coordinator assigns VS
-# work to). Empty or absent = no hub routing: nothing is derived, the
-# router service stays idled and the spool just holds.
-hub_agent = a2a.get("hub_router_agent") if isinstance(a2a.get("hub_router_agent"), str) else ""
-hub_agent = hub_agent.strip()
 guard = {"agent_name": me, "state_dir": ".", "bundle_a2a": os.path.join(bundle_dir, "a2a.json"),
          "env_file": env_file,
          "inbound": {"listen_host": "0.0.0.0", "listen_port": 9900, "upstream": "http://127.0.0.1:9901",
@@ -297,12 +291,10 @@ guard = {"agent_name": me, "state_dir": ".", "bundle_a2a": os.path.join(bundle_d
 with open(cfg + ".tmp", "w") as f:
     json.dump(guard, f, indent=1)
 os.replace(cfg + ".tmp", cfg)
-# line 1: mode + strict; line 2: signed peer names; line 3: LOCAL tokens (secret: never logged);
-# line 4: the hub routing target from the bundle (hub_router_agent; empty = none)
+# line 1: mode + strict; line 2: signed peer names; line 3: LOCAL tokens (secret: never logged)
 print("ON " + ("strict" if a2a.get("strict") else "dual"))
 print(",".join(peers))
 print(",".join(f"{n}:{t}" for n, t in toks.items()))
-print(hub_agent)
 PYEOF
 )" || _signed="OFF"
   _mode="$(printf '%s\n' "$_signed" | sed -n '1p')"
@@ -320,41 +312,14 @@ PYEOF
       set_env A2A_PEER_TOKENS "$_local,$PEER_TOKENS" || true
     fi
     set_env A2A_GUARD_OUTBOUND_TOKEN "$(cat "$GUARD_DIR/outbound-token")" || true
-    # 1py.47.1: the hub routing target (bundle line 4; empty = none). The
-    # s6 vs-hub-router longrun reads this env — unset, the service idles
-    # and nothing routes; set, the dispatch spool at $HOME_DIR/vs-hub-queue
-    # is delivered through the signed outbound route (queue conventions).
-    _hub_agent="$(printf '%s\n' "$_signed" | sed -n '4p')"
-    if [ -n "$_hub_agent" ]; then
-      set_env VS_HUB_TARGET_AGENT "$_hub_agent" || true
-    else
-      drop_env VS_HUB_TARGET_AGENT
-    fi
-    export VS_HUB_TARGET_AGENT
     log "signed identity ON (${_mode#ON } mode; signed peers: $SIGNED_PEERS)"
   else
     drop_env A2A_GUARD_OUTBOUND_TOKEN
-    drop_env VS_HUB_TARGET_AGENT
     log "signed identity off (no peer_keys in the bundle) — a2a-guard stays down"
   fi
   chown -R "$RUN_UID:$RUN_GID" "$GUARD_DIR" 2>/dev/null || log "WARN: could not chown $GUARD_DIR"
 fi
 export SIGNED_PEERS
-
-# ── 2c: the VS hub router spool (1py.47.1) ─────────────────────────────
-# Durable spool for hub-assigned dispatches (the s6 vs-hub-router longrun
-# delivers when the wiring derived a $VS_HUB_TARGET_AGENT above). Seeded
-# every boot, fail-soft; the envelopes inside persist across reboots and
-# rebuilds like the rest of $HOME_DIR, so a message queued while the
-# route was down is delivered later, never dropped.
-HUB_QUEUE_DIR="$HOME_DIR/vs-hub-queue"
-if mkdir -p "$HUB_QUEUE_DIR/pending" "$HUB_QUEUE_DIR/sent" "$HUB_QUEUE_DIR/dead" 2>/dev/null; then
-  chmod 700 "$HUB_QUEUE_DIR" 2>/dev/null || true
-  chown -R "$RUN_UID:$RUN_GID" "$HUB_QUEUE_DIR" 2>/dev/null || log "WARN: could not chown $HUB_QUEUE_DIR"
-else
-  log "WARN: could not seed $HUB_QUEUE_DIR — the hub router stays idle"
-fi
-export VS_HUB_QUEUE_DIR="${HUB_QUEUE_DIR}"
 
 # ── 3: config.yaml managed section (model + a2a) ────────────────────────
 
