@@ -175,6 +175,19 @@ What the E2E proves, in order (the bead's acceptance criteria):
     and the 200 body carries `{alias, action, merged, bundle_version}`
     ONLY — key material never crosses to the caller. A re-run is the
     idempotent OPEN heal (`action=open`, no re-mint).
+16. **Boot workflows (1py.47.3, AC20)**: the REAL image's boot chain
+    holds under stress — restart idempotency (the 03- hook re-runs into
+    the existing workspace "already seeded — first-boot-only contract"
+    and bd still answers), queue-unavailable fail-soft (bd exits with a
+    network-class code while dolt is down and recovers by itself when
+    it returns), and the s6 router's dark→live gate (the run script
+    exits 0 with no roster and blocks inside the serve loop with one).
+    The hook-level contracts (03- vs-queue-join, 04- vs-a2a-wiring,
+    05- vs-github-identity, 06- vs-memory-tools) and the GitHub
+    identity wrapper's failure paths (no-token-leakage,
+    permission-denial fails closed, path allowlist) run hermetically in
+    unit CI: `images/common/bin/test_vs_bootworkflows.py`, operator
+    guide in `docs/vs-boot-workflows.md`.
 
 The device service runs the real registrant image (`registrant/dist/index.js`)
 — the same container shape the balenaOS device app uses (f57.6), with

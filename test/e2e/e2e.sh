@@ -1789,6 +1789,126 @@ ac13_primus_queue_tooling() {
   fi
 }
 
+# AC20 (fleet-ops-1py.47.3): the boot workflows against the REAL image —
+# restart idempotency, queue-unavailable fail-soft + recovery, and the
+# router's dark->live gate. (The hook-level contracts — queue-join seed,
+# a2a wiring, github identity, memory tools — run hermetically in
+# images/common/bin/test_vs_bootworkflows.py in unit CI; this AC proves
+# them on the actual image over the actual dolt + volume.)
+ac20_boot_workflows() {
+  note "AC20: boot workflows — restart idempotency, queue outage, router gate (1py.47.3)"
+  local hcontainer="$PROJECT-hermes-1"
+  local dolt_container="$PROJECT-dolt-1"
+  local deadline=$((SECONDS + 150))
+
+  # 1. dark posture, from the boot logs: with no VS_HUB_AGENTS roster in
+  #    the composition the router longrun logged idle and never swept —
+  #    the dark-until-configured contract on the real init system. POLL,
+  #    don't single-grep: AC20 can start seconds after a recreate/restart
+  #    and the router line belongs to the settled boot.
+  deadline=$((SECONDS + 150))
+  until docker logs "$hcontainer" 2>&1 | grep -q '\[vs-hub-router\] idle: no VS_HUB_AGENTS roster'; do
+    [ $SECONDS -ge $deadline ] && {
+      fail "AC20 router dark" "the router's idle line absent after 150s — the longrun is not dark-gated (or never started)"
+      docker logs "$hcontainer" 2>&1 | tail -25
+      return
+    }
+    sleep 5
+  done
+  pass "AC20 router dark" "no VS_HUB_AGENTS roster: the router longrun logged idle at boot and never swept"
+
+  # 2. recreate the hermes container over the SAME volume: every cont-init
+  #    hook re-runs into the existing workspace (restart idempotency).
+  #    NOTE docker restart CANNOT prove this — s6-overlay v3 keeps its
+  #    s6-rc state on the persistent /run, so a plain restart re-launches
+  #    the longruns but SKIPS the oneshot cont-init hooks entirely; only a
+  #    fresh container re-runs them (AC18 recreates primus the same way).
+  #    A recreate removes the container, so the fresh log tail contains
+  #    ONLY the recreated boot — the hook line there is its own proof.
+  $COMPOSE up -d --force-recreate --no-deps hermes >/dev/null 2>&1 || {
+    fail "AC20 restart recreate" "compose could not recreate the hermes container (rc=$?)";
+    docker logs "$hcontainer" 2>&1 | tail -20 || true;
+    return;
+  }
+  deadline=$((SECONDS + 180))
+  until docker logs "$hcontainer" 2>&1 | grep -q 'already seeded — first-boot-only contract'; do
+    [ $SECONDS -ge $deadline ] && {
+      fail "AC20 restart idempotency" "the recreated hermes boot never logged 'already seeded — first-boot-only contract' within 180s"
+      docker logs "$hcontainer" 2>&1 | tail -20
+      return
+    }
+    sleep 2
+  done
+  pass "AC20 restart idempotency" "03- hook re-ran into the existing workspace: 'already seeded — first-boot-only contract' in the boot log"
+  if docker exec -u hermes -w /data/primus/vs-queue "$hcontainer" bd status >/dev/null 2>&1; then
+    pass "AC20 queue after restart" "post-restart bd status answers as the runtime user (the join contract is untouched)"
+  else
+    fail "AC20 queue after restart" "bd status refused after the restarted boot"
+  fi
+
+  # 3. queue-unavailable: stop dolt; the in-container bd fails with a
+  #    network-class exit (<130, no crash-y 137/139; the 60s probe cap
+  #    also bounds a client-side retry loop), then recovers by itself
+  #    once dolt returns — retry semantics, no manual repair.
+  docker stop "$dolt_container" >/dev/null 2>&1
+  local rc=0
+  timeout 60 docker exec -u hermes -w /data/primus/vs-queue "$hcontainer" bd status >/dev/null 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ] && [ "$rc" -lt 130 ]; then
+    pass "AC20 queue unavailable" "bd status failed cleanly (rc=$rc) with dolt down — a network-class error a client can retry"
+  else
+    fail "AC20 queue unavailable" "bd status rc=$rc with dolt stopped (want non-zero <130)"
+  fi
+  docker start "$dolt_container" >/dev/null 2>&1 || true
+  deadline=$((SECONDS + 90))
+  until docker exec -u hermes -w /data/primus/vs-queue "$hcontainer" bd status >/dev/null 2>&1; do
+    [ $SECONDS -ge $deadline ] && {
+      fail "AC20 queue recovery" "bd status did not answer within 90s of dolt restarting"
+      return
+    }
+    sleep 3
+  done
+  pass "AC20 queue recovery" "bd status answers again after the outage — retry semantics, no manual repair"
+
+  # 4. the router's gate, behaviorally — WITHOUT fighting the shebang:
+  #    with-contenv is execline-based and needs /command in PATH, which a
+  #    plain docker exec does not carry (run 7: "execlineb: fatal: unable
+  #    to exec ifelse", rc=127). So the exec probes bypass the shebang:
+  #    the DARK side of the gate is already proven by the supervised
+  #    router's own boot line (it logged idle under the real init tree and
+  #    never swept), and the offline suite covers the run script's gate
+  #    shell semantics. What the real image still owes: WITH a roster the
+  #    router's serve loop actually runs — exec the same line the run
+  #    script itself execs (the body's final call, as the hermes runtime
+  #    user) and expect the probe timeout to be what ends it.
+  deadline=$((SECONDS + 150))
+  until docker logs "$hcontainer" 2>&1 | grep -q 'idle: no VS_HUB_AGENTS roster'; do
+    [ $SECONDS -ge $deadline ] && {
+      fail "AC20 router run gate" "the router never logged idle on the recreated boot (within 150s)"
+      docker logs "$hcontainer" 2>&1 | tail -15
+      return
+    }
+    sleep 3
+  done
+  pass "AC20 router run gate" "the supervised router logged idle on the recreated boot — dark before any roster, on the real init tree"
+  #    No HANDOFF comments exist on the CI board at this point, so the
+  #    serve sweep (and, without the guard token file, even wake-ups)
+  #    stays read-only: board-only sweeps with dispatch disabled.
+  local served_rc="0"
+  capfile="$(mktemp)"
+  timeout 30 docker exec -u hermes \
+    -e 'VS_HUB_AGENTS={"dev":"primus","review":"kangbot"}' \
+    -e VS_QUEUE_DIR=/opt/data/vs-queue \
+    -e HOME=/opt/data \
+    -e PATH=/opt/hermes/.venv/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    "$hcontainer" /opt/hermes/.venv/bin/python /usr/local/bin/vs-hub-router serve \
+    >"$capfile" 2>&1 || served_rc=$?
+  if [ "$served_rc" = "124" ] || [ "$served_rc" = "143" ] || [ "$served_rc" = "137" ]; then
+    pass "AC20 router roster gate" "with a roster the router's serve loop runs and blocks (probe-terminated rc=$served_rc) — the gate opens for a roster"
+  else
+    fail "AC20 router roster gate" "the router's serve loop did not hold up under a roster (rc=$served_rc): $(tail -c 200 "$capfile")"
+  fi
+}
+
 # ---- main ---------------------------------------------------------------------
 
 # AC14 (j7g.1): the A2A mesh chain, end to end through the master
@@ -2700,6 +2820,7 @@ ac10_queue_plane
 ac10_tls_edge
 ac12_primus_self_bootstrap
 ac13_primus_queue_tooling
+ac20_boot_workflows
 ac14_a2a_mesh_chain
 ac15_memory_plane
 ac16_agent_memory_tools

@@ -188,6 +188,7 @@ COPY docs/queue-conventions.md \
      docs/gateway-ops.md \
      docs/memory-conventions.md \
      docs/vs-github.md \
+     docs/vs-boot-workflows.md \
      /opt/vs/docs/
 COPY images/hermes/vs-queue-join.sh /etc/cont-init.d/03-vs-queue-join
 RUN chmod 0755 /etc/cont-init.d/03-vs-queue-join

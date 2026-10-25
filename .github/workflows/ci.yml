@@ -37,3 +37,5 @@ jobs:
           python -m coverage report --fail-under=90 > /dev/null  # floor: raise as coverage rises, never lower
       - name: vs-hub-router tests
         run: python -m unittest images/common/bin/test_vs_hub_router.py
+      - name: boot-workflow tests
+        run: python -m unittest images/common/bin/test_vs_bootworkflows.py
