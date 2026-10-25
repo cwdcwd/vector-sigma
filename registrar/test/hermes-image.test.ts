@@ -260,4 +260,81 @@ describe('primus image contract (fleet-ops-b1r)', () => {
     expect(agentBlock).toMatch(/HERMES_HOME: \/data\/agent/);
     expect(agentBlock).toMatch(/HERMES_UID: "1000"/);
   });
+
+  it('1py.47.1: the VS hub router is baked as an s6 longrun routing the vs_ops board pipeline (stages, WIP caps, handoff validation), scoped to the queue join and dark by default', () => {
+    // The router is the device's own board pipeline: it advances ready beads
+    // through dev/test/review with WIP caps, validates stage agents' HANDOFF
+    // comments over board metadata, and re-pings stale work through the
+    // signed outbound route. It must never leave the baked vs_ops queue join
+    // and must never re-initialize or raw-query the shared queue.
+    for (const image of [dockerfileCode, stripComments(readFileSync(path.join(repoRoot, 'images/agent/Dockerfile'), 'utf8'))]) {
+      expect(image).toMatch(/COPY images\/common\/bin\/vs-hub-router\.py \/usr\/local\/bin\/vs-hub-router/);
+      expect(image).toMatch(/COPY images\/common\/s6\/vs-hub-router \/etc\/s6-overlay\/s6-rc\.d\/vs-hub-router/);
+      expect(image).toMatch(/touch \/etc\/s6-overlay\/s6-rc\.d\/user\/contents\.d\/vs-hub-router/);
+    }
+    const router = readFileSync(path.join(repoRoot, 'images/common/bin/vs-hub-router.py'), 'utf8');
+    const routerCode = stripComments(router);
+    // Owner-controlled enablement: no roster, no routing (the router is dark).
+    expect(routerCode).toMatch(/VS_HUB_AGENTS/);
+    expect(routerCode).not.toMatch(/VS_HUB_TARGET_AGENT/);
+    expect(routerCode).not.toMatch(/--queue-dir/);
+    // The baked vs_ops queue join is the only workspace: the contract check
+    // refuses anything else (the origin fleet's own hub workspace included).
+    expect(routerCode).toMatch(/vs_ops/);
+    expect(routerCode).toMatch(/"fleet_ops" in raw/);
+    expect(routerCode).toMatch(/e3796a22/);
+    // The bd argv allowlist: board reads + targeted edits only — no init, no
+    // raw queries, no other verb can run through a router.
+    expect(routerCode).toMatch(/BOARD_VERBS = \("status", "list", "ready", "comments", "update", "comment"\)/);
+    expect(routerCode).not.toMatch(/"init"/);
+    expect(routerCode).not.toMatch(/["']sql["']/);
+    // Pipeline: explicit stages, role labels, WIP caps, handoff verbs.
+    expect(routerCode).toMatch(/STAGE_VERBS/);
+    expect(routerCode).toMatch(/"dev".*"blocked"/s);
+    expect(routerCode).toMatch(/dev-done/);
+    expect(routerCode).toMatch(/test-pass/);
+    expect(routerCode).toMatch(/test-fail/);
+    expect(routerCode).toMatch(/review-accepted/);
+    expect(routerCode).toMatch(/changes-requested/);
+    expect(routerCode).toMatch(/GUIDANCE:/);
+    // Routing state rides board metadata stamps (never the bead tree) and
+    // sweeps are single-flight under the router lock.
+    expect(routerCode).toMatch(/hub_stage/);
+    expect(routerCode).toMatch(/hub_dispatched_at/);
+    expect(routerCode).toMatch(/hub_pending/);
+    expect(routerCode).toMatch(/router\.lock/);
+    expect(routerCode).toMatch(/VS_HUB_WIP/);
+    // The single endpoint in code is the a2a-guard's outbound peer route on loopback.
+    expect(routerCode.match(/127\.0\.0\.1:\d+[^'"`\s]*/g) ?? []).toEqual(['127.0.0.1:9902/peer/']);
+    // No inbound port of its own (it dials the guard, never serves a socket).
+    expect(routerCode).not.toMatch(/\b9900\b/);
+    const s6run = readFileSync(path.join(repoRoot, 'images/common/s6/vs-hub-router/run'), 'utf8');
+    expect(s6run).toMatch(/^#!\/command\/with-contenv sh/);
+    const s6runCode = stripComments(s6run);
+    expect(s6runCode).toMatch(/VS_HUB_AGENTS/);
+    expect(s6runCode).toMatch(/VS_QUEUE_DIR/);
+    expect(s6runCode).toMatch(/vs-queue/);
+    expect(s6runCode).toMatch(/outbound-token/);
+    expect(s6runCode).toMatch(/serve/);
+    expect(s6runCode).not.toMatch(/--queue-dir/);
+    expect(s6runCode).not.toMatch(/\bbd\b/);
+    const s6finish = readFileSync(path.join(repoRoot, 'images/common/s6/vs-hub-router/finish'), 'utf8');
+    expect(stripComments(s6finish)).toMatch(/exit 125/);
+    expect(stripComments(s6finish)).toMatch(/VS_HUB_AGENTS/);
+    expect(readFileSync(path.join(repoRoot, 'images/common/s6/vs-hub-router/type'), 'utf8')).toMatch(/longrun/);
+    // The wiring hook stays out of hub routing: the roster is a compose/balena
+    // env choice (owner-controlled), not a bundle-derived spool.
+    const wiring = readFileSync(path.join(repoRoot, 'images/common/hooks/vs-a2a-wiring.sh'), 'utf8');
+    expect(wiring).not.toMatch(/VS_HUB_TARGET_AGENT|vs-hub-queue|hub_router_agent/);
+    // The queue conventions document the router contract; the design
+    // constants doc pins the knobs.
+    const conv = readFileSync(path.join(repoRoot, 'docs/queue-conventions.md'), 'utf8');
+    expect(conv).toMatch(/vs-hub-router/);
+    expect(conv).toMatch(/VS_HUB_AGENTS/);
+    expect(conv).toMatch(/hub_pending/);
+    const knobs = readFileSync(path.join(repoRoot, 'docs/vs-hub-router.md'), 'utf8');
+    expect(knobs).toMatch(/VS_HUB_AGENTS/);
+    expect(knobs).toMatch(/VS_HUB_WIP/);
+    expect(knobs).toMatch(/message\/send/);
+  });
 });

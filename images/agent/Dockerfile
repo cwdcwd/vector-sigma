@@ -197,6 +197,16 @@ RUN chmod 0755 /usr/local/bin/vs-a2a-guard /etc/s6-overlay/s6-rc.d/a2a-guard/run
          /etc/s6-overlay/s6-rc.d/a2a-guard/finish \
     && touch /etc/s6-overlay/s6-rc.d/user/contents.d/a2a-guard
 
+# fleet-ops-1py.47.1: the hub router (same as the primus image): the board
+# pipeline router over the baked vs_ops queue join — dark until the owner
+# provides a VS_HUB_AGENTS roster; then sweeps stage ready beads against WIP
+# caps and route stage agents' HANDOFF comments via board metadata.
+COPY images/common/bin/vs-hub-router.py /usr/local/bin/vs-hub-router
+COPY images/common/s6/vs-hub-router /etc/s6-overlay/s6-rc.d/vs-hub-router
+RUN chmod 0755 /usr/local/bin/vs-hub-router /etc/s6-overlay/s6-rc.d/vs-hub-router/run \
+         /etc/s6-overlay/s6-rc.d/vs-hub-router/finish \
+    && touch /etc/s6-overlay/s6-rc.d/user/contents.d/vs-hub-router
+
 # ── Docs: the WORKER environment map + the shared conventions ─────────────
 COPY docs/queue-conventions.md \
      docs/device-environment.md \

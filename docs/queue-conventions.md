@@ -60,7 +60,45 @@ own, and a device agent reading the master's map is a regression
 and the origin-fleet coordinator contact each other A2A agent-to-agent —
 NEVER through shared-queue writes. No VS agent writes to the origin fleet's
 `fleet_ops` database; no origin-fleet agent writes to `vs_ops`. Coordination
-crossings happen over A2A, exactly as this bead was dispatched.
+coordination crossings happen over A2A, exactly as this bead was dispatched.
+
+## Hub router (the board pipeline, fleet-ops-1py.47.1)
+
+The device's own hub. The s6 `vs-hub-router` longrun runs over the baked
+vs_ops queue join (`$HERMES_HOME/vs-queue`) and advances the board pipeline
+the fleet's hub sweep assigns work by. **Routing is an owner choice**: the
+service is dark until the composition sets `VS_HUB_AGENTS` (a JSON roster
+mapping pipeline stages to the agent accounts who take the work, e.g.
+`{"dev": "builder-a", "test": "tester-a", "review": "a-pr-review-a"}`);
+no roster → no sweeps, exactly as before.
+
+Every sweep is idempotent and the bd argv surface is a fixed allowlist
+(`status`, `list`, `ready`, `comments`, `update`, `comment`) — never
+`init` or raw queries, so the router can never re-initialize or fork the
+shared queue. Eligibility and routing:
+
+- A ready, unassigned bead enters `dev` (role:builder) — or `test`
+  (role:tester) / `review` (role:reviewer) once it carries PR evidence (a
+  `*/pull/<n>` link in the description or a comment). `owner-call` beads
+  are never dispatched. Each stage agent is WIP-capped (`VS_HUB_WIP`,
+  default 2).
+- Stage agents post **ONE** `HANDOFF:` comment (first line:
+  `dev-done` / `test-pass` / `test-fail` / `review-accepted` /
+  `changes-requested` / `blocked`) that moves the bead onward or back, as
+  validated per stage (`docs/vs-hub-router.md`); the router stamps the
+  progress in board metadata (`hub_stage`, `hub_dispatched_at`,
+  `hub_pending`), never in the bead tree.
+- Dispatched beads get a wake-up ping through the a2a-guard's signed
+  outbound route; a failed ping reverts the dispatch (back to a plain ready
+  bead) instead of stranding stage work. Stale beads are re-pinged until a
+  silence cap parks them with the owner; only the owner's accounts resume
+  an owner-parked bead (`GUIDANCE:` comment).
+
+WIP accounting counts the agents' currently dispatched (open) hub work;
+dispatching is per-tick (default 300s, `VS_HUB_INTERVAL`), and the lock
+file at `<workspace>/.vs-hub/router.lock` guarantees a single active sweep
+even with `once` and `serve` both present. See `docs/vs-hub-router.md` for
+the full knob table and the stage/verb matrix.
 
 ## Read-only dashboard
 

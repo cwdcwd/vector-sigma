@@ -209,6 +209,19 @@ RUN chmod 0755 /usr/local/bin/vs-a2a-guard /etc/s6-overlay/s6-rc.d/a2a-guard/run
          /etc/s6-overlay/s6-rc.d/a2a-guard/finish \
     && touch /etc/s6-overlay/s6-rc.d/user/contents.d/a2a-guard
 
+# fleet-ops-1py.47.1: the hub router — the board pipeline router over the
+# baked vs_ops queue join ($HERMES_HOME/vs-queue, the 03-vs-queue-join
+# workspace). Same dark-until-configured posture as the guard: with no
+# VS_HUB_AGENTS roster (an owner compose/balena env choice) the s6 longrun
+# idles; with one, every sweep verifies the workspace contract, stages
+# ready beads against WIP caps, validates stage agents' HANDOFF comments
+# and re-pings stale work via the a2a-guard's signed outbound route.
+COPY images/common/bin/vs-hub-router.py /usr/local/bin/vs-hub-router
+COPY images/common/s6/vs-hub-router /etc/s6-overlay/s6-rc.d/vs-hub-router
+RUN chmod 0755 /usr/local/bin/vs-hub-router /etc/s6-overlay/s6-rc.d/vs-hub-router/run \
+         /etc/s6-overlay/s6-rc.d/vs-hub-router/finish \
+    && touch /etc/s6-overlay/s6-rc.d/user/contents.d/vs-hub-router
+
 # e5o.5: the GitHub App identity wiring hook — primus writes to this
 # repo too (the same per-agent App mechanics as the devices: the bundle
 # carries github-app.pem + GH_APP_ID/GH_APP_SLUG; the hook derives the
