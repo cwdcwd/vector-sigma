@@ -14,6 +14,13 @@
  *
  * Prints one PASS line per proven fact (the test asserts them all).
  * Exits non-zero on the first failure with a FAIL line naming it.
+ *
+ * Also proves the FAIL-CLOSED contract on broken identity (AC3,
+ * fleet-ops-1py.47.2): missing/invalid GH_APP_ID, invalid GH_APP_SLUG,
+ * a PEM path that was never delivered, and garbage PEM content must all
+ * die safely — non-zero exit, the failure named on stderr, an empty
+ * success stdout, no API call attempted, and never a byte of the
+ * fixture key in any output. All probe inputs are synthetic.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -95,11 +102,15 @@ function run(args, extraEnv, stdin) {
   };
   return new Promise((resolve) => {
     const p = spawn('python3', [WRAPPER, ...args], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    // `out` combines both streams (the failure channels read together);
+    // `stdout` stays separate so the negative probes can assert the
+    // SUCCESS channel is silent when config breaks.
     let out = '';
-    p.stdout.on('data', (d) => { out += d; });
+    let stdout = '';
+    p.stdout.on('data', (d) => { out += d; stdout += d; });
     p.stderr.on('data', (d) => { out += d; });
-    p.on('error', (e) => resolve({ rc: -1, out: String(e) }));
-    p.on('close', (code) => resolve({ rc: code, out }));
+    p.on('error', (e) => resolve({ rc: -1, out: String(e), stdout: '' }));
+    p.on('close', (code) => resolve({ rc: code, out, stdout }));
     if (stdin) p.stdin.end(stdin); else p.stdin.end();
   });
 }
@@ -209,6 +220,75 @@ const MAXDETAIL = Number(process.env.VS_GH_DEBUG ? 3000 : 300);
   } else {
     fail('cred-helper', JSON.stringify(r).slice(0, MAXDETAIL));
   }
+}
+
+// ── 6: missing/invalid credential-path probes (AC3, fleet-ops-1py.47.2) ──
+// Every broken-identity configuration must fail SAFE at load time:
+// non-zero exit, the failure named on stderr, NOTHING on the success
+// stdout, no API call attempted, and never a byte of the fixture key in
+// any output. All probe inputs are synthetic (empty env strings, bad
+// formats, an absent path, a garbage PEM); no real credential is touched.
+const negativeOutputs = [];
+const callsBeforeNegative = calls.length;
+function safeFail(r, mustMatch) {
+  return r.rc !== 0 && mustMatch.test(r.out) && r.stdout === '';
+}
+{
+  // 6a: identity env wholly absent (the undelivered-bundle case).
+  const r = await run(['whoami'], { GH_APP_ID: '', GH_APP_SLUG: '' });
+  negativeOutputs.push(r.out);
+  if (safeFail(r, /GH_APP_ID and GH_APP_SLUG must be set/)
+      && /No GitHub identity wired/.test(r.out)) pass('missing-app-identity');
+  else fail('missing-app-identity', JSON.stringify(r).slice(0, MAXDETAIL));
+}
+{
+  // 6b: malformed app ids (zero and non-numeric) must both be rejected.
+  const r0 = await run(['whoami'], { GH_APP_ID: '0' });
+  const rn = await run(['whoami'], { GH_APP_ID: 'not-numeric' });
+  negativeOutputs.push(r0.out, rn.out);
+  if (safeFail(r0, /GH_APP_ID must be a positive numeric/)
+      && safeFail(rn, /GH_APP_ID must be a positive numeric/)) pass('invalid-app-id');
+  else fail('invalid-app-id', JSON.stringify([r0, rn]).slice(0, MAXDETAIL));
+}
+{
+  // 6c: a malformed slug format must be rejected before any mint.
+  const r = await run(['whoami'], { GH_APP_SLUG: 'Bad_Slug!' });
+  negativeOutputs.push(r.out);
+  if (safeFail(r, /GH_APP_SLUG has an invalid format/)) pass('invalid-app-slug');
+  else fail('invalid-app-slug', JSON.stringify(r).slice(0, MAXDETAIL));
+}
+{
+  // 6d: the PEM never delivered at the configured path.
+  const missing = path.join(sb, 'never-delivered.pem');
+  const r = await run(['whoami'], { GH_APP_PEM_PATH: missing });
+  negativeOutputs.push(r.out);
+  if (safeFail(r, /App private key not found/) && r.out.includes(missing)) pass('missing-pem-path');
+  else fail('missing-pem-path', JSON.stringify(r).slice(0, MAXDETAIL));
+}
+{
+  // 6e: a PEM that holds garbage must fail closed on BOTH signing stacks —
+  // the default one, and the openssl fallback with PyJWT import-blocked.
+  const garbage = path.join(sb, 'garbage-key.pem');
+  fs.writeFileSync(garbage, 'THIS IS NOT A PRIVATE KEY\n');
+  const rJwt = await run(['whoami'], { GH_APP_PEM_PATH: garbage });
+  const rFallback = await run(['whoami'], {
+    GH_APP_PEM_PATH: garbage, PYTHONPATH: path.join(sb, 'nopyjwt'),
+  });
+  negativeOutputs.push(rJwt.out, rFallback.out);
+  if ((rJwt.rc !== 0 && rJwt.stdout === '')
+      && safeFail(rFallback, /openssl signing failed/)) pass('invalid-pem-content');
+  else fail('invalid-pem-content', JSON.stringify({ rJwt, rFallback }).slice(0, MAXDETAIL));
+}
+{
+  // 6f: aggregate — no fixture key byte anywhere in the failure output,
+  // and not one API call attempted with a broken identity.
+  const pemLines = fs.readFileSync(keyPath, 'utf8').split('\n')
+    .filter((line) => line.length > 40 && !line.startsWith('-----'));
+  const blob = negativeOutputs.join('\n');
+  const leaked = pemLines.filter((line) => blob.includes(line));
+  const attempted = calls.length - callsBeforeNegative;
+  if (pemLines.length > 0 && leaked.length === 0 && attempted === 0) pass('negative-probe-redaction');
+  else fail('negative-probe-redaction', JSON.stringify({ leaked: leaked.length, attempted }));
 }
 
 srv.close();

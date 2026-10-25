@@ -36,6 +36,12 @@ import { describe, expect, it } from 'vitest';
  *      token-mint flow against a loopback mock API with a real RSA key
  *      (both signing paths) — proving the wiring end to end without
  *      any real credential.
+ *   8. The wrapper FAILS CLOSED on broken identity (AC3, fleet-ops-1py.47.2):
+ *      missing GH_APP_ID/GH_APP_SLUG, invalid app-id/slug values, an
+ *      undelivered PEM path, and garbage PEM content are CI-tested with
+ *      synthetic fixtures only — non-zero exit, stderr-named failure,
+ *      silent stdout, no API call attempted, no fixture key bytes in
+ *      any output.
  */
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '../..');
@@ -215,5 +221,15 @@ describe('VS GitHub identity (fleet-ops-e5o.5): behavioral proof (mock API + rea
     expect(out).toMatch(/PASS whoami-shape/);
     expect(out).toMatch(/PASS cred-helper/);
     expect(out).toMatch(/PASS tls-poisoning-immunity/);
+    // AC3 (fleet-ops-1py.47.2): missing/invalid credential-path probes —
+    // every broken-identity configuration fails closed with a silent
+    // stdout, no attempted API call, and no fixture key material in any
+    // failure output (synthetic fixtures only).
+    expect(out).toMatch(/PASS missing-app-identity/);
+    expect(out).toMatch(/PASS invalid-app-id/);
+    expect(out).toMatch(/PASS invalid-app-slug/);
+    expect(out).toMatch(/PASS missing-pem-path/);
+    expect(out).toMatch(/PASS invalid-pem-content/);
+    expect(out).toMatch(/PASS negative-probe-redaction/);
   }, 180_000);
 });
