@@ -1803,12 +1803,19 @@ ac20_boot_workflows() {
 
   # 1. dark posture, from the boot logs: with no VS_HUB_AGENTS roster in
   #    the composition the router longrun logged idle and never swept —
-  #    the dark-until-configured contract on the real init system.
-  if docker logs "$hcontainer" 2>&1 | grep -q '\[vs-hub-router\] idle: no VS_HUB_AGENTS roster'; then
-    pass "AC20 router dark" "no VS_HUB_AGENTS roster: the router longrun logged idle at boot and never swept"
-  else
-    fail "AC20 router dark" "the router's idle line missing from the hermes boot logs — the longrun is not dark-gated"
-  fi
+  #    the dark-until-configured contract on the real init system. POLL,
+  #    don't single-grep: AC20 can start seconds after a recreate/restart
+  #    and the router line belongs to the settled boot.
+  deadline=$((SECONDS + 150))
+  until docker logs "$hcontainer" 2>&1 | grep -q '\[vs-hub-router\] idle: no VS_HUB_AGENTS roster'; do
+    [ $SECONDS -ge $deadline ] && {
+      fail "AC20 router dark" "the router's idle line absent after 150s — the longrun is not dark-gated (or never started)"
+      docker logs "$hcontainer" 2>&1 | tail -25
+      return
+    }
+    sleep 5
+  done
+  pass "AC20 router dark" "no VS_HUB_AGENTS roster: the router longrun logged idle at boot and never swept"
 
   # 2. restart the hermes container over the SAME volume and WAIT FOR THE
   #    HOOK: docker restart returns as soon as the process is up — the
@@ -1856,22 +1863,46 @@ ac20_boot_workflows() {
   pass "AC20 queue recovery" "bd status answers again after the outage — retry semantics, no manual repair"
 
   # 4. the router's gate, behaviorally: WITHOUT a roster the s6 run
-  #    script exits 0 (dark-before-children)…
-  if timeout 30 docker exec "$hcontainer" /etc/s6-overlay/s6-rc.d/vs-hub-router/run >/dev/null 2>&1; then
+  #    script exits 0 (dark-before-children). The probes run seconds after
+  #    step 2's restart, i.e. during the second boot's early phase — wait
+  #    for the s6 environment the with-contenv shebang reads, and retry a
+  #    transient mid-boot exec (125/127) before declaring failure.
+  deadline=$((SECONDS + 120))
+  until docker exec "$hcontainer" test -f /run/s6/container_environment >/dev/null 2>&1; do
+    [ $SECONDS -ge $deadline ] && {
+      fail "AC20 router run gate" "the s6 environment never settled (no /run/s6/container_environment within 120s)"
+      docker logs "$hcontainer" 2>&1 | tail -15
+      return
+    }
+    sleep 3
+  done
+  local dark_rc=0
+  capfile="$(mktemp)"
+  for _ in 1 2; do
+    timeout 30 docker exec "$hcontainer" /etc/s6-overlay/s6-rc.d/vs-hub-router/run >/dev/null 2>"$capfile" || dark_rc=$?
+    [ "$dark_rc" = "0" ] && break
+    case "$dark_rc" in 125|127) [ $SECONDS -lt "$deadline" ] && { sleep 5; continue; } ;; esac
+    break
+  done
+  if [ "$dark_rc" = "0" ]; then
     pass "AC20 router run gate" "the s6 run script exits 0 with no roster — dark-before-children verified on the real init tree"
   else
-    fail "AC20 router run gate" "the run script did not exit 0 with no roster"
+    fail "AC20 router run gate" "the run script exited rc=$dark_rc with no roster: $(tail -c 200 "$capfile")"
   fi
   #    …and WITH a roster it blocks inside the serve loop (the probe
   #    timeout kills it). No HANDOFF comments exist on the CI board at
   #    this point, so the serve sweep stays read-only.
   local served_rc="0"
-  timeout 20 docker exec -e VS_HUB_AGENTS=primus:doombot,kangbot:doombot \
-    "$hcontainer" /etc/s6-overlay/s6-rc.d/vs-hub-router/run >/dev/null 2>&1 || served_rc=$?
+  capfile="$(mktemp)"
+  for _ in 1 2; do
+    timeout 20 docker exec -e VS_HUB_AGENTS=primus:doombot,kangbot:doombot \
+      "$hcontainer" /etc/s6-overlay/s6-rc.d/vs-hub-router/run >/dev/null 2>"$capfile" || served_rc=$?
+    [ "$served_rc" = "0" ] || case "$served_rc" in 124|143|137) break ;; 125|127) [ $SECONDS -lt "$deadline" ] && { sleep 5; continue; } ;; *) break ;; esac
+  done
   if [ "$served_rc" = "124" ] || [ "$served_rc" = "143" ] || [ "$served_rc" = "137" ]; then
     pass "AC20 router roster gate" "with a roster the run script entered the serve loop (probe-terminated rc=$served_rc) — the gate opens for a roster"
   else
-    fail "AC20 router roster gate" "run script with a roster exited rc=$served_rc — the serve loop did not catch"
+    fail "AC20 router roster gate" "run script with a roster exited rc=$served_rc — the serve loop did not catch: $(tail -c 200 "$capfile")"
   fi
 }
 
