@@ -2812,9 +2812,14 @@ ac19_console_mints() {
 #      validated at boot.
 #   2. Tier selection serves through the mapped group: the mock echoes
 #      `mock:<upstream model>` as the response content, so the tier the
-#      router picked is visible in the body. Short prompt → the SIMPLE tier's
-#      flash group; escalation keyword → the heavy group; a repeat confirms
-#      the mapping again (session_affinity: true keeps the tier stable).
+#      router picked is visible in the body. A short prompt resolves to
+#      the SIMPLE tier's flash group; a technical multi-step prompt classifies
+#      COMPLEX on 1.105.1's default heuristic (score 0.425, boundary 0.35 —
+#      verified against the classifier source at dev time) → the heavy group;
+#      a repeat confirms the mapping (session_affinity: true keeps the tier
+#      stable). The escalation keyword is NOT probed: under any tier mapping
+#      it only bumps an existing session-affinity pin, never a fresh prompt's
+#      classification.
 #   3. The serving run raises zero ModelNotMappedError and creates zero
 #      dropped deployments — the PR #88 fixture's zero-fallback-event
 #      assertions, re-proved on the shipped shape on every CI run.
@@ -2848,10 +2853,11 @@ ac50_router_default_serving() {
   fi
   pass "AC50 router alias live" "auto_router/complexity_router served by the runtime fixture's /v1/models"
 
-  # Tier selection: the classifier paths proven in the PR #88 fixture — a
-  # short prompt resolves to the SIMPLE tier's flash group, an
-  # escalation-keyword prompt to the heavy group, and a heavy repeat maps the
-  # same way again.
+  # Tier selection: deterministic classifier probes on the 1.105.1 default
+  # heuristic (verified against the classifier source at dev time): a short
+  # prompt resolves to the SIMPLE tier's flash group, a technical multi-step
+  # prompt classifies COMPLEX (score 0.425 ≥ boundary 0.35), and a heavy
+  # repeat maps the same way again.
   rm -rf "$probe_dir"
   mkdir -p "$probe_dir"
   node -e '
@@ -2862,7 +2868,7 @@ ac50_router_default_serving() {
     }));
     fs.writeFileSync(process.argv[1] + "/heavy.json", JSON.stringify({
       model: "auto_router/complexity_router",
-      messages: [{ role: "user", content: "Please audit this repository and LITELLM ESCALATE the routing: walk every lane, grade the fallback chain, and rewrite the router table end to end." }]
+      messages: [{ role: "user", content: "Please audit this entire repository end to end: walk every TypeScript lane, implement the async docker orchestration protocol for our kubernetes cluster, and grade the architecture before rewriting the router table from scratch." }]
     }));
   ' "$probe_dir"
   for tier in simple:mock:glm-5.3-flash heavy:mock:glm-5.3 heavy-repeat:mock:glm-5.3; do
