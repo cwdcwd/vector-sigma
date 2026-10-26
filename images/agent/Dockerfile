@@ -101,6 +101,7 @@ RUN apt-get update \
     && uv pip install --no-cache --python /opt/hermes/.venv/bin/python 'PyJWT==2.14.0' 'anyio==4.14.2' \
          'aiohttp==3.14.4' 'tornado==6.5.9' 'urllib3==2.8.0' 'httpx2==2.12.0' 'httpcore2==2.12.0' \
          'certifi==2026.10.19' 'pillow==13.0.0' \
+         'PyYAML==6.0.3' \
     && npm install -g --no-audit --no-fund --cache /tmp/.npm-cve-cache npm@11.21.1 \
     && rm -rf /tmp/.npm-cve-cache /root/.npm
 
