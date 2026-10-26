@@ -3330,4 +3330,37 @@ export const UPSTREAM_IMAGE_ALLOWLIST: readonly UpstreamFileEntry[] = [
     occurrences: [{ literal: "10.0.1.255" }, { literal: "192.168.0.4" }],
   },
 
-]
+  {
+    // fleet-ops-1py.53 (2026-10-26, CI round 2): NEW surface at the v0.22.5 bump —
+    // the standalone python-3.14.9 compiler distribution (new at this tag: the
+    // v2026.9.21 base shipped only opt/hermes/tools/url_safety.py, no compiler
+    // dists) vendors pip, whose bundled requests ships the stock
+    // is_ipv4_address doc example (192.168.1.1 vs 192.168.1.0/24 netmask) and
+    // the 192.168.100.0 line from the same docstring. Byte-identical across
+    // amd64 and arm64 standalone dists (sha256 of both = the pin below).
+    name: "pip-vendor-requests-rfc1918",
+    patterns: ["rfc1918_private_ip"],
+    matchKind: 'suffix',
+    match: "pip/_vendor/requests/utils.py",
+    fileSha256: "bbb3080b2cd04ef7d46b76ac83d9c1bdcae785220f11ceaa8494b18861b04ce9",
+    fileSha256s: null,
+    markers: null,
+    markerFn: null,
+    occurrences: [{ literal: "192.168.1.0" }, { literal: "192.168.1.1" }, { literal: "192.168.100.0" }],
+  },
+  {
+    // fleet-ops-1py.53 (2026-10-26, CI round 2): same standalone python-3.14.9
+    // dist, pip's vendored rich ReprHighlighter ReprHighlighter example text
+    // contains one rfc1918 literal, 192.168.1.4 (127.0.1.1 line, doc example).
+    // Byte-identical across amd64 and arm64 (sha256 = the pin below).
+    name: "pip-vendor-rich-rfc1918",
+    patterns: ["rfc1918_private_ip"],
+    matchKind: 'suffix',
+    match: "pip/_vendor/rich/highlighter.py",
+    fileSha256: "1bfb27fbc0ca8ccd6c1232c6fe8738a2f9169a25295af8fc6d78b4c9e7762e76",
+    fileSha256s: null,
+    markers: null,
+    markerFn: null,
+    occurrences: [{ literal: "192.168.1.4" }],
+  },
+  ]
