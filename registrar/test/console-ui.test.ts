@@ -265,3 +265,134 @@ describe('Console UI overhaul (1py.6) — confirm dialogs + editor grouping', ()
     expect(page.html).toMatch(/<script type="application\/json" id="persona-library-data">/);
   });
 });
+
+describe('Revocation buttons — legible contrast + exact labels (1py.48)', () => {
+  // Defect under test: `.danger{color:var(--danger)}` (the pink "red text"
+  // utility) out-specifies the element-level `button{color:#0f1117}` rule for
+  // every `<button class="danger">`, while `button.danger` overrode only the
+  // background with the same token — the revocation buttons rendered
+  // pink-on-pink (contrast 1:1) in both the active-device and admin-key
+  // contexts. Pins: (a) the exact rendered labels in both named contexts,
+  // (b) the computed text/background contrast of every `.danger` button taken
+  // from the SERVED stylesheet, so a regression to that shape fails here.
+
+  it('active device detail renders the Revoke button label with its confirm form', async () => {
+    const html = await revocationPageHtml(`/admin/devices/${env.device.uuid}`);
+    expect(html).toContain(`action="/admin/devices/${env.device.uuid}/revoke"`);
+    expect(html).toContain('<button type="submit" class="danger">Revoke</button>');
+    expect(html).toContain('data-confirm="Revoke this device?');
+  });
+
+  it('non-active device detail swaps the label to Activate (nothing to revoke)', async () => {
+    // balena_uuid is a typed uuid column — use a valid v4-shaped uuid.
+    const dormantId = '00000000-0000-4000-8000-000000000048';
+    await seedDevice(env.db, { uuid: dormantId, hash: env.device.hash, bundle: null, status: 'pending' });
+    const html = await revocationPageHtml(`/admin/devices/${dormantId}`);
+    expect(html).toContain('>Activate</button>');
+    expect(html).not.toContain('class="danger">Revoke<');
+  });
+
+  it('admin keys page renders the Revoke button label for the seeded key row', async () => {
+    const id = await seedAdminKey(env.db, 'ak_test-revoke-1py48');
+    const html = await revocationPageHtml('/admin/admin-keys');
+    expect(html).toContain(`action="/admin/admin-keys/${id}/revoke"`);
+    expect(html).toContain('<button type="submit" class="danger">Revoke</button>');
+  });
+
+  it('button.danger text stays legible: computed WCAG contrast over the served stylesheet exceeds 4.5', async () => {
+    const html = await revocationPageHtml(`/admin/devices/${env.device.uuid}`);
+    const css = extractStyleCss(html);
+    // The served page inlines the same stylesheet the browser applies.
+    expect(css).toContain('button.danger{');
+    // Resolve the computed declarations for a <button class="danger"> element.
+    // The sequence [button, .danger, button.danger] has non-decreasing
+    // specificity in source order, so "last declaration wins" reproduces the
+    // true CSS cascade for exactly this selector trio.
+    const bgResolved = resolveCssColor(css, computedDecl(css, ['button', '.danger', 'button.danger'], 'background'));
+    const fgResolved = resolveCssColor(css, computedDecl(css, ['button', '.danger', 'button.danger'], 'color'));
+    // The defect shape: the danger background token and the danger text token
+    // resolving to the SAME value (pink on pink, contrast 1:1).
+    expect(fgResolved).not.toBe(bgResolved);
+    expect(contrastRatio(fgResolved, bgResolved)).toBeGreaterThanOrEqual(4.5);
+    // The plain accent button must stay legible too; this guards the whole
+    // colored-token-background button family, not just the one rule.
+    const accentBg = resolveCssColor(css, computedDecl(css, ['button'], 'background'));
+    const accentFg = resolveCssColor(css, computedDecl(css, ['button'], 'color'));
+    expect(contrastRatio(accentFg, accentBg)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  async function revocationPageHtml(path: string): Promise<string> {
+    const c = await loginClient();
+    const page = await c.get(path);
+    expect(page.status).toBe(200);
+    return page.html;
+  }
+
+  function extractStyleCss(html: string): string {
+    const m = html.match(/<style>([\s\S]*?)<\/style>/);
+    if (!m) throw new Error('no <style> block on the served page');
+    return m[1];
+  }
+
+  /** All `selector{decls}` rules in source order, skipping nested at-rule bodies. */
+  function cssRules(css: string): Array<{ selector: string; body: string }> {
+    const rules: Array<{ selector: string; body: string }> = [];
+    const re = /([^{}]+)\{([^{}]*)\}/g;
+    for (const m of css.matchAll(re)) {
+      const selector = m[1].trim();
+      if (selector.startsWith('@')) continue; // at-rule prelude, not a class/tag rule
+      rules.push({ selector, body: m[2] });
+    }
+    return rules;
+  }
+
+  /** Effective value for one declaration across the selector trio (last wins). */
+  function computedDecl(css: string, selectors: string[], property: string): string {
+    const rules = cssRules(css);
+    let value = '';
+    for (const selector of selectors) {
+      const rule = rules.find((r) => r.selector === selector);
+      if (!rule) continue;
+      for (const decl of rule.body.split(';')) {
+        const idx = decl.indexOf(':');
+        if (idx === -1) continue;
+        if (decl.slice(0, idx).trim() === property) value = decl.slice(idx + 1).trim();
+      }
+    }
+    if (!value) throw new Error(`no ${property} computed for ${selectors.join(', ')}`);
+    return value;
+  }
+
+  function cssVar(css: string, name: string): string {
+    const root = cssRules(css).find((r) => r.selector === ':root');
+    if (!root) throw new Error('no :root token map');
+    for (const decl of root.body.split(';')) {
+      const idx = decl.indexOf(':');
+      if (idx !== -1 && decl.slice(0, idx).trim() === name) return decl.slice(idx + 1).trim();
+    }
+    throw new Error(`token ${name} not defined`);
+  }
+
+  /** One-level var(...) resolution to a #rrggbb token. */
+  function resolveCssColor(css: string, value: string): string {
+    const varRef = value.match(/var\(([^)]+)\)/);
+    if (varRef) return cssVar(css, varRef[1].trim());
+    if (/^#[0-9a-f]{6}$/i.test(value)) return value.toLowerCase();
+    throw new Error(`unsupported color shape: ${value}`);
+  }
+
+  /** WCAG 2.x contrast ratio between two opaque sRGB colors. */
+  function contrastRatio(fg: string, bg: string): number {
+    const lum = (hex: string): number => {
+      const channel = (i: number): number => {
+        const c = parseInt(hex.slice(1 + i * 2, 3 + i * 2), 16) / 255;
+        return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+      };
+      return 0.2126 * channel(0) + 0.7152 * channel(1) + 0.0722 * channel(2);
+    };
+    const l1 = lum(fg);
+    const l2 = lum(bg);
+    const ratio = (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+    return Math.round(ratio * 100) / 100;
+  }
+});

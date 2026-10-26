@@ -105,7 +105,7 @@ input[type=text],input[type=password],textarea{width:100%;background:#12141c;col
 textarea{min-height:80px;font-family:ui-monospace,monospace}
 button{background:var(--accent);color:#0f1117;border:none;border-radius:4px;padding:8px 16px;font:inherit;font-weight:600;cursor:pointer}
 button:hover{filter:brightness(1.1)}
-button.danger{background:var(--danger)}
+button.danger{background:var(--danger);color:var(--bg)}
 label{display:block;margin:10px 0 4px;color:var(--muted)}
 .secret-once{background:#1a2333;border:1px solid var(--accent);border-radius:4px;padding:12px;font-family:ui-monospace,monospace;word-break:break-all}
 fieldset{border:1px solid var(--line);border-radius:8px;margin:12px 0}

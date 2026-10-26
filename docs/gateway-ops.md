@@ -659,7 +659,8 @@ input rates drive typical cost.
 
 | Role | Model | Why |
 |---|---|---|
-| default | `glm-5.3-flash` | ≈9× cheaper per typical turn than `glm-5.3`; 1M context, tools + thinking |
+| default entry | `auto_router/complexity_router` | Tier-classified (SIMPLE→`glm-5.3-flash`, heavier→`glm-5.3`); see "Default auto-router (active)" |
+| default lane | `glm-5.3-flash` | ≈9× cheaper per typical turn than `glm-5.3`; 1M context, tools + thinking |
 | heavy reasoning | `glm-5.3` | Best quality; use sparingly |
 | background / cron | `nemotron-3-super` | Near-zero input cost; not for real work |
 | fallback | `deepseek-v4.1-flash` | Cheapest cached input; half price off-peak |
@@ -677,40 +678,62 @@ at 1,000,000 tokens. No repository source verifies a limit for
 pricing table has an off-peak row, but no off-peak group or variant is
 configured; standard pricing is used.
 
-Deploy e2e AC9's models-list assertion covers `glm-5.3`, `glm-5.2`, and all
-three new groups (`glm-5.3-flash`, `nemotron-3-super`,
-`deepseek-v4.1-flash`).
+Deploy e2e AC9's models-list assertion covers `glm-5.3`, `glm-5.2`, all three
+hosted groups (`glm-5.3-flash`, `nemotron-3-super`, `deepseek-v4.1-flash`), and
+the 1py.50 router alias.
 
-## Optional auto-router (commented template)
+## Default auto-router (active)
 
-The config contains an inert `auto_router/complexity_router` example for operators
-who want LiteLLM to classify requests into SIMPLE, MEDIUM, COMPLEX, and REASONING
-tiers. The entry carries `complexity_router_config` with `tiers` — the inline
-complexity-router wiring LiteLLM 1.105.x validates. Its example tiers map SIMPLE
-to `ollama-cloud/glm-5.3-flash` (the default lane) and MEDIUM/COMPLEX/REASONING
-to `ollama-cloud/glm-5.3`; replace these with model groups that exist in your own
-deployment, or the deployment drops and the alias serves 400s with no fallback
-attempted. `session_affinity: true` keeps a session on one model so it can retain
-that model's prompt cache. The key shape matters: `auto_router_config` is a
-different surface — a config-path string for LiteLLM's semantic auto-router —
-and its dict form fails `LiteLLM_Params` validation on 1.105.x.
+Since fleet-ops-1py.50 the gateway serves `auto_router/complexity_router` by
+default: LiteLLM classifies each request into SIMPLE, MEDIUM, COMPLEX, and
+REASONING tiers and serves the tier's model group. The ACTIVE entry carries
+`complexity_router_config` with `tiers` — the inline complexity-router wiring
+LiteLLM 1.105.x validates:
 
-Sensitive text stays off hosted lanes: if any routed traffic may carry sensitive
-free text, map every tier only to self-hosted model groups (define those groups
-first, then opt in). The example tiers here are hosted ollama-cloud lanes, and
-the deployed config's model groups are hosted as well — no self-hosted model
-group is configured, so the template as shipped is not a sensitive-traffic
-route and must stay commented in shared defaults.
+- `SIMPLE` → `ollama-cloud/glm-5.3-flash` (the default input-dominated lane)
+- `MEDIUM` / `COMPLEX` / `REASONING` → `ollama-cloud/glm-5.3`
+- `session_affinity: true` keeps a session on one model so it retains that
+  model's prompt cache
+- `context_compaction: false` (mandatory here — see pitfall 2 below; client-side
+  compression §3.1 already deduplicates the conversation)
 
-The template presumes the 1.105.1 gateway upgrade (the version carried by the
-1py.17 / PR #73 stack); this behavior is 1.105.x code, not present in the pinned
-1.100.1. A non-production 1.105.1 fixture has since validated the enabled shape:
-with the block above active against local mock `ollama_chat` groups, requests
-through the router returned 200 on every exercised tier path (SIMPLE floor,
-classified heavy tiers, escalation keyword) with zero `ModelNotMappedError` and
-zero fallback events, and the failure shapes below were recorded as exact
-validation errors (see PR #88's fixture-evidence comment). Opt in and smoke-test
-on the upgraded gateway before trusting the enabled route in production.
+**Data handling:** Every tier of the router is a HOSTED ollama-cloud lane
+(prompt data transits Ollama Cloud servers on every routed turn).
+Do not route sensitive free text through the alias; instead define
+self-hosted model groups first and re-point every tier exclusively to those
+(§3). Clients that pin an
+explicit lane are unaffected — the wildcard pass-through still serves unknown
+model names, and the explicit `ollama_chat/*` groups keep their fallback
+chains.
+
+Client-side default entry point: OpenAI-compatible clients (the UI, agent
+runtimes, and similar flows) point at the gateway's `/v1` with
+`model: auto_router/complexity_router` and let the classifier pick the tier;
+heavy, latency-sensitive, or budget-critical steps may still name an explicit
+`ollama_cloud/*` group.
+
+The alias also carries an explicit fallback chain in
+`router_settings.fallbacks` (`glm-5.3-flash` → `glm-5.3` →
+`deepseek-v4.1-flash` — all listed groups, never the wildcard) that engages
+only when serving under the alias itself errors. Healthy tier serving in the
+PR #88 fixture ran with zero fallback events, so the chain's engagement path
+is documented as unvalidated.
+
+Validation on every CI run: the e2e fixture boots the same pinned 1.105.1
+image with a mirrored runtime config (parity pinned by the vitest suite) and
+AC50 proves the alias is listed in `/v1/models` (a dropped deployment would
+omit it), selects tiers end-to-end through the local mock, and logs zero
+`ModelNotMappedError` and zero dropped deployments; AC9's models-list check
+against the REAL gateway image now asserts the alias too.
+
+Enabled-default history: the router shipped comments-only at PR #88 with an
+inert-guarantee test. PR #88's 1.105.1 fixture (mock `ollama_chat` groups)
+validated the enabled shape — every exercised tier path (SIMPLE floor,
+classified heavy tiers, escalation keyword) returned 200 with zero
+`ModelNotMappedError` and zero fallback events, and the failure shapes were
+recorded as exact validation errors. The owner promoted it to the default
+(fleet-ops-1py.50); re-point the tiers to self-hosted lanes before routing
+anything sensitive.
 
 Three pitfalls are important:
 
@@ -738,10 +761,11 @@ Three pitfalls are important:
 3. **`classification_rubric` nests under `classifier_llm_config` for the
    LLM-judge classifier.** The heuristic classifier silently ignores it.
 
-To opt in, deliberately uncomment the template, map every tier to an operator-
-configured model group, validate the resulting config, and smoke-test
-request/fallback behavior against the upgraded gateway. Keep it commented in
-shared defaults until then.
+To opt out per deployment, remove the alias from `model_list` and its fallback
+entry: clients then pin explicit `ollama_chat/*` groups only. Re-pointing tiers
+or adding self-hosted lanes follows the same rule as any operator change —
+validate the resulting config and smoke-test request/fallback behavior against
+the upgraded gateway before trusting it.
 
 ## Per-key budget caps (weekly example)
 
