@@ -1,5 +1,10 @@
-# Isolated, simulation-only LiteLLM runtime used by CI to verify SpendLogs.
-# It routes exclusively to the local mock Ollama service; no upstream network.
+# Isolated, simulation-only LiteLLM runtime used by CI probes (AC9c SpendLogs
+# redaction; AC50 router serving). It routes exclusively to the local mock
+# Ollama service; no upstream network touches this stack. Since 1py.50 the
+# model_list mirrors the SHIPPED shape in images/litellm/litellm-config.yaml —
+# same group names, same complexity-router alias and tier mapping — with every
+# api_base overridden to the compose-local mock. The vitest parity test
+# (fleet-ops-1py.50) keeps the router blocks from drifting apart.
 model_list:
   - model_name: runtime-spendlogs-test
     litellm_params:
@@ -7,6 +12,37 @@ model_list:
       api_base: http://ollama-mock:11434
       api_key: e2e-runtime-only
 
+  # Tier groups mirror the shipped config's model_names so the alias's tier
+  # mapping needs no rewriting. The mock echoes `mock:<upstream model>` as the
+  # response content, which is how AC50 tells the tiers apart.
+  - model_name: ollama-cloud/glm-5.3-flash
+    litellm_params:
+      model: ollama_chat/glm-5.3-flash
+      api_base: http://ollama-mock:11434
+      api_key: e2e-runtime-only
+  - model_name: ollama-cloud/glm-5.3
+    litellm_params:
+      model: ollama_chat/glm-5.3
+      api_base: http://ollama-mock:11434
+      api_key: e2e-runtime-only
+
+  # Same complexity-router shape as the shipped default (parity test-pinned):
+  # complexity_router_config + tiers, session_affinity true, compaction false.
+  - model_name: auto_router/complexity_router
+    litellm_params:
+      model: auto_router/complexity_router
+      complexity_router_config:
+        tiers:
+          SIMPLE: ollama-cloud/glm-5.3-flash
+          MEDIUM: ollama-cloud/glm-5.3
+          COMPLEX: ollama-cloud/glm-5.3
+          REASONING: ollama-cloud/glm-5.3
+        session_affinity: true
+        context_compaction: false
+
+# No wildcard pass-through here: the simulation serves only explicitly listed
+# groups (the shipped wildcard needs Ollama Cloud's API base, which this
+# stack must never call).
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
   database_url: os.environ/DATABASE_URL

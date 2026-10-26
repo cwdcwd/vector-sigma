@@ -25,10 +25,10 @@ const server = http.createServer((req, res) => {
       return;
     }
     const toolCall = Array.isArray(body.tools) && body.tools.length > 0;
+    const model = body.model ?? 'test-model';
     const message = toolCall
       ? { role: 'assistant', content: '', tool_calls: [{ function: { name: body.tools[0].function.name, arguments: { ok: true } } }] }
-      : { role: 'assistant', content: 'runtime spendlogs mock response' };
-    const model = body.model ?? 'test-model';
+      : { role: 'assistant', content: `mock:${model}` };
     const now = new Date().toISOString();
     if (body.stream) {
       res.writeHead(200, { 'content-type': 'application/x-ndjson', 'transfer-encoding': 'chunked' });

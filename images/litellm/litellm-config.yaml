@@ -60,7 +60,7 @@ model_list:
       output_cost_per_token: 0.0000044
     # TODO: repository docs do not verify a glm-5.2 context limit; do not guess.
   - model_name: ollama-cloud/glm-5.3-flash
-    # ROLE: default — cheaper per typical input-dominated agent turn.
+    # ROLE: router SIMPLE tier + default lane — cheaper per typical input-dominated agent turn.
     litellm_params:
       model: ollama_chat/glm-5.3-flash
       api_base: https://ollama.com  # Native /api/chat endpoint; intentionally no /v1.
@@ -114,40 +114,41 @@ model_list:
   #     api_key: os.environ/ANTHROPIC_API_KEY
 
 
-# auto_router template (opt-in only; every line remains commented).
-# EXAMPLES only: replace these aliases with model groups configured by the operator.
-# SIMPLE uses the fleet's default flash lane; heavier tiers use glm-5.3 examples.
-# Sensitive text: if routed traffic may carry sensitive free text, map every tier
-# only to self-hosted model groups (define them first, then opt in). The example
-# aliases above are hosted ollama-cloud lanes; the shipped config has no
-# self-hosted model group, so this template must stay commented in shared defaults.
-# - model_name: auto_router/complexity_router
-#   litellm_params:
-#     model: auto_router/complexity_router
-#     complexity_router_config:
-#       tiers:
-#         SIMPLE: ollama-cloud/glm-5.3-flash
-#         MEDIUM: ollama-cloud/glm-5.3
-#         COMPLEX: ollama-cloud/glm-5.3
-#         REASONING: ollama-cloud/glm-5.3
-#       session_affinity: true
-#       context_compaction: false
-#       # 1.105.x-validated shape. Do not swap this for `auto_router_config:`:
-#       # on 1.105.1 that key is a config-PATH string for LiteLLM's semantic
-#       # auto-router, and its dict form fails LiteLLM_Params validation at
-#       # deployment creation; a bare `context_compaction: true` also fails
-#       # ComplexityRouterConfig validation. Both drop the deployment, so the
-#       # alias serves 400 "no healthy deployments ... No fallback was
-#       # attempted" instead of serving. With this shape enabled in a
-#       # non-production 1.105.1 fixture, every exercised tier path served 200
-#       # with zero ModelNotMappedError and zero fallback events (see the PR
-#       # evidence comment); the sizing path that could raise uncaught
-#       # ModelNotMappedError never runs with compaction false. Production
-#       # upgrade smoke stays owner-gated. Topically related upstream #23054
-#       # (general unmapped-model metadata/routing discussion, closed not
-#       # planned). Client compression (§3.1) makes router compaction redundant.
-#       # classifier_llm_config:            # LLM-judge classifier only
-#       #   classification_rubric: <rubric> # heuristic classifier ignores it
+  # auto_router — ACTIVE by default (fleet-ops-1py.50; owner ruling: the
+  # complexity router is the gateway's default entry point for agent traffic).
+  # Classifies each request into SIMPLE, MEDIUM, COMPLEX, and REASONING tiers
+  # and serves the tier's model group.
+  #
+  # SENSITIVE TEXT — every tier below is a HOSTED ollama-cloud lane: prompt
+  # data transits Ollama Cloud servers. Do not route sensitive free text
+  # through this alias; instead define self-hosted model groups and map every
+  # tier exclusively to those.
+  - model_name: auto_router/complexity_router
+    litellm_params:
+      model: auto_router/complexity_router
+      complexity_router_config:
+        tiers:
+          SIMPLE: ollama-cloud/glm-5.3-flash
+          MEDIUM: ollama-cloud/glm-5.3
+          COMPLEX: ollama-cloud/glm-5.3
+          REASONING: ollama-cloud/glm-5.3
+        session_affinity: true
+        context_compaction: false
+        # 1.105.x-validated shape (PR #88 fixture evidence; re-proved on boot
+        # by e2e AC50). Do not swap this for `auto_router_config:`: on 1.105.1
+        # that key is a config-PATH string for LiteLLM's semantic auto-router,
+        # and its dict form fails LiteLLM_Params validation at deployment
+        # creation; a bare `context_compaction: true` also fails
+        # ComplexityRouterConfig validation. Both drop the deployment, so the
+        # alias vanishes from /v1/models and serves 400 "no healthy
+        # deployments ... No fallback was attempted" instead of serving. With
+        # compaction false the sizing path that could raise uncaught
+        # ModelNotMappedError never runs. Client compression (§3.1) makes
+        # router compaction redundant. Topically related upstream #23054
+        # (general unmapped-model metadata/routing discussion, closed not
+        # planned).
+        # classifier_llm_config:            # LLM-judge classifier only
+        #   classification_rubric: <rubric> # heuristic classifier ignores it
 
 router_settings:
   fallbacks:
@@ -155,6 +156,11 @@ router_settings:
     - ollama-cloud/glm-5.3-flash: ["ollama-cloud/glm-5.2", "ollama-cloud/glm-5.3", "ollama-cloud/deepseek-v4.1-flash"]
     # glm-5.3 is a standalone heavy lane; glm-5.2 retains its existing recovery target.
     - ollama-cloud/glm-5.2: ["ollama-cloud/glm-5.3"]
+    # The router alias itself: only a serving failure under the alias (a
+    # classifier/upstream error) engages this chain — all targets are explicit
+    # listed groups, never the wildcard (j9f). The PR #88 fixture exercised
+    # healthy tier serving (zero fallback events), not this engagement path.
+    - auto_router/complexity_router: ["ollama-cloud/glm-5.3-flash", "ollama-cloud/glm-5.3", "ollama-cloud/deepseek-v4.1-flash"]
     # Future (add with the gw-sonnet lane above):
     # - ollama-cloud/glm-5.3: ["ollama-cloud/glm-5.2", "gw-sonnet"]
 
