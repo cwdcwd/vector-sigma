@@ -12,7 +12,7 @@ platforms/balena/devices/
 └── README.md
 ```
 
-The images come from `images/agent/` (official Hermes image + bd 1.2.2 +
+The images come from `images/agent/` (`nousresearch/hermes-agent:v0.22.5@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d` — the current stable release, shared with the master's primus image; update both pins together — plus bd 1.2.2 +
 `gate.sh` + `hermes-agent-defaults.yaml` + hooks), `registrant/Dockerfile`
 and `images/tailscale-devices/` (pinned tailscale + a baked serve config
 fronting :9900 at `${TS_CERT_DOMAIN}`).

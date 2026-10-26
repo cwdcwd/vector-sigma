@@ -2,8 +2,8 @@
 # (fleet-ops-j7g.1: the runtime swap this file's b1r forward shape
 # documented — "when the swap lands, this file becomes the build").
 #
-# The pinned official Hermes image (SAME v2026.9.21 tag as the master's
-# primus image — the parity pin; do NOT bump independently) plus:
+# The official Hermes Agent v0.22.5 stable image, pinned to its verified
+# multi-arch manifest digest (SAME release as primus; update both together) plus:
 #   1. bd 1.2.2 baked FULL READ-WRITE (the scotty tarball+sha256 supply-
 #      chain pattern VERBATIM — ARG BD_VERSION=1.2.2, arch derived from
 #      uname -m [legacy-builder-safe; NO TARGETARCH — the f57.21 guard],
@@ -61,7 +61,7 @@ RUN apt-get update \
     && cmake --install /tmp/build \
     && ls /opt/brotli/lib*/libbrotlidec.so.1
 
-FROM nousresearch/hermes-agent:v2026.9.21
+FROM nousresearch/hermes-agent:v0.22.5@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d
 
 # Release CVE gate (trivy, fixable CRITICAL blocks) — the upstream base's
 # pending fixes, in the image we ship:

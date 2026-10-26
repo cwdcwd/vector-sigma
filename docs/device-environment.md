@@ -207,9 +207,10 @@ and share it with every VS agent:
 ## Rebuilding you
 
 Your image is `images/agent/Dockerfile`: the pinned
-official Hermes image (`nousresearch/hermes-agent:v2026.9.21` — the
-SAME tag as the master's primus image, the parity pin; do NOT bump
-independently) plus this lane's additions — bd 1.2.2 baked full
+official Hermes Agent v0.22.5 stable image
+(`nousresearch/hermes-agent:v0.22.5@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d` — the
+same verified multi-arch manifest as the master's primus image; update both
+pins together) plus this lane's additions — bd 1.2.2 baked full
 read-write (the worker posture: claim + comment + close, never the
 scotty `bd-readonly` wrapper), the identity gate as ENTRYPOINT, the
 A2A wiring hook, and these docs — the DEVICE map

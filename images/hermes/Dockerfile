@@ -5,10 +5,10 @@
 # images/hermes/Dockerfile .): CI builds it once, scans it, E2Es those bytes and
 # promotes them to GHCR; every platform/ pulls the published digest.
 # Every COPY reads the canonical source (images/, docs/) — there
-# are no vendored copies to drift. The official Hermes image pin is the same tag the compose used
-# before this lane (do NOT bump independently — the tag is the auditable
-# lineage and the compose's parity pin):
-#   FROM nousresearch/hermes-agent:v2026.9.21
+# are no vendored copies to drift. The official Hermes Agent v0.22.5 stable
+# image pin is shared with the device-agent image; update both together.
+# The multi-arch manifest digest is verified from Docker Hub:
+#   FROM nousresearch/hermes-agent:v0.22.5@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d
 #
 # What this image adds to the official one (the b1r lane, owner ruling
 # 2026-09-29: primus must be fully rebuildable from the repo with zero
@@ -51,7 +51,7 @@ RUN apt-get update \
     && cmake --install /tmp/build \
     && ls /opt/brotli/lib*/libbrotlidec.so.1
 
-FROM nousresearch/hermes-agent:v2026.9.21
+FROM nousresearch/hermes-agent:v0.22.5@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d
 
 # Release CVE gate (trivy, fixable CRITICAL blocks) — the upstream base's
 # pending fixes, in the image we ship:
