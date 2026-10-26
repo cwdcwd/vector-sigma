@@ -2862,14 +2862,16 @@ ac50_router_default_serving() {
   mkdir -p "$probe_dir"
   node -e '
     const fs = require("fs");
+    const heavyPayload = JSON.stringify({
+      model: "auto_router/complexity_router",
+      messages: [{ role: "user", content: "Please audit this entire repository end to end: walk every TypeScript lane, implement the async docker orchestration protocol for our kubernetes cluster, and grade the architecture before rewriting the router table from scratch." }]
+    });
     fs.writeFileSync(process.argv[1] + "/simple.json", JSON.stringify({
       model: "auto_router/complexity_router",
       messages: [{ role: "user", content: "hi" }]
     }));
-    fs.writeFileSync(process.argv[1] + "/heavy.json", JSON.stringify({
-      model: "auto_router/complexity_router",
-      messages: [{ role: "user", content: "Please audit this entire repository end to end: walk every TypeScript lane, implement the async docker orchestration protocol for our kubernetes cluster, and grade the architecture before rewriting the router table from scratch." }]
-    }));
+    fs.writeFileSync(process.argv[1] + "/heavy.json", heavyPayload);
+    fs.writeFileSync(process.argv[1] + "/heavy-repeat.json", heavyPayload);
   ' "$probe_dir"
   for tier in simple:mock:glm-5.3-flash heavy:mock:glm-5.3 heavy-repeat:mock:glm-5.3; do
     local name="${tier%%:*}"
