@@ -662,8 +662,9 @@ ac9_litellm_smoke() {
       && printf '%s' "$models" | grep -q 'glm-5\.2' \
       && printf '%s' "$models" | grep -q 'glm-5\.3-flash' \
       && printf '%s' "$models" | grep -q 'nemotron-3-super' \
-      && printf '%s' "$models" | grep -q 'deepseek-v4\.1-flash'; then
-      pass "AC9 models list" "GLM 5.3/5.2, flash, nemotron and deepseek groups served"
+      && printf '%s' "$models" | grep -q 'deepseek-v4\.1-flash' \
+      && printf '%s' "$models" | grep -q 'complexity_router'; then
+      pass "AC9 models list" "GLM 5.3/5.2, flash, nemotron, deepseek and the 1py.50 router alias served"
     else
       fail "AC9 models list" "explicit groups missing from /v1/models: $models"
     fi
@@ -2802,6 +2803,98 @@ ac19_console_mints() {
   expect "AC19 memory reachable from the device" "$code" "200"
 }
 
+# 1py.50 (AC50): the default complexity auto-router, probed on the isolated
+# runtime fixture (the same pinned 1.105.1 image as the gateway, whose only
+# upstream is the local ollama-mock — no provider/upstream traffic):
+#   1. /v1/models carries auto_router/complexity_router. On 1.105.1 a dropped
+#      deployment (a bad complexity_router_config shape) OMITS the alias
+#      entirely, so its presence proves the deployment was created and
+#      validated at boot.
+#   2. Tier selection serves through the mapped group: the mock echoes
+#      `mock:<upstream model>` as the response content, so the tier the
+#      router picked is visible in the body. Short prompt → the SIMPLE tier's
+#      flash group; escalation keyword → the heavy group; a repeat confirms
+#      the mapping again (session_affinity: true keeps the tier stable).
+#   3. The serving run raises zero ModelNotMappedError and creates zero
+#      dropped deployments — the PR #88 fixture's zero-fallback-event
+#      assertions, re-proved on the shipped shape on every CI run.
+# The shipped config is boot-validated separately by AC9's models-list check
+# against the REAL gateway image, which now also asserts the alias.
+ac50_router_default_serving() {
+  note "AC50 (1py.50): default complexity auto-router — alias live, tiers serve, no dropped deployments"
+  local base="http://127.0.0.1:4001"
+  local models_body=/tmp/e2e-ac50-models.json probe_dir=/tmp/e2e-ac50-probe resp=/tmp/e2e-ac50-resp.json
+  local master
+  master="$(grep -E '^LITELLM_RUNTIME_MASTER_KEY=' "$ENV_FILE" | cut -d= -f2-)"
+  if [ -z "$master" ]; then
+    fail AC50 "LITELLM_RUNTIME_MASTER_KEY missing from $ENV_FILE"
+    return
+  fi
+  local models_code alias_present
+  models_code="$(curl -s -o "$models_body" -w '%{http_code}' -m 30 "$base/v1/models" \
+      -H "Authorization: Bearer ${master}" 2>/dev/null || true)"
+  if [ "$models_code" != "200" ]; then
+    fail AC50 "runtime /v1/models returned HTTP ${models_code:-none}; expected 200"
+    return
+  fi
+  alias_present="$(node -e '
+    const d = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+    const list = Array.isArray(d.data) ? d.data : [];
+    process.stdout.write(String(list.some((m) => (m.id ?? "") === "auto_router/complexity_router")));
+  ' "$models_body" 2>/dev/null || echo parse-error)"
+  if [ "$alias_present" != "true" ]; then
+    fail AC50 "auto_router/complexity_router missing from runtime /v1/models (router deployment dropped?)"
+    return
+  fi
+  pass "AC50 router alias live" "auto_router/complexity_router served by the runtime fixture's /v1/models"
+
+  # Tier selection: the classifier paths proven in the PR #88 fixture — a
+  # short prompt resolves to the SIMPLE tier's flash group, an
+  # escalation-keyword prompt to the heavy group, and a heavy repeat maps the
+  # same way again.
+  rm -rf "$probe_dir"
+  mkdir -p "$probe_dir"
+  node -e '
+    const fs = require("fs");
+    fs.writeFileSync(process.argv[1] + "/simple.json", JSON.stringify({
+      model: "auto_router/complexity_router",
+      messages: [{ role: "user", content: "hi" }]
+    }));
+    fs.writeFileSync(process.argv[1] + "/heavy.json", JSON.stringify({
+      model: "auto_router/complexity_router",
+      messages: [{ role: "user", content: "Please audit this repository and LITELLM ESCALATE the routing: walk every lane, grade the fallback chain, and rewrite the router table end to end." }]
+    }));
+  ' "$probe_dir"
+  for tier in simple:mock:glm-5.3-flash heavy:mock:glm-5.3 heavy-repeat:mock:glm-5.3; do
+    local name="${tier%%:*}"
+    local want="${tier#*:}"
+    local code marker
+    code="$(curl -s -o "$resp" -w '%{http_code}' -m 60 -X POST "$base/v1/chat/completions" \
+        -H "Authorization: Bearer ${master}" -H 'Content-Type: application/json' \
+        --data-binary "@$probe_dir/$name.json" 2>/dev/null || true)"
+    if [ "$code" != "200" ]; then
+      fail "AC50 tier $name" "router completion returned HTTP ${code:-none}; expected 200"
+      continue
+    fi
+    marker="$(node -e '
+      const d = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+      process.stdout.write(String(d.choices?.[0]?.message?.content ?? ""));
+    ' "$resp" 2>/dev/null || echo parse-error)"
+    expect "AC50 tier $name" "$marker" "$want"
+  done
+  rm -rf "$probe_dir" "$resp" "$models_body"
+
+  # Serving-side invariants from the pinned 1.105.1 shape: the classifier and
+  # the selected tier serve cleanly (no unmapped-model paths, no dropped
+  # deployments) — a dropped router deployment would already have failed the
+  # alias check above; these counters catch partial regressions.
+  local mapped dropped
+  mapped="$(docker logs "$PROJECT-litellm-runtime-1" 2>&1 | grep -c 'ModelNotMappedError' || true)"
+  expect "AC50 zero ModelNotMappedError during serving" "$mapped" "0"
+  dropped="$(docker logs "$PROJECT-litellm-runtime-1" 2>&1 | grep -c 'Error creating deployment' || true)"
+  expect "AC50 zero dropped router deployments" "$dropped" "0"
+}
+
 ac2_replay_425
 ac3_rearm_redelivers
 ac4_status_version
@@ -2814,6 +2907,7 @@ ac9_litellm_smoke
 ac9_litellm_runtime_spendlogs
 ac9b_litellm_db_smoke
 ac9c_litellm_spend_log_redaction
+ac50_router_default_serving
 ac_anc_postgres_consolidation
 ac_w5d_admin_key_ui
 ac10_queue_plane
