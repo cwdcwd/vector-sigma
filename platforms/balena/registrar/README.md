@@ -524,9 +524,10 @@ registrar (started) → registrant-own (fetch + apply bundle) → hermes (starte
   short-form service lists; the registrant's bounded 425 retry +
   permanent-error grace poll + `restart: always` make it safe to start
   at any point in the registrar's lifecycle.
-- **`hermes`** — primus's custom image (b1r): the pinned official
-  `nousresearch/hermes-agent` image (the SAME `v2026.9.21` tag this
-  service pulled before) built from `images/hermes/Dockerfile` with bd 1.2.2
+- **`hermes`** — primus's custom image (b1r): the pinned official Hermes Agent
+  v0.22.5 stable image (`nousresearch/hermes-agent:v0.22.5@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d`,
+  the same verified multi-arch digest as the devices' agent image) built from
+  `images/hermes/Dockerfile` with bd 1.2.2
   baked FULL READ-WRITE (primus is the queue CURATOR — the scotty
   `bd-readonly` wrapper posture does NOT apply here), the config-only
   queue join (canonical project_id), the environment docs at

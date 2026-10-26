@@ -2,8 +2,8 @@
 # (fleet-ops-j7g.1: the runtime swap this file's b1r forward shape
 # documented — "when the swap lands, this file becomes the build").
 #
-# The pinned official Hermes image (SAME v2026.9.21 tag as the master's
-# primus image — the parity pin; do NOT bump independently) plus:
+# The official Hermes Agent v0.22.5 stable image, pinned to its verified
+# multi-arch manifest digest (SAME release as primus; update both together) plus:
 #   1. bd 1.2.2 baked FULL READ-WRITE (the scotty tarball+sha256 supply-
 #      chain pattern VERBATIM — ARG BD_VERSION=1.2.2, arch derived from
 #      uname -m [legacy-builder-safe; NO TARGETARCH — the f57.21 guard],
@@ -61,7 +61,7 @@ RUN apt-get update \
     && cmake --install /tmp/build \
     && ls /opt/brotli/lib*/libbrotlidec.so.1
 
-FROM nousresearch/hermes-agent:v2026.9.21
+FROM nousresearch/hermes-agent:v0.22.5@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d
 
 # Release CVE gate (trivy, fixable CRITICAL blocks) — the upstream base's
 # pending fixes, in the image we ship:
@@ -84,6 +84,16 @@ FROM nousresearch/hermes-agent:v2026.9.21
 #     Hermes's own trees (same major/minor, unchanged dependency ranges). Each
 #     target must exist at the expected version, so a base bump that moves or
 #     fixes one fails the build instead of silently skipping it.
+# npm CVE overrides, 2026-10-26: moot at v0.22.5, removed. The base's dependency
+# tree moved: opt/hermes/node_modules/{brace-expansion,source-map-js} and
+# opt/hermes/ui-tui/node_modules/undici no longer exist at those paths (ui-tui
+# became a workspace package with hoisted root deps; verified absent on both
+# arches against the real v0.22.5 image bytes — not just the manifest). The
+# remaining two targets (photon sidecar undici, @grpc/grpc-js) already ship
+# past their fix versions natively (7.30.0 >= 7.29.1, 1.14.6 >= 1.14.5), so
+# forcing a pinned downgrade-then-reinstall cycle buys nothing. Re-add a
+# targeted override here only if a future base bump reintroduces a vulnerable
+# version at a path that still exists.
 COPY --from=ghcr.io/astral-sh/uv:0.12.24@sha256:3af4716e991d6956a41e573eab705d0ee08500cd829ed30293eb8472f372c65a /uv /uvx /usr/local/bin/
 RUN apt-get update \
     && apt-get upgrade -y --no-install-recommends \
@@ -91,29 +101,9 @@ RUN apt-get update \
     && uv pip install --no-cache --python /opt/hermes/.venv/bin/python 'PyJWT==2.14.0' 'anyio==4.14.2' \
          'aiohttp==3.14.4' 'tornado==6.5.9' 'urllib3==2.8.0' 'httpx2==2.12.0' 'httpcore2==2.12.0' \
          'certifi==2026.10.19' 'pillow==13.0.0' \
+         'PyYAML==6.0.3' \
     && npm install -g --no-audit --no-fund --cache /tmp/.npm-cve-cache npm@11.21.1 \
-    && mkdir /tmp/cve-pack \
-    && for spec in \
-         /opt/hermes/node_modules/brace-expansion=5.0.9=5.0.11 \
-         /opt/hermes/node_modules/source-map-js=1.2.1=1.2.2 \
-         /opt/hermes/ui-tui/node_modules/undici=6.28.0=6.28.1 \
-         /opt/hermes/plugins/platforms/photon/sidecar/node_modules/undici=7.29.0=7.29.1 \
-         /opt/hermes/plugins/platforms/photon/sidecar/node_modules/@grpc/grpc-js=1.14.4=1.14.5; do \
-         dir="${spec%%=*}"; rest="${spec#*=}"; have="${rest%%=*}"; want="${rest#*=}"; \
-         name="$(node -p "require('$dir/package.json').name")"; \
-         got="$(node -p "require('$dir/package.json').version")"; \
-         [ "$got" = "$have" ] || { echo "cve-override: $dir is $got, expected $have" >&2; exit 1; }; \
-         tgz="$(npm pack --silent --cache /tmp/.npm-cve-cache --pack-destination /tmp/cve-pack "$name@$want")" \
-           && [ -n "$tgz" ] && [ -f "/tmp/cve-pack/$tgz" ] \
-           || { echo "cve-override: npm pack $name@$want failed" >&2; exit 1; }; \
-         rm -rf "$dir" && mkdir -p "$dir" && tar -xzf "/tmp/cve-pack/$tgz" -C "$dir" --strip-components 1 --no-same-owner \
-           || { echo "cve-override: extracting $name@$want into $dir failed" >&2; exit 1; }; \
-         now="$(node -p "require('$dir/package.json').version")" \
-           && [ "$now" = "$want" ] \
-           || { echo "cve-override: $dir is '$now' after replacement, expected $want" >&2; exit 1; }; \
-         echo "cve-override: $name $have -> $now at $dir"; \
-       done \
-    && rm -rf /tmp/cve-pack /tmp/.npm-cve-cache /root/.npm
+    && rm -rf /tmp/.npm-cve-cache /root/.npm
 
 # CVE-2026-111497 (Brotli, see the brotli stage above): three copies to fix.
 #   - node: the base's /usr/local/bin/node is v26.5.1 (Brotli is built into

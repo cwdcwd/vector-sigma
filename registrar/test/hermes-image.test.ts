@@ -14,8 +14,8 @@ import { describe, expect, it } from 'vitest';
  *
  *   1. BOTH composes build the SAME Dockerfile (one artifact, no twin
  *      drift) — the balena app compose AND the deploy compose.
- *   2. the FROM pin is the official v2026.9.21 tag (parity with the
- *      pre-b1r image: line; do NOT bump independently).
+ *   2. the FROM pin is the current official Hermes stable release at a verified
+ *      multi-arch manifest digest (both Hermes images stay on the same release).
  *   3. bd is baked at the fleet pin 1.2.2, tarball+checksums-verified,
  *      fail-loud, arch derived from uname -m (legacy-builder-safe).
  *   4. the read-only wrapper posture is NOT applied (bd-readonly is
@@ -73,10 +73,10 @@ describe('primus image contract (fleet-ops-b1r)', () => {
   it('images/hermes/Dockerfile exists and carries the pinned official base', () => {
     expect(existsSync(path.join(imageDir, 'Dockerfile'))).toBe(true);
     expect(dockerfile).toMatch(
-      /FROM nousresearch\/hermes-agent:v2026\.9\.21/,
+      /FROM nousresearch\/hermes-agent:v0\.22\.5@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d/,
     );
     // The pin comment is load-bearing documentation, not decoration.
-    expect(dockerfile).toMatch(/do NOT bump/);
+    expect(dockerfile).toMatch(/update both together/);
   });
 
   it('bakes bd at the fleet pin 1.2.2, checksums-verified, fail-loud', () => {
@@ -239,7 +239,10 @@ describe('primus image contract (fleet-ops-b1r)', () => {
       path.join(repoRoot, 'images/agent/Dockerfile'),
       'utf8',
     );
-    expect(agentHermes).toMatch(/FROM nousresearch\/hermes-agent:v2026\.9\.21/);
+    const primusHermes = readFileSync(path.join(repoRoot, 'images/hermes/Dockerfile'), 'utf8');
+    const stablePin = /FROM nousresearch\/hermes-agent:v0\.22\.5@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d/;
+    expect(agentHermes).toMatch(stablePin);
+    expect(primusHermes).toMatch(stablePin);
     // The swap is REAL: no forward-shape stub remains, bd is baked with the
     // checksums-verified supply chain, the gate is the ENTRYPOINT, and the
     // A2A wiring hook is baked as a cont-init script.
