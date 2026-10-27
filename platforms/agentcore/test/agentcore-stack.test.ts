@@ -47,7 +47,7 @@ test('scopes ECR image reads and excludes direct secret or broad AWS access', ()
           Effect: 'Allow',
           Resource: {
             'Fn::Join': Match.arrayWith([
-              ['arn:', { Ref: 'AWS::Partition' }, ':ecr:', { Ref: 'AWS::Region' }, ':', { Ref: 'AWS::AccountId' }, ':repository/vector-sigma-agent'],
+              ['arn:', { Ref: 'AWS::Partition' }, ':ecr:', { Ref: 'AWS::Region' }, ':', { Ref: 'AWS::AccountId' }, ':repository/vector-sigma/agent'],
             ]),
           },
         }),
@@ -72,7 +72,7 @@ test('keeps only an ARN reference in CloudFormation and rejects mutable image ta
 
   assert.throws(
     () => new AgentCoreStack(new cdk.App(), 'MutableImage', {
-      imageUri: '111122223333.dkr.ecr.us-east-1.amazonaws.com/vector-sigma-agent:latest',
+      imageUri: '111122223333.dkr.ecr.us-east-1.amazonaws.com/vector-sigma/agent:latest',
     }),
     /immutable ECR image digest URI/,
   );

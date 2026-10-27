@@ -10,7 +10,7 @@ export interface AgentCoreStackProps extends cdk.StackProps {
 }
 
 const DEFAULT_IMAGE_URI =
-  '111122223333.dkr.ecr.us-east-1.amazonaws.com/vector-sigma-agent@sha256:' + 'a'.repeat(64);
+  '111122223333.dkr.ecr.us-east-1.amazonaws.com/vector-sigma/agent@sha256:' + 'a'.repeat(64);
 const DEFAULT_SECRET_ARN =
   'arn:aws:secretsmanager:us-east-1:111122223333:secret:agentcore/provider-placeholder';
 
@@ -56,7 +56,7 @@ export class AgentCoreStack extends cdk.Stack {
       resources: [cdk.Stack.of(this).formatArn({
         service: 'ecr',
         resource: 'repository',
-        resourceName: 'vector-sigma-agent',
+        resourceName: 'vector-sigma/agent',
       })],
     }));
     executionRole.addToPolicy(new iam.PolicyStatement({
@@ -75,11 +75,16 @@ export class AgentCoreStack extends cdk.Stack {
       allowedPattern: '^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secret:[^:]+$',
     });
     // This parameter holds a secret ARN reference (never secret material) and
-    // is therefore intentionally NOT NoEcho; acknowledge the ARN-shaped heuristic.
-    cdk.Annotations.of(this).acknowledgeWarning(
-      'CloudFormation-Validate::W2509',
-      'IdentitySecretArn is a secret ARN reference, not secret material; NoEcho would block referencing.',
-    );
+    // is therefore intentionally NOT NoEcho. W2509 is a plugin (WASM CFN
+    // linter) violation attributed at the stack level (the linter resolves the
+    // parameter to the stack construct), so it is acknowledged through
+    // Validations on the stack — the suppression matcher only matches the
+    // violating construct path or its ancestors.
+    cdk.Validations.of(this).acknowledge({
+      id: 'CloudFormation-Validate::W2509',
+      reason:
+        'IdentitySecretArn is a secret ARN reference, not secret material; NoEcho would block referencing.',
+    });
     new cdk.CfnOutput(this, 'IdentitySecretReference', {
       value: identitySecret.valueAsString,
       description: 'Secret ARN reference only; secret value is not embedded.',

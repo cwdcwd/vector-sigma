@@ -26,15 +26,20 @@ npm test          # node:test via tsx
 - **Digest-pinned artifacts.** The stack rejects `imageUri` values that are
   not `...@sha256:<64 hex>`; mutable tags can never be configured.
 - **Least-privilege runtime role.** ECR `BatchGetImage`/`GetDownloadUrlForLayer`
-  scoped to the promoted repository plus `GetAuthorizationToken`. The role
+  scoped to the promoted `vector-sigma/agent` ECR repository (the
+  GHCR→ECR mirror lane's agent target, `scripts/ecr-mirror-plan.mjs`
+  `ECR_REPOSITORIES.agent`) plus `GetAuthorizationToken`. The role
   assumes `bedrock-agentcore.amazonaws.com` with `aws:SourceAccount` /
   `aws:SourceArn` conditions. It has **no** Secrets Manager permission:
   AgentCore Identity owns provider-secret retrieval.
 - **ARN reference only.** `IdentitySecretArn` is a CloudFormation parameter
   (ARN pattern validated) surfaced through an output. The parameter is
   intentionally not `NoEcho` (it holds an ARN, not secret material) — the
-  `CloudFormation-Validate::W2509` warning is acknowledged in code with this
-  rationale.
+  `CloudFormation-Validate::W2509` warning is acknowledged through
+  `cdk.Validations` on the stack (W2509 is a WASM-linter plugin violation
+  attributed at the stack construct; `Annotations`-level acknowledges do
+  not suppress plugin findings), so `cdk synth` runs without CDK
+  validation warnings.
 - **Non-deployable placeholders.** The default image digest and secret ARN
   use example account/region values; account-specific values require
   separate owner authorization.
