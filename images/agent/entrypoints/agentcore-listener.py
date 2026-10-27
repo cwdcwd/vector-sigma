@@ -173,8 +173,6 @@ def extract_prompt(raw):
                 if isinstance(value, str) and value.strip():
                     return value
         return None
-    if isinstance(req, str):
-        return req.strip() if req.strip() else None
     return body.strip()
 
 
