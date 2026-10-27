@@ -90,7 +90,7 @@ shared bundle contract). Synthetic names are used throughout; no values.
 | Device bootstrap credential | `REGISTRAR_KEY` platform variable, shown once, untracked, immediate-cut rotation | owner via console | the device's own registrant only | **Stays device-only.** A runtime is never issued one (no balena UUID — §1.5). |
 | A2A mesh identity key | `vs-<agent>-a2a` (versioned `-r<n>`) | registrar's mesh-enroll action | agent runtime via its bundle (`config/a2a.json`), peers via `peer_tokens` | **Stays fleet-side.** Runtime mesh membership is an open gated question (§4), never a default. |
 | Gateway model key | `model-<agent>` (`GATEWAY_API_KEY` in `config/agent.env`) | registrar's keyed mint actions | device agent via bundle | **Stays.** Whether a runtime's model traffic uses the same gateway or something else is an open design question (§4). |
-| Machine keys (mesh-enroll, scoped) | `MESH_ENROLL_KEY` sentinel alias | owner console / registrant | the specific agent runtime | **Stays.** |
+| Machine keys (mesh-enroll, scoped) | the `mk_`-prefix scoped machine key (`MESH_ENROLL_KEY`), bundle-delivered (`config/agent.env`) or the primus service variable — distinct from the `vs-<agent>-a2a` sentinel the mesh-enroll flow mints server-side | owner console / registrant | the specific agent runtime | **Stays.** |
 | Gateway memory keys | `GATEWAY_MEMORY_SHARED_KEY` / `GATEWAY_MEMORY_PRIVATE_KEY` | owner console | each agent via bundle | **Stays.** |
 | GitHub App identity | bundle `config/github-app.pem` | owner provisioning | agent via bundle | **Stays.** |
 | Upstream model provider keys | gateway-virtualized | owner (never bot-side) | LiteLLM gateway only | **Stays.** Agents never hold provider keys; that property is preserved on any platform. |
