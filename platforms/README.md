@@ -25,6 +25,7 @@ Vector Sigma is split into three layers:
 | [`balena/registrar`](balena/registrar/README.md) | live | the master device: registrar, postgres, gateway, queue, primus, serve edge |
 | [`balena/devices`](balena/devices/README.md) | live | each agent device: agent runtime, registrant, serve edge |
 | [`compose`](compose/README.md) | supported | the registrar stack on any Docker host; also the base of the CI E2E |
+| [`agentcore`](agentcore/README.md) | design | agent/primus runtime on Amazon Bedrock AgentCore Runtime; design only, no deploys |
 
 ## The adapter contract
 
@@ -62,3 +63,7 @@ on a compose-shaped platform. Expect the adapter to need:
 Check the current AgentCore Runtime documentation for its exact port,
 protocol and architecture requirements when building it; they're
 summarized here only to size the work.
+
+The adapter design (boundary, protocol choice, IAM separation, open
+questions) is worked out in [`agentcore/README.md`](agentcore/README.md);
+the implementation itself is a separate bead.
