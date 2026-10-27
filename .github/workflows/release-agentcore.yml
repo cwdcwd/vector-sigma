@@ -1,0 +1,33 @@
+name: Release AgentCore validation
+
+# This workflow validates a tagged AgentCore release candidate only. It does
+# not deploy to AWS, publish images to ECR, or route production/fleet traffic.
+on:
+  push:
+    tags: ["agentcore-v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Test and synthesize AgentCore CDK (no AWS credentials)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: platforms/agentcore
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: platforms/agentcore/package-lock.json
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Typecheck
+        run: npm run build
+      - name: Structural tests
+        run: npm test
+      - name: Synthesize without AWS credentials
+        run: npm run synth -- --quiet
