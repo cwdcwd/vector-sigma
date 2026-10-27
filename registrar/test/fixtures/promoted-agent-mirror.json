@@ -1,0 +1,9 @@
+{
+  "registry": "ghcr.io",
+  "repository": "cwdcwd/vector-sigma/agent",
+  "index": { "tag": "ci-fixture", "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+  "perPlatform": [
+    { "platform": "linux/amd64", "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" },
+    { "platform": "linux/arm64", "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
+  ]
+}
