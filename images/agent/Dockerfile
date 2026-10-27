@@ -35,6 +35,15 @@
 #      device-environment.md (the WORKER map) — NEVER the master's
 #      vs-environment.md (wrong-map regression, CI-fatal in
 #      registrar/test/image-build-config.test.ts).
+#   6. The AgentCore entrypoint shim (AC 0007 stage 3, fleet-ops-1py.55.3):
+#      the invocation listener (images/agent/entrypoints/, baked at
+#      /usr/local/bin/agentcore/) behind the AGENTCORE_HTTP env switch
+#      in gate.sh — with the switch on, the listener REPLACES the
+#      gateway runtime and serves the AWS Bedrock AgentCore HTTP
+#      contract (POST /invocations, GET /ping, 0.0.0.0:8080). ONE
+#      artifact for every platform: the switch is OFF by default, so
+#      the compose/balena boot path is byte-identical to before this
+#      lane.
 #
 # Built from the REPO ROOT context (docker build -f platforms/balena/devices/
 # images/agent/Dockerfile .): CI builds it once, scans it, E2Es those
@@ -217,6 +226,20 @@ COPY images/agent/hermes-agent-defaults.yaml /opt/vs/hermes-agent-defaults.yaml
 COPY images/common/gateway-memory /opt/vs/gateway-memory
 COPY images/common/hooks/vs-memory-tools.sh /etc/cont-init.d/06-vs-memory-tools
 RUN chmod 0755 /etc/cont-init.d/06-vs-memory-tools
+
+# ── The AgentCore invocation shim (AC 0007 stage 3, fleet-ops-1py.55.3) ────
+# The AWS Bedrock AgentCore HTTP contract's listener, gated by the
+# AGENTCORE_HTTP env switch in gate.sh (which carries the contract
+# story): 0.0.0.0:8080, POST /invocations (JSON; SSE is not served),
+# GET /ping. ONE artifact, every platform — the switch is OFF by
+# default, so the compose/balena boot path (the ENTRYPOINT below) is
+# unchanged. Sources keep the repo's 0600 working-tree mask; the bake
+# chmods ONLY the sh entry 0755 — the Python listener is exec'd BY
+# python3 and needs no +x (registrar/test/agentcore-invocation-shim
+# .test.ts pins both halves).
+COPY images/agent/entrypoints/agentcore-listener.py /usr/local/bin/agentcore/agentcore-listener.py
+COPY images/agent/entrypoints/agentcore-listener.sh /usr/local/bin/agentcore/agentcore-listener.sh
+RUN chmod 0755 /usr/local/bin/agentcore/agentcore-listener.sh
 
 # ── The identity gate as ENTRYPOINT ────────────────────────────────────────
 # The upstream image's ENTRYPOINT is the dispatcher; this image's gate

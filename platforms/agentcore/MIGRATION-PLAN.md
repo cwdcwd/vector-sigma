@@ -147,7 +147,7 @@ tracked as a decision, not as assumed fact.
 
 | # | Decision | Why it is open |
 |---|---|---|
-| D1 | Target Runtime protocol (HTTP `/invocations` + `/ping`, MCP, or A2A) and the shim's contract | The agent image must implement exactly one of AWS's documented contracts; the design README lists the contracts as AWS facts, but the image is not yet shimmed for any of them. |
+| D1 | Target Runtime protocol (HTTP `/invocations` + `/ping`, MCP, or A2A) and the shim's contract | RESOLVED (stage 3): the HTTP contract is implemented — the agent image bakes the invocation listener at `/usr/local/bin/agentcore/` behind the `AGENTCORE_HTTP` gate switch (POST `/invocations`, GET `/ping`, 0.0.0.0:8080; JSON responses; SSE not served). The MCP and A2A alternatives were never shimmed and remain out of scope for the image. |
 | D2 | Region, runtime compute configuration, and endpoint strategy for the isolated dev stack | Account-dependent and cost-relevant; nothing exists to check against until gate 1 lands. |
 | D3 | ECR repository naming and the exact digest-verification mechanism for the mirror | The design README requires digest-pinned copies of promoted images; the repository/mechanism choice is a deployment decision. |
 | D4 | Which agent (if any) ever becomes the first real canary, or whether every phase before cutover stays fully synthetic | Any real agent involvement crosses from verification into migration — the exact line gate 3 exists to draw. |
