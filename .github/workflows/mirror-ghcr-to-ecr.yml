@@ -1,0 +1,71 @@
+name: Mirror promoted arm64 GHCR digest to ECR (dry-run only)
+
+# Validate source selection and target mapping without AWS credentials or any
+# real registry authentication/write. Runtime copying belongs to a later,
+# separately authorized isolated-account stage.
+on:
+  workflow_dispatch:
+    inputs:
+      component:
+        description: One promoted image component
+        required: true
+        type: choice
+        options:
+          - agent
+          - hermes
+          - litellm
+          - postgres
+          - registrant
+          - registrar
+          - scotty
+          - tailscale
+          - tailscale-devices
+      promotion_run_id:
+        description: Successful build-images run ID containing the promoted record
+        required: true
+        type: string
+      promotion_run_attempt:
+        description: Attempt number for that successful promotion run
+        required: true
+        default: '1'
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  plan:
+    name: Validate promoted arm64 digest and explicit ECR target
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify the requested source run succeeded on main
+        env:
+          PROMOTION_RUN_ATTEMPT: ${{ inputs.promotion_run_attempt }}
+          PROMOTION_RUN_ID: ${{ inputs.promotion_run_id }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/verify-promotion-run.mjs
+      - name: Download the selected component's promotion record
+        uses: actions/download-artifact@v4
+        with:
+          name: promoted-${{ inputs.component }}
+          path: ${{ runner.temp }}/promoted
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.promotion_run_id }}
+          run-attempt: ${{ inputs.promotion_run_attempt }}
+      - name: Plan digest-pinned mirror (no registry login or writes)
+        env:
+          COMPONENT: ${{ inputs.component }}
+          AWS_ACCESS_KEY_ID: ''
+          AWS_SECRET_ACCESS_KEY: ''
+          AWS_SESSION_TOKEN: ''
+        run: node scripts/ecr-mirror-plan.mjs "${{ runner.temp }}/promoted/promoted-${COMPONENT}.json" "$COMPONENT" | tee "$RUNNER_TEMP/ecr-mirror-plan.json"
