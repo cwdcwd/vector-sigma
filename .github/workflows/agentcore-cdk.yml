@@ -1,0 +1,37 @@
+name: AgentCore CDK synth and structural tests
+
+on:
+  pull_request:
+    paths:
+      - 'platforms/agentcore/**'
+      - '.github/workflows/agentcore-cdk.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'platforms/agentcore/**'
+      - '.github/workflows/agentcore-cdk.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  agentcore-cdk:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: platforms/agentcore
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: platforms/agentcore/package-lock.json
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Typecheck
+        run: npm run build
+      - name: Structural tests
+        run: npm test
+      - name: Synthesize without AWS credentials
+        run: npm run synth -- --quiet
