@@ -19,6 +19,32 @@
 # "Running" with nothing inside.
 set -eu
 
+# ── The AgentCore platform switch (AC 0007 stage 3, fleet-ops-1py.55.3) ────
+# The AWS Bedrock AgentCore HTTP listener (POSIX sh entry + python3
+# stdlib server, baked at /usr/local/bin/agentcore/) REPLACES the
+# gateway runtime when the platform env is set: with the switch on, the
+# listener is the runtime's PID 1 and serves the HTTP invocation
+# contract (POST /invocations + GET /ping on 0.0.0.0:8080 — the shim's
+# header carries the contract and its sources). NO identity gate in
+# this mode: the marker the platform never writes would be a false
+# never-start, and AgentCore-side identity delivery is the migration
+# plan's stage (platforms/agentcore/MIGRATION-PLAN.md), not the gate's.
+# Default OFF — one artifact, unchanged compose/balena boot: unset (or
+# false) falls through to the identity gate + the official dispatcher
+# exactly as before this stanza existed.
+ac_http="$(printf %s "${AGENTCORE_HTTP:-0}" | tr '[:upper:]' '[:lower:]')"
+case "$ac_http" in
+  1|true|yes|on)
+    if ! command -v python3 >/dev/null 2>&1; then
+      echo "[gate] AGENTCORE_HTTP=$AGENTCORE_HTTP but python3 is missing; cannot serve the AgentCore invocation contract" >&2
+      exit 1
+    fi
+    echo "[gate] AGENTCORE_HTTP=$AGENTCORE_HTTP; serving the AgentCore invocation shim (HTTP contract on 0.0.0.0:${AGENTCORE_PORT:-8080})"
+    exec /bin/sh "${AGENTCORE_ENTRYPOINT_DIR:-/usr/local/bin/agentcore}/agentcore-listener.sh"
+    ;;
+esac
+unset ac_http
+
 MARKER=/data/agent/ready.marker
 # Poll budget: ~30 min at 2s interval — long enough for clock-gate +
 # bootstrap + 425 retry cycles on a cold device; short enough to
