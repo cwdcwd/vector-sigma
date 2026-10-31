@@ -82,4 +82,15 @@ describe('persona library embed (zbq.2)', () => {
     // vector-sigma adopts these personas unchanged.
     expect(/doombot|ultronbot|kangbot|thanosbot|lazybaer|primus/i.test(blob)).toBe(false);
   });
+
+  it('builder personas carry the verbatim developer test-handoff gate', async () => {
+    const { PERSONA_LIBRARY } = await import('../src/persona-library.js');
+    const RULE =
+      "Before handoff, run the tests relevant to the change and the full suite when the project's guidance says it is practical. Fix failures caused by the change and rerun the affected tests. Report unrelated-looking failures separately. If tests are absent, blocked, or impractical to run, say why and note any narrower checks performed. Include the commands run and actual results; don't describe unrun tests as passing.";
+    const builders = PERSONA_LIBRARY.filter((p) => p.role === 'builder');
+    expect(builders.length).toBeGreaterThanOrEqual(1);
+    for (const p of builders) {
+      expect(p.soul_contents).toContain(RULE);
+    }
+  });
 });
