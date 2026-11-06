@@ -46,6 +46,80 @@ and docs. Nothing is deployed to AWS in this epic.
   Scotty, and existing device applications. The registrar stack remains on
   Compose/Balena. AgentCore hosts agent + Primus only.
 
+### Diagram 1 — deployment boundary and placement
+
+Legend: solid = current/implemented placement; dashed = proposed or unverified route (not an established connection); the forbidden edge is labelled explicitly.
+
+```mermaid
+flowchart LR
+  subgraph CB["Existing Compose / Balena side (stays)"]
+    REG["Registrar + PostgreSQL"]
+    RNT["Registrant (device bootstrap)"]
+    LLM["LiteLLM gateway"]
+    DOLT["Dolt queue + Scotty"]
+    TS["Tailscale serve edge"]
+    DEV["Balena registrar and device apps"]
+  end
+  subgraph AC["AgentCore Runtime (candidate, agent + Primus only)"]
+    AGT["Hermes agent / Primus image"]
+  end
+  RNT -->|"existing enrollment flow"| REG
+  AGT -. "UNVERIFIED: network route (public or VPC) not designed; no traffic" .- LLM
+  AGT -. "UNVERIFIED: queue join not designed (default: none)" .- DOLT
+  RNT -. "FORBIDDEN by default: direct AWS / Secrets Manager access" .-> AWS["AWS account access"]
+```
+
+### Diagram 2 — artifact and authorization path
+
+Implemented steps are shown in solid lines. Steps marked "FUTURE" are not authorized and not implemented; no AWS login, copy, or write is performed by anything in this epic.
+
+```mermaid
+flowchart TD
+  P["Successful CI promotion record (GHCR, immutable digest)"] -->|"implemented: validate record"| S["Select promoted arm64 digest"]
+  S -->|"implemented: dry-run mirror plan only (no AWS login, copy, or write)"| M["Digest-pinned ECR mirror plan"]
+  S -->|"implemented: CDK typecheck, structural tests, synth without AWS credentials"| V["Synth-only CDK and release validation"]
+  M -.->|"FUTURE: G1 isolated AWS dev account authorization"| G1["Gate G1 (not granted)"]
+  G1 -.->|"FUTURE: G2 written dev-deploy authorization"| G2["Gate G2 (not granted)"]
+  G2 -.->|"FUTURE: real ECR copy and deploy in dev account"| D["Dev stack (not deployed)"]
+  G2 -.->|"FUTURE: G3 migration-run authorization, separate"| G3["Gate G3 (not granted)"]
+  G3 -.->|"FUTURE: any migration execution"| X["Migration (not executed)"]
+```
+
+### Diagram 3 — invocation contract
+
+The selected protocol is AWS HTTP (container listener `0.0.0.0:8080`, ARM64). It is distinct from A2A (`:9000`) and MCP (`:8000`), which are not used by this adapter. `/ws` is an optional AWS capability and is not implemented by Vector Sigma.
+
+```mermaid
+sequenceDiagram
+  participant C as Authorized caller
+  participant RT as AgentCore Runtime endpoint (inbound auth, proposed)
+  participant L as Agent listener 0.0.0.0:8080 (AGENTCORE_HTTP on)
+  C->>RT: Invoke (caller needs invoke permission, not yet configured)
+  RT->>L: GET /ping (health)
+  L-->>RT: 200 health response
+  RT->>L: POST /invocations with JSON prompt
+  L-->>RT: JSON response (implemented)
+  Note over L,RT: SSE output is an AWS option, the shim does not serve SSE
+  Note over RT,L: Optional /ws is an AWS capability only, not implemented
+```
+
+### Diagram 4 — identity and secret flows
+
+Solid flows are part of the design. Dotted edges labelled FORBIDDEN are explicitly disallowed by default; dotted edges labelled UNVERIFIED or proposed are not established.
+
+```mermaid
+flowchart LR
+  DP["Deployment principal (operator or CI, control plane only)"] -->|"create or update named runtime; PassRole to runtime role"| RT["AgentCore Runtime"]
+  CL["Authorized caller"] -->|"invoke permission on named runtime or endpoint (proposed)"| RT
+  RT -->|"runtime workload identity via AgentCore Identity"| AID["AgentCore Identity (outbound credential provider)"]
+  AID -->|"reads owner-provisioned provider secret (service-managed)"| SM["Secrets Manager secret (reference only)"]
+  RT -->|"outbound call with scoped credential only"| EXT["External API (outbound destination not yet selected)"]
+  RNT["Registrant (Compose / Balena, unchanged)"] -->|"registrar-configured device bootstrap (unchanged)"| REG["Registrar"]
+  RNT -. "FORBIDDEN by default: no AWS or Secrets Manager access" .-> SM
+  RT -. "FORBIDDEN by default: no direct Secrets Manager read" .-> SM
+  BOOT["Device bootstrap key (REGISTRAR_KEY)"] -. "stays device-only; never moves to AWS" .-> SM
+```
+
 ## Stages (children, in dependency order)
 
 1. **Design doc — completed at the current main base:** `platforms/agentcore/README.md` records current AgentCore requirements, IAM boundaries, and open account-dependent questions. It places the registrant on the existing Compose/Balena control plane, keeps its current registrar-configured device bootstrap flow, and gives neither the registrant nor the runtime direct Secrets Manager access. Secrets Manager-backed credentials are an optional AgentCore Identity mechanism for separately provisioned runtime outbound credentials; they do not replace the device bootstrap key. Any request to change the registrant, device bootstrap flow, bundle contract, or Balena behavior is a separately owner-approved scope change. No infrastructure is deployed.
