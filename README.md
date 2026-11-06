@@ -2,12 +2,42 @@
 
 > *"Before Cybertron's fall, every new robot passed through Vector Sigma."*
 
-Device identity registrar for autonomous agent fleets. Named for the G1
-Transformers supercomputer that imparted personality to every new robot —
-this is that, for devices: a fleet device boots empty, calls home, and
-receives the complete identity bundle that makes it *itself*.
+Vector Sigma is an **agentic software factory**: a platform where AI agents
+can take software work from a queued task through implementation, testing,
+review, and release. Humans set priorities, permissions, and approval
+boundaries; agents do the repeatable engineering work and leave evidence at
+each handoff.
 
-## What it does
+The factory is more than an agent runtime or an identity registrar. It brings
+together the agent fleet, a work queue and routing pipeline, the tools and
+identity agents need, shared software repositories, and a build-and-release
+system that tests and promotes the exact artifacts it deploys.
+
+Named for the G1 Transformers supercomputer that imparted personality to
+every new robot, Vector Sigma also handles the identity side of the factory:
+a fleet device boots empty, calls home, and receives the complete identity
+bundle that makes it *itself*.
+
+## How the factory works
+
+1. **Work is queued** in the Vector Sigma fleet's own Beads queue and grouped
+   by project. The queue router assigns eligible work to configured developer,
+   test, and review stages; owner-call work stays with the owner.
+2. **Agents build and verify** changes in project repositories, recording
+   commands, results, and handoff evidence with the work item. Human-set
+   trust, review, and deployment gates remain in force.
+3. **CI builds the software** from the repository's image catalog, scans and
+   tests those exact image bytes, and promotes them by digest. Release jobs
+   reuse the verified images rather than rebuilding them.
+4. **Platform adapters deploy** the approved artifacts to their target
+   environments. The adapter boundary keeps software images separate from
+   platform-specific wiring and runtime configuration.
+
+See [docs/queue-conventions.md](docs/queue-conventions.md),
+[docs/vs-hub-router.md](docs/vs-hub-router.md), and
+[docs/image-pipeline.md](docs/image-pipeline.md) for the operating details.
+
+## What it provides
 
 - **Registrar** — REST service (TypeScript · Fastify · Node.js · Postgres)
   that stores per-device identity bundles and delivers them exactly once
@@ -52,6 +82,7 @@ stack/        # THE stack definitions (which images run together, how wired);
 platforms/    # where those images run — one adapter per deploy target
   balena/     #   registrar + devices fleet apps (live)
   compose/    #   plain Docker Compose on any host (self-host)
+  agentcore/  #   Amazon Bedrock AgentCore (design)
 test/e2e/     # compose-simulated fleet E2E, run on the exact CI-built bytes
 scripts/      # repo tooling: image catalog, scans, promote, release render
 docs/         # engineering spec, runbooks, conventions (some baked into images)
@@ -61,21 +92,25 @@ Images are platform-neutral; a platform is only *how* they are run and
 configured. See [platforms/README.md](platforms/README.md) for the adapter
 contract (and what adding AWS AgentCore will take).
 
-## Status
+## Where it runs today
 
-Registrar skeleton, registrant, admin console, and the self-host deploy
-example + simulated-device E2E are merged. Next: the two-fleet balena
-deployment ([docs/balena-architecture.md](docs/balena-architecture.md))
-and its GitHub Actions pipelines — the **devices-fleet app ships in this
-repo** ([platforms/balena/devices/](platforms/balena/devices/README.md)), with the owner
-runbook ([docs/balena-devices-runbook.md](docs/balena-devices-runbook.md))
-and canary checklist
-([docs/balena-devices-canary-checklist.md](docs/balena-devices-canary-checklist.md));
-the registrar-fleet app is a separate deliverable.
+The platform-neutral images and stack definitions are deployed through
+platform adapters:
 
-Engineering spec: [docs/engineering-spec.md](docs/engineering-spec.md).
+- **Balena registrar fleet** — the control plane, including the registrar,
+  gateway, queue services, and Primus coordinator.
+- **Balena devices fleet** — agent runtimes enrolled and configured by the
+  registrar.
+- **Docker Compose** — a supported self-host deployment and the basis of
+  the simulated-fleet end-to-end test.
+- **Amazon Bedrock AgentCore** — an adapter design, not a deployed
+  environment.
 
-How images are built and published, in plain language: [docs/image-pipeline.md](docs/image-pipeline.md).
+See [platforms/README.md](platforms/README.md) for adapter status and
+[docs/engineering-spec.md](docs/engineering-spec.md) for the component
+contracts. The registrar, registrant, and admin console are factory
+infrastructure: identity provisioning is one part of Vector Sigma, not the
+whole product.
 
 ## License
 
