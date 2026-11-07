@@ -1,0 +1,24 @@
+{
+  "$schema": "../../../scripts/fleet-config.mjs",
+  "fleet_id": "vs-balena-b",
+  "status": "example",
+  "target": "balena",
+  "images": {
+    "registrar": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "registrant": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "agent": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "hermes": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+    "litellm": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+    "scotty": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+    "postgres": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+  },
+  "endpoints": {
+    "registrar_url": "https://registrar.vs-balena-b.example.internal",
+    "gateway_url": "https://gateway.vs-balena-b.example.internal",
+    "queue_url": "https://queue.vs-balena-b.example.internal"
+  },
+  "database": { "kind": "container" },
+  "balena": {
+    "fleets": { "registrar": "g_c_d/vs-balena-b-registrar", "devices": "g_c_d/vs-balena-b-devices" }
+  }
+}
