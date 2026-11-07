@@ -14,6 +14,7 @@ deploys, touches AWS, or changes an existing Balena fleet.
 
 | Path | Purpose |
 |---|---|
+| `scripts/fleet-deploy-plan.mjs` | Dry-run Balena deploy plan for a deployable config's own apps (prints commands, executes nothing). |
 | `scripts/fleet-config.mjs` | Validator. `node scripts/fleet-config.mjs <fleet.json>` exits 1 on error. |
 | `examples/aws-fleet.example.json` | Sample AWS instance (`status: example`). |
 | `examples/balena-fleet.example.json` | Sample Balena instance (`status: example`). |
@@ -49,10 +50,20 @@ cd registrar && npx vitest run test/fleet-config.test.ts
 2. Pin real promoted digests in `images` (from `images.json` promotion records).
    Set `status` to `deployable` only after this.
 3. Validate with the command above.
-4. Deploy with the existing release path, unchanged: push a `registrar-v*` or
-   `devices-v*` tag (`.github/workflows/release-registrar.yml` / `release-devices.yml`).
-   Point those apps at the new instance's dashboard variables, never at the
-   production apps.
+4. Deploy. The `registrar-v*` / `devices-v*` tag workflows are NOT an isolated path:
+   they deploy only to the repository variables `vars.REGISTRAR_FLEET` and
+   `vars.DEVICES_FLEET` and ignore `balena.fleets`. Do not push a release tag to
+   reach a new instance. Instead, after a successful build of the release bundles
+   (`release/registrar`, `release/devices`), produce the dry-run command plan for
+   this instance's own apps and run it by hand:
+
+   ```sh
+   node scripts/fleet-deploy-plan.mjs platforms/fleets/<fleet>.json --release <32-hex-release-id>
+   ```
+
+   The planner refuses example, non-balena, invalid and production-app configs and
+   prints nothing executed. The existing workflows and the production variables are
+   unchanged.
 
 ## AWS (not deployable yet)
 
