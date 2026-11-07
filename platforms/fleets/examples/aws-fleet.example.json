@@ -1,0 +1,27 @@
+{
+  "$schema": "../../../scripts/fleet-config.mjs",
+  "fleet_id": "vs-aws-a",
+  "status": "example",
+  "target": "aws",
+  "images": {
+    "registrar": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "registrant": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "agent": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "hermes": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+    "litellm": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+    "scotty": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+    "postgres": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+  },
+  "endpoints": {
+    "registrar_url": "https://registrar.vs-aws-a.example.internal",
+    "gateway_url": "https://gateway.vs-aws-a.example.internal",
+    "queue_url": "https://queue.vs-aws-a.example.internal"
+  },
+  "database": { "kind": "rds-postgres", "endpoint": "vs-aws-a-db.abc123xyz.us-east-1.rds.amazonaws.com" },
+  "aws": {
+    "account": "123456789012",
+    "region": "us-east-1",
+    "agentcore_runtime": "vector_sigma_agent_vs_aws_a",
+    "ecs_cluster": "vs-aws-a"
+  }
+}
