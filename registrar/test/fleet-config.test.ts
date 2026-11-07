@@ -106,4 +106,24 @@ describe('fleet deployment config (fleet-ops-210.1)', () => {
     expect(validateFleetConfig(c)).toContain('$.surprise: unknown key');
     expect(validateFleetConfig(null)).toEqual(['config must be a JSON object']);
   });
+
+  it('accepts last_known_good as a full pinned digest set (the documented rollback field)', () => {
+    const c = balena();
+    c.status = 'deployable';
+    for (const k of Object.keys(c.images)) c.images[k] = DIGEST;
+    c.last_known_good = { ...c.images, registrar: `sha256:${'c1'.repeat(32)}` };
+    expect(validateFleetConfig(c)).toEqual([]);
+  });
+
+  it('validates last_known_good with the same digest and component rules as images', () => {
+    const c = balena();
+    c.status = 'deployable';
+    for (const k of Object.keys(c.images)) c.images[k] = DIGEST;
+    c.last_known_good = { ...c.images, registrar: 'ghcr.io/cwdcwd/vector-sigma/registrar:latest', bogus: DIGEST };
+    const errs = validateFleetConfig(c);
+    expect(errs.some((e) => e.startsWith('$.last_known_good.registrar: must be a pinned sha256 digest'))).toBe(true);
+    expect(errs).toContain('$.last_known_good.bogus: not an images.json component');
+    delete c.last_known_good.litellm;
+    expect(validateFleetConfig(c)).toContain('$.last_known_good: missing required component "litellm"');
+  });
 });

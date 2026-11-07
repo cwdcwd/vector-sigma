@@ -28,7 +28,8 @@ const FLEET_ID = /^[a-z][a-z0-9-]{1,38}$/;
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const PLACEHOLDER = /^sha256:(0+|(.)\2+)$/;
 const SECRET_KEY = /(password|passwd|secret|token|api[_-]?key|bootstrap|credential|private)/i;
-const TOP_KEYS = ['$schema', 'fleet_id', 'status', 'target', 'images', 'endpoints', 'database', 'aws', 'balena'];
+// last_known_good: the digest set a rollback re-pins to (README "Rollback"). Same shape as images.
+const TOP_KEYS = ['$schema', 'fleet_id', 'status', 'target', 'images', 'last_known_good', 'endpoints', 'database', 'aws', 'balena'];
 
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const isHttps = (v) => {
@@ -74,6 +75,9 @@ export function validateFleetConfig(cfg) {
   if (target !== 'aws' && target !== 'balena') errors.push('$.target: must be "aws" or "balena"');
 
   checkImages(cfg.images, '$.images', errors, isExample);
+  if (cfg.last_known_good !== undefined) {
+    checkImages(cfg.last_known_good, '$.last_known_good', errors, isExample);
+  }
 
   const ep = cfg.endpoints;
   if (!isObj(ep)) {
