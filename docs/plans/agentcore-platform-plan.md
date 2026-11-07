@@ -159,7 +159,7 @@ stays available for every row.
 | `scotty` | Queue dashboard | ECS service | `balena/registrar` (current) | Stateless frontend over Dolt. |
 | `registrant` | Device bootstrap service | Open decision: device-side only, or ECS per instance | Balena device (current) | Keeps the device-bootstrap flow. Gains no AWS credentials by default. Placement needs an owner decision. |
 | `tailscale` / `tailscale-devices` | Network edge | ECS service, or none | Balena (current) | Tailnet membership on AWS is an open decision. Default: no runtime joins the tailnet. |
-| `registrant-own` | Compose self-host registrant | Not deployed on AWS | Compose only | Self-host path stays as it is. |
+| `registrant-own` | Primus/master device self-registrant | Not deployed on AWS | `balena/registrar` (current; always-on, `restart: always`, no profile). On Balena the supervisor supplies `BALENA_DEVICE_UUID` and `REGISTRAR_KEY` as device variables. The explicit-env form is the self-host Compose path. | Stays as it is. Not moved by this design. |
 
 **Open decisions (not resolved here):**
 
