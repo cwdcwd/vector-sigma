@@ -44,6 +44,42 @@ npm test          # node:test via tsx
   use example account/region values; account-specific values require
   separate owner authorization.
 
+## Manual AWS deploy (fleet-ops-210.5)
+
+`.github/workflows/deploy-agentcore-aws.yml` is the only path that deploys this
+stack. It is `workflow_dispatch`-only: no push, PR, tag, or schedule trigger.
+It runs the same locked build, structural tests, and synth as CI, then deploys
+`VectorSigmaAgentCore` to account `126384392823` in `us-east-1`.
+
+**Environment setup (owner, in GitHub; the agent does not create these):**
+
+1. Create environment `agentcore-dev` with required reviewers and a deployment
+   branch rule limiting it to `main`.
+2. Add environment **variables** (not repository variables, not secrets):
+   - `AWS_FRONTDOOR_ROLE_ARN`: tools-account role that trusts GitHub OIDC only
+     for this environment.
+   - `AWS_DEPLOY_ROLE_ARN`: target-account role that trusts only the front-door
+     role.
+3. Confirm the CDK bootstrap for account `126384392823` / `us-east-1` exists.
+   The workflow does not create it.
+
+Auth is keyless: OIDC into the front-door role, then `role-chaining` into the
+deploy role. The workflow validates that the resolved account equals
+`126384392823` before `cdk deploy`.
+
+**Manual invocation:** Actions → "Deploy AgentCore to AWS (manual, OIDC)" →
+Run workflow, on `main`, with:
+
+- `image_uri`: digest-pinned ECR URI (`<acct>.dkr.ecr.us-east-1.amazonaws.com/vector-sigma/agent@sha256:<64 hex>`).
+- `identity_secret_arn`: existing Secrets Manager ARN (reference only, never a value).
+
+Approve the environment gate when prompted. The post-deploy step fails unless
+the stack is `CREATE_COMPLETE` or `UPDATE_COMPLETE`. Rollback is a redispatch
+with the last-known-good digest.
+
+This workflow supersedes the synth-only CI boundary for this lane only;
+`agentcore-cdk.yml` and `release-agentcore.yml` remain synth-only.
+
 Dependencies are pinned to `aws-cdk-lib` 2.275.0 / `constructs` 10.8.1 /
 `aws-cdk` CLI 2.1146.1 (the minimum CLI that reads the lib's cloud-assembly
 schema v55).
