@@ -49,28 +49,33 @@ npm test          # node:test via tsx
 `.github/workflows/deploy-agentcore-aws.yml` is the only path that deploys this
 stack. It is `workflow_dispatch`-only: no push, PR, tag, or schedule trigger.
 It runs the same locked build, structural tests, and synth as CI, then deploys
-`VectorSigmaAgentCore` to account `126384392823` in `us-east-1`.
+`VectorSigmaAgentCore` to the account and region named by the environment's
+`AWS_ACCOUNT_ID` and `AWS_REGION` variables. Neither value is hardcoded in the
+workflow, the CDK app, or these docs.
 
 **Environment setup (owner, in GitHub; the agent does not create these):**
 
 1. Create environment `agentcore-dev` with required reviewers and a deployment
    branch rule limiting it to `main`.
 2. Add environment **variables** (not repository variables, not secrets):
+   - `AWS_ACCOUNT_ID`: 12-digit target account ID.
+   - `AWS_REGION`: target region code (lowercase, e.g. `us-east-1`; set in GitHub, not in source).
    - `AWS_FRONTDOOR_ROLE_ARN`: tools-account role that trusts GitHub OIDC only
      for this environment.
    - `AWS_DEPLOY_ROLE_ARN`: target-account role that trusts only the front-door
      role.
-3. Confirm the CDK bootstrap for account `126384392823` / `us-east-1` exists.
+3. Confirm the CDK bootstrap exists in `AWS_ACCOUNT_ID` / `AWS_REGION`.
    The workflow does not create it.
 
 Auth is keyless: OIDC into the front-door role, then `role-chaining` into the
-deploy role. The workflow validates that the resolved account equals
-`126384392823` before `cdk deploy`.
+deploy role. The workflow fails closed if `AWS_ACCOUNT_ID`, `AWS_REGION`, or
+either role ARN is unset, and it validates that the resolved caller account
+equals `AWS_ACCOUNT_ID` before `cdk deploy`.
 
 **Manual invocation:** Actions → "Deploy AgentCore to AWS (manual, OIDC)" →
 Run workflow, on `main`, with:
 
-- `image_uri`: digest-pinned ECR URI (`<acct>.dkr.ecr.us-east-1.amazonaws.com/vector-sigma/agent@sha256:<64 hex>`).
+- `image_uri`: digest-pinned ECR URI (`<AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/vector-sigma/agent@sha256:<64 hex>`).
 - `identity_secret_arn`: existing Secrets Manager ARN (reference only, never a value).
 
 Approve the environment gate when prompted. The post-deploy step fails unless
