@@ -1,0 +1,173 @@
+name: Deploy AgentCore to AWS (manual, OIDC)
+
+# Manual-only deploy of the AgentCore CDK stack (platforms/agentcore).
+# Keyless: GitHub's OIDC token assumes the tools-account front-door role,
+# which chains into the target deploy role. No static AWS keys. There is
+# deliberately no push, pull_request, tag or schedule trigger; this runs only
+# when an authorized operator dispatches it.
+#
+# No AWS account ID or region is hardcoded here. Both are read from protected
+# GitHub Environment variables, and the workflow fails closed if either is
+# unset or if the validated caller identity differs from AWS_ACCOUNT_ID.
+#
+# Required GitHub setup (see platforms/agentcore/CDK-AGENTCORE.md):
+#   - Environment `agentcore-dev` with required reviewers and a branch rule
+#     limiting it to `main`.
+#   - Environment variables (not repository variables, not secrets):
+#       AWS_ACCOUNT_ID          target AWS account ID (12 digits)
+#       AWS_REGION              target AWS region (lowercase region code)
+#       AWS_FRONTDOOR_ROLE_ARN  tools-account role trusted by GitHub OIDC for
+#                               this environment only
+#       AWS_DEPLOY_ROLE_ARN     target-account role trusted only by the
+#                               front-door role
+#
+# The stack's CDK bootstrap must already exist in the target account and
+# region. This workflow does not create roles, policies or bootstrap stacks.
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_uri:
+        description: 'Digest-pinned agent image URI in ECR (repo@sha256:<64 hex>). Mutable tags are rejected.'
+        required: true
+        type: string
+      identity_secret_arn:
+        description: 'Existing AgentCore Identity secret ARN (reference only; never the secret value).'
+        required: true
+        type: string
+
+concurrency:
+  group: agentcore-aws-dev
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  STACK_NAME: VectorSigmaAgentCore
+
+jobs:
+  deploy:
+    name: Test, synth, and deploy AgentCore (dev account)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: agentcore-dev
+    env:
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: platforms/agentcore
+    steps:
+      - name: Fail closed unless the environment target is configured
+        # Runs before any AWS credential is requested. Environment variables
+        # that are unset expand to empty strings, which are rejected here.
+        env:
+          FRONTDOOR_ROLE_ARN: ${{ vars.AWS_FRONTDOOR_ROLE_ARN }}
+          DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$AWS_ACCOUNT_ID" ]]; then
+            echo "::error::GitHub Environment variable AWS_ACCOUNT_ID is unset in agentcore-dev. Refusing to deploy."
+            exit 1
+          fi
+          if [[ ! "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]; then
+            echo "::error::AWS_ACCOUNT_ID must be a 12-digit account ID. Refusing to deploy."
+            exit 1
+          fi
+          if [[ -z "$AWS_REGION" ]]; then
+            echo "::error::GitHub Environment variable AWS_REGION is unset in agentcore-dev. Refusing to deploy."
+            exit 1
+          fi
+          if [[ ! "$AWS_REGION" =~ ^[a-z]{2}(-[a-z]+)+-[0-9]$ ]]; then
+            echo "::error::AWS_REGION must look like an AWS region code. Refusing to deploy."
+            exit 1
+          fi
+          if [[ -z "$FRONTDOOR_ROLE_ARN" || -z "$DEPLOY_ROLE_ARN" ]]; then
+            echo "::error::AWS_FRONTDOOR_ROLE_ARN and AWS_DEPLOY_ROLE_ARN must be set in agentcore-dev. Refusing to deploy."
+            exit 1
+          fi
+          echo "Target configured: account from AWS_ACCOUNT_ID, region $AWS_REGION"
+
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Validate dispatch inputs
+        env:
+          IMAGE_URI: ${{ inputs.image_uri }}
+          SECRET_ARN: ${{ inputs.identity_secret_arn }}
+        run: |
+          set -euo pipefail
+          ecr_prefix="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/vector-sigma/agent@sha256:"
+          if [[ "$IMAGE_URI" != "$ecr_prefix"* ]] || [[ ! "${IMAGE_URI#"$ecr_prefix"}" =~ ^[a-f0-9]{64}$ ]]; then
+            echo "::error::image_uri must be a digest-pinned ECR URI for vector-sigma/agent in the configured account and region"
+            exit 1
+          fi
+          secret_prefix="arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:"
+          if [[ "$SECRET_ARN" != "$secret_prefix"* ]] || [[ ! "${SECRET_ARN#"$secret_prefix"}" =~ ^[A-Za-z0-9/_+=.@-]+$ ]]; then
+            echo "::error::identity_secret_arn must be a Secrets Manager ARN in the configured account and region (reference, not a value)"
+            exit 1
+          fi
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: platforms/agentcore/package-lock.json
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run build
+
+      - name: Structural tests
+        run: npm test
+
+      - name: Synthesize
+        run: npx cdk synth --quiet -c imageUri="${{ inputs.image_uri }}" -c identitySecretArn="${{ inputs.identity_secret_arn }}"
+
+      - name: Assume the tools-account front-door role (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_FRONTDOOR_ROLE_ARN }}
+          role-session-name: agentcore-${{ github.run_id }}-${{ github.run_attempt }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Chain into the target deploy role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-chaining: true
+          role-session-name: agentcore-${{ github.run_id }}-${{ github.run_attempt }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Validate the target account before deploying
+        run: |
+          set -euo pipefail
+          account="$(aws sts get-caller-identity --query Account --output text)"
+          if [[ "$account" != "$AWS_ACCOUNT_ID" ]]; then
+            echo "::error::Credentials resolve to account $account, expected AWS_ACCOUNT_ID. Refusing to deploy."
+            exit 1
+          fi
+          echo "Target account verified against AWS_ACCOUNT_ID (region $AWS_REGION)"
+
+      - name: Deploy the AgentCore stack
+        run: >-
+          npx cdk deploy --require-approval never --exclusively --no-version-reporting
+          -c imageUri="${{ inputs.image_uri }}"
+          -c identitySecretArn="${{ inputs.identity_secret_arn }}"
+          "$STACK_NAME"
+
+      - name: Post-deploy check
+        run: |
+          set -euo pipefail
+          status="$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query 'Stacks[0].StackStatus' --output text)"
+          echo "Stack $STACK_NAME status: $status"
+          if [[ "$status" != "CREATE_COMPLETE" && "$status" != "UPDATE_COMPLETE" ]]; then
+            echo "::error::Stack is not in a healthy steady state"
+            exit 1
+          fi
